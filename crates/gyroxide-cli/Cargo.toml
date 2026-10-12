@@ -1,0 +1,26 @@
+[package]
+name = "gyroxide-cli"
+description = "Command-line driver for gyroxide"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "gyroxide"
+path = "src/main.rs"
+
+[dependencies]
+gyroxide-mesh.workspace = true
+gyroxide-model.workspace = true
+gyroxide-sim.workspace = true
+gyroxide-validate.workspace = true
+burn = { workspace = true, features = ["ndarray"] }
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[features]
+default = ["wgpu"]
+# wgpu picks Metal / Vulkan / DX12 natively; fusion merges element-wise chains.
+wgpu = ["burn/wgpu", "burn/fusion"]
+cuda = ["burn/cuda", "burn/fusion"]

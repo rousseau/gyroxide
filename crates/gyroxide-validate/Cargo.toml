@@ -1,0 +1,13 @@
+[package]
+name = "gyroxide-validate"
+description = "Trace I/O (NPY) and comparison against reference oracles (Tallinen C code, BrainGrowth)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+gyroxide-sim.workspace = true
+gyroxide-mesh.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

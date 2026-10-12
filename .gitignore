@@ -1,0 +1,6 @@
+/target
+/out
+*.vtk
+*.npy
+!crates/**/tests/data/*.npy
+/data/

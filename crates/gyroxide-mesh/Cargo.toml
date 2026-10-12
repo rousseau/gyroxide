@@ -1,0 +1,9 @@
+[package]
+name = "gyroxide-mesh"
+description = "Tetrahedral meshes for gyroxide: Netgen I/O, normalisation, topology, distance to surface"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true

@@ -1,0 +1,36 @@
+name = "Tallinen 2016"
+normalization = "none"
+
+[material]
+mu_gray = 1.0
+mu_white = 1.167
+bulk = 5.0
+eps = 0.1
+k_inverted = 0.0
+
+[dynamics]
+mesh_spacing = 0.01
+density = 0.0025
+damping = 0.5
+step_factor = 0.025
+t_start = 0.0
+t_end = 1.0
+
+[schedule]
+law = "linear"
+a0 = 0.0
+a1 = 1.85
+h0 = 0.084
+h1 = -0.042
+
+[contact]
+enabled = true
+stiffness_factor = 10.0
+repulsive_skin = 0.2
+proximity_skin = 0.6
+check_every = 10
+midplane = -0.004
+midplane_restoring = false
+
+[growth_mask]
+kind = "tallinen_ellipsoid"
