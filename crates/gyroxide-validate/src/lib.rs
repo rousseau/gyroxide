@@ -41,6 +41,8 @@ pub struct TraceMeta {
 pub struct NpyTraceWriter {
     pub dir: PathBuf,
     pub every: usize,
+    /// No snapshot before this step.
+    pub from: usize,
     pub extra: Vec<usize>,
     diag: std::io::BufWriter<std::fs::File>,
 }
@@ -54,6 +56,7 @@ impl NpyTraceWriter {
         Ok(Self {
             dir,
             every: every.max(1),
+            from: 0,
             extra: vec![],
             diag,
         })
@@ -66,7 +69,7 @@ pub fn step_dir(step: usize) -> String {
 
 impl TraceSink for NpyTraceWriter {
     fn wants(&self, step: usize) -> bool {
-        step % self.every == 0 || self.extra.contains(&step)
+        (step >= self.from && step.is_multiple_of(self.every)) || self.extra.contains(&step)
     }
     fn record(&mut self, s: &Snapshot) -> std::io::Result<()> {
         let d = self.dir.join(step_dir(s.diagnostics.step));
@@ -201,8 +204,16 @@ pub fn load_static_mesh(dir: &Path) -> std::io::Result<gyroxide_mesh::TetMesh> {
     if t.shape.len() != 2 || t.shape[1] != 4 || f.shape.len() != 2 || f.shape[1] != 3 {
         return Err(bad("tets must be [T,4] and faces [F,3]"));
     }
-    let tets = t.data.chunks_exact(4).map(|c| [c[0] as u32, c[1] as u32, c[2] as u32, c[3] as u32]).collect();
-    let faces = f.data.chunks_exact(3).map(|c| [c[0] as u32, c[1] as u32, c[2] as u32]).collect();
+    let tets = t
+        .data
+        .chunks_exact(4)
+        .map(|c| [c[0] as u32, c[1] as u32, c[2] as u32, c[3] as u32])
+        .collect();
+    let faces = f
+        .data
+        .chunks_exact(3)
+        .map(|c| [c[0] as u32, c[1] as u32, c[2] as u32])
+        .collect();
     Ok(gyroxide_mesh::TetMesh { nodes, tets, faces })
 }
 

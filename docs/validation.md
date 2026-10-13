@@ -68,3 +68,24 @@ gyroxide run --preset braingrowth --ref-static <run> --no-midplane --backend nda
 gyroxide compare out/cmp/trace <run> \
              --ref-positions 'step_{step:07}/x.npy' --ref-forces 'step_{step:07}/f_total.npy'
 ```
+
+## Cerveau week23 (maillage de l'article)
+
+- `week23-3M` (2 782 075 tétraèdres), préréglage `tallinen2016`, comparé au code
+  C : écart de 4e-6 sur les positions après 500 pas (GPU f32).
+- Avec le plan médian d'origine : stable au moins jusqu'à t = 0,034 (6 000 pas).
+- Jusqu'à t = 1 avec `--midplane-restoring` : 178 886 pas en 4 h 13 (85 ms/pas,
+  Mac, Metal), aire 8,5 → 40,8, 4 éléments inversés à la fin.
+- Un remaillage plus grossier de la même surface (314 000 tétraèdres,
+  `tools/stl_to_mesh.py`) plisse aussi mais avec des gyri trop larges : la
+  résolution volumique de l'article est nécessaire.
+
+```
+gyroxide run --preset tallinen2016 --ref-static <trace week23> --midplane-restoring \
+             --vtk-every 17888 --checkpoint-every 10000 --out out/week23_3M
+python3 tools/render_surfaces.py week23.png out/week23_3M/surface_0000000.vtk \
+             out/week23_3M/surface_final.vtk --labels "t = 0" "t = 1"
+```
+
+`--checkpoint-every N` écrit un point de reprise ; `--resume <dossier>` repart
+de là (reprise vérifiée exacte au bit près).

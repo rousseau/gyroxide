@@ -88,6 +88,15 @@ struct RunArgs {
     /// Write NPY traces every N steps (0 = never).
     #[arg(long, default_value_t = 0)]
     trace_every: usize,
+    /// Save a restart point every N steps in <out>/checkpoint (0 = never).
+    #[arg(long, default_value_t = 0)]
+    checkpoint_every: usize,
+    /// Resume from a checkpoint directory written by --checkpoint-every.
+    #[arg(long)]
+    resume: Option<PathBuf>,
+    /// First step written to the NPY traces.
+    #[arg(long, default_value_t = 0)]
+    trace_from: usize,
     /// Write a VTK surface every N steps (0 = never).
     #[arg(long, default_value_t = 0)]
     vtk_every: usize,
@@ -282,6 +291,40 @@ impl TraceSink for Outputs<'_> {
     }
 }
 
+fn save_checkpoint<B: Backend>(sim: &Simulation<B>, dir: &std::path::Path) -> Result<()> {
+    use gyroxide_validate::npy;
+    let tmp = dir.with_extension("tmp");
+    std::fs::create_dir_all(&tmp)?;
+    npy::write_rows3(tmp.join("x.npy"), &sim.positions())?;
+    npy::write_rows3(tmp.join("v.npy"), &sim.v.to_rows())?;
+    let g = sim.growth_state();
+    npy::write_f64(tmp.join("growth_prev.npy"), &[g.len()], &g)?;
+    std::fs::write(
+        tmp.join("state.json"),
+        serde_json::json!({ "step": sim.step, "t": sim.t }).to_string(),
+    )?;
+    if dir.exists() {
+        std::fs::remove_dir_all(dir)?;
+    }
+    std::fs::rename(&tmp, dir)?;
+    Ok(())
+}
+
+fn load_checkpoint<B: Backend>(sim: &mut Simulation<B>, dir: &std::path::Path) -> Result<(usize, f64)> {
+    use gyroxide_validate::npy;
+    let state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state.json"))?)?;
+    let step = state["step"].as_u64().context("checkpoint step")? as usize;
+    let t = state["t"].as_f64().context("checkpoint t")?;
+    let x = npy::read(dir.join("x.npy"))?.rows3().context("x.npy")?;
+    let v = npy::read(dir.join("v.npy"))?.rows3().context("v.npy")?;
+    let g = npy::read(dir.join("growth_prev.npy"))?.data;
+    if x.len() != sim.mesh.n_nodes() || g.len() != sim.mesh.n_tets() {
+        bail!("checkpoint does not match the mesh");
+    }
+    sim.restore(&x, &v, &g, t, step);
+    Ok((step, t))
+}
+
 fn run_on<B: Backend>(
     args: RunArgs,
     params: Params,
@@ -321,7 +364,9 @@ fn run_on<B: Backend>(
             precision: precision.into(),
             notes: String::new(),
         };
-        Some(NpyTraceWriter::create(args.out.join("trace"), args.trace_every, &meta)?)
+        let mut w = NpyTraceWriter::create(args.out.join("trace"), args.trace_every, &meta)?;
+        w.from = args.trace_from;
+        Some(w)
     } else {
         None
     };
@@ -334,6 +379,11 @@ fn run_on<B: Backend>(
         "step", "t", "Uk", "Ue", "area", "volume", "dx", "dy", "ninv"
     );
 
+    if let Some(dir) = &args.resume {
+        let (step, t) = load_checkpoint(&mut sim, dir)?;
+        println!("  resumed from {} at step {step}, t = {t:.4}", dir.display());
+    }
+
     let start = Instant::now();
     let mut out = Outputs {
         args: &args,
@@ -341,7 +391,17 @@ fn run_on<B: Backend>(
         npy,
         start,
     };
-    sim.run(args.steps, &mut out)?;
+    let stop = args.steps.map(|n| sim.step + n);
+    while !sim.done() && stop.is_none_or(|s| sim.step < s) {
+        let mut chunk = stop.map_or(usize::MAX, |s| s - sim.step);
+        if args.checkpoint_every > 0 {
+            chunk = chunk.min(args.checkpoint_every - sim.step % args.checkpoint_every);
+        }
+        sim.run(Some(chunk), &mut out)?;
+        if args.checkpoint_every > 0 && sim.step.is_multiple_of(args.checkpoint_every) {
+            save_checkpoint(&sim, &args.out.join("checkpoint"))?;
+        }
+    }
     let x = sim.positions(); // also synchronises the device queue
     let el = start.elapsed().as_secs_f64();
     vtk::write_surface(args.out.join("surface_final.vtk"), &mesh, &x, &[])?;

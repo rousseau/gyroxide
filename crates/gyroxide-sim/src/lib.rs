@@ -271,4 +271,16 @@ impl<B: Backend> Simulation<B> {
         self.growth_prev = floats(growth_prev, &self.device);
         self.x_surf_old = None;
     }
+
+    /// g_m a_t of the previous step per tetrahedron (one readback), for checkpoints.
+    pub fn growth_state(&self) -> Vec<f64> {
+        to_f64(self.growth_prev.clone())
+    }
+
+    /// Restores a checkpoint written from `positions`, `v`, `growth_state`, `t` and `step`.
+    pub fn restore(&mut self, x: &[[f64; 3]], v: &[[f64; 3]], growth_prev: &[f64], t: f64, step: usize) {
+        self.set_state(x, v, growth_prev);
+        self.t = t;
+        self.step = step;
+    }
 }
