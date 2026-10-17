@@ -94,13 +94,69 @@ f ← f - γ V_n0 v,   v ← v + f / (ρ V_n0) Δt,   x ← x + v Δt,   Δt = s
 
 `gyroxide preset <nom>` imprime le TOML complet ; `--config fichier.toml` le
 remplace. Le scénario actif de Brains.cpp (plissement puis déplissement, t de
-−0.25 à 1, lois par morceaux) n'est pas encore un préréglage : il demande une
-loi de croissance par morceaux (variante à ajouter à `Schedule`).
+−0.25 à 1, lois par morceaux) n'est pas encore un préréglage ; la loi tabulée
+ci-dessous permet de l'écrire.
 
 Remarque : la version de BrainGrowth présente dans `~/Sync/Code/BrainGrowth` a
 d'autres valeurs par défaut en ligne de commande (`--stepcontrol 0.1`,
 `--massdensity 0.1`, `bounding_box = 19.2`). Le préréglage suit la synthèse
 (ρ = 0.01, s = 0.05) ; à confirmer contre la version utilisée pour les traces.
+
+## Loi de croissance tabulée
+
+Outre la loi linéaire (`law = "linear"`, a_t = a0 + a1 t, H = h0 + h1 t), la
+section `[schedule]` accepte une loi tabulée : a_t et H(t) (et, en option, μ_g
+et μ_w) sont donnés en des nœuds t₀ < t₁ < … < t_{n−1}, interpolés linéairement
+entre deux nœuds et gardés constants hors de [t₀, t_{n−1}].
+
+```toml
+[schedule]
+law = "tabulated"
+t = [0.0, 0.066667, 0.133333]      # nœuds, strictement croissants (n ≥ 2)
+a = [0.0, 0.123333, 0.246667]      # a_t aux nœuds
+h = [0.043958, 0.043958, 0.043958] # H aux nœuds (> 0)
+mu_gray  = [1.0, 1.0, 1.0]         # optionnel (> 0), remplace [material].mu_gray
+mu_white = [1.167, 1.167, 1.167]   # optionnel (> 0), remplace [material].mu_white
+```
+
+Tous les tableaux ont la longueur de `t` ; les erreurs (longueurs, t non
+strictement croissant, H ou μ ≤ 0, valeurs non finies) sont signalées au
+chargement. K, ρ et γ restent constants (Δt dépend de K). Comme la croissance est
+totale (G recalculé à partir de a_t à chaque pas), a_t doit rester continu : un
+saut de a_t entre deux nœuds rapprochés impose un saut de croissance au tissu.
+Avec deux nœuds, la loi tabulée redonne la loi linéaire (à l'arrondi près) ; la
+loi linéaire et les préréglages sont inchangés au bit près.
+
+**Convention t ↔ semaine pour l'atlas dHCP.** t = (SG − 21)/15 : t = 0 à 21
+semaines de gestation, t = 1 à 36 semaines, un nœud par semaine (t = k/15).
+Exemple complet : `configs/atlas_w21_tabulated.toml` (a_t = 1.85 t, H = médiane
+hebdomadaire de la distance piale–blanche de l'atlas / 32.986 mm).
+
+## Loi de croissance par nœud
+
+`law = "nodal"` donne a_t et H **par nœud**, tabulés aux mêmes nœuds temporels que la
+loi tabulée et interpolés linéairement dans le temps (constants hors des nœuds).
+Chaque tétraèdre prend la moyenne de ses 4 nœuds.
+
+```toml
+[schedule]
+law = "nodal"
+t = [0.0, 0.066667, 0.133333]                # nœuds, strictement croissants (n ≥ 2)
+a = "data/meshes/w21_left_610k.nodal_a.npy"  # NPY [n_nœuds_t, n_nœuds_maillage]
+h = "data/meshes/w21_left_610k.nodal_h.npy"  # idem, H > 0 (unités normalisées)
+a_scale = 1.0                                # facteurs globaux (optionnels, défaut 1)
+h_scale = 1.0
+```
+
+Les fichiers sont lus par le CLI (`gyroxide run`) et vérifiés au chargement
+(dimensions, valeurs finies, H > 0). La loi linéaire et la loi tabulée gardent le
+chemin scalaire, inchangé au bit près.
+
+`tools/atlas_nodal_tables.py` construit ces tables à partir de l'atlas dHCP (même
+triangulation à toutes les semaines) : a = √(aire locale(SG) / aire locale(21)) − 1
+(aire de sommet lissée), H = distance piale–blanche lissée (plancher 0.3 mm), nœuds
+intérieurs = valeur du sommet de surface le plus proche. Exemple :
+`configs/atlas_w21_nodal.toml`.
 
 ## Écarts connus avec les codes de référence
 
@@ -132,7 +188,7 @@ d'autres valeurs par défaut en ligne de commande (`--stepcontrol 0.1`,
 ## Points d'extension prévus
 
 Les lois de croissance passent par `gyroxide_model::Schedule` (énumération
-sérialisée) ; le masque gr par `GrowthMask` (uniforme, ellipsoïde, fichier par
+sérialisée : linéaire, tabulée, par nœud) ; le masque gr par `GrowthMask` (uniforme, ellipsoïde, fichier par
 nœud). À venir, selon la synthèse : croissance régionale (Gompertz par lobe),
 α_TAN issu de l'IRM, croissance radiale, loi incrémentale avec relaxation de
 Mandel, normales de la surface déformée, unités physiques (Pa, mm, semaines),

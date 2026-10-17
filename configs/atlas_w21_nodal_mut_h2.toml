@@ -1,0 +1,47 @@
+# Growth run on the dHCP fetal atlas, week 21, left hemisphere, with per-node
+# growth and thickness measured on the atlas (no fitted parameter).
+# Mesh: tools/atlas_to_mesh.py (data/meshes/w21_left_610k.mesh), already in
+# Tallinen's normalised frame (1 unit = 32.99 mm).
+name = "atlas w21, per-node a_t and H (H x2), mu ratio 2 -> 1.33"
+normalization = "none"
+
+[material]
+mu_gray = 1.0
+mu_white = 1.167
+bulk = 5.0
+eps = 0.1
+k_inverted = 0.5
+
+[dynamics]
+mesh_spacing = 0.0136   # mean atlas surface edge (0.45 mm)
+density = 0.0025
+damping = 0.5
+step_factor = 0.025
+t_start = 0.0
+t_end = 1.0
+
+[schedule]
+# Per-node a_t and H measured on the atlas (tools/atlas_nodal_tables.py):
+# a = sqrt(local area(SG) / local area(21)) - 1, H = pial-white distance,
+# one knot per week, t = (SG - 21)/15.
+law = "nodal"
+t = [0.000000, 0.066667, 0.133333, 0.200000, 0.266667, 0.333333, 0.400000, 0.466667, 0.533333, 0.600000, 0.666667, 0.733333, 0.800000, 0.866667, 0.933333, 1.000000]
+a = "data/meshes/w21_left_610k.nodal_a.npy"
+h = "data/meshes/w21_left_610k.nodal_h.npy"
+a_scale = 1.0
+h_scale = 2
+# mu_g/mu_w = 2 up to SG 28, then easing to 1.33 from SG 32 (mu_gray = 1).
+mu_white = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.55, 0.65, 0.7, 0.75, 0.75, 0.75, 0.75, 0.75]
+
+[contact]
+enabled = true
+stiffness_factor = 10.0
+repulsive_skin = 0.2
+proximity_skin = 0.6
+check_every = 1
+midplane = 0.3902       # most medial atlas point
+midplane_restoring = true
+
+[growth_mask]
+kind = "file"
+path = "data/meshes/w21_left_610k.gr.txt"

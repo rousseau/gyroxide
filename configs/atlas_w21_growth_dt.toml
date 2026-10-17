@@ -1,0 +1,40 @@
+# First growth run on the dHCP fetal atlas, week 21, left hemisphere.
+# Mesh: tools/atlas_to_mesh.py (data/meshes/w21_left_610k.mesh), already in
+# Tallinen's normalised frame (1 unit = 32.99 mm).
+name = "atlas w21 growth, dt/2"
+normalization = "none"
+
+[material]
+mu_gray = 1.0
+mu_white = 1.167
+bulk = 5.0
+eps = 0.1
+k_inverted = 0.0
+
+[dynamics]
+mesh_spacing = 0.0136   # mean atlas surface edge (0.45 mm)
+density = 0.0025
+damping = 0.5
+step_factor = 0.0125
+t_start = 0.0
+t_end = 1.0
+
+[schedule]
+law = "linear"
+a0 = 0.0
+a1 = 1.85
+h0 = 0.044              # pial-white distance 1.45 mm / 32.99 mm
+h1 = -0.022
+
+[contact]
+enabled = true
+stiffness_factor = 10.0
+repulsive_skin = 0.2
+proximity_skin = 0.6
+check_every = 10
+midplane = 0.3902       # most medial atlas point
+midplane_restoring = true
+
+[growth_mask]
+kind = "file"
+path = "data/meshes/w21_left_610k.gr.txt"

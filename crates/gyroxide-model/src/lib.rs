@@ -9,7 +9,7 @@
 pub mod growth;
 pub mod presets;
 
-pub use growth::{GrowthMask, Schedule};
+pub use growth::{GrowthMask, NodalTable, Schedule};
 pub use presets::Preset;
 
 use serde::{Deserialize, Serialize};
@@ -111,6 +111,19 @@ impl Params {
         // Same loop as the C code: `while (t < t_end) { ...; t += dt; }`.
         ((self.dynamics.t_end - self.dynamics.t_start) / self.dt()).ceil() as usize
     }
+    /// Material at time t: `[material]` with the shear moduli of the
+    /// schedule, when it defines them.
+    pub fn material_at(&self, t: f64) -> std::borrow::Cow<'_, Material> {
+        match self.schedule.shear_moduli(t) {
+            (None, None) => std::borrow::Cow::Borrowed(&self.material),
+            (g, w) => {
+                let mut m = self.material.clone();
+                m.mu_gray = g.unwrap_or(m.mu_gray);
+                m.mu_white = w.unwrap_or(m.mu_white);
+                std::borrow::Cow::Owned(m)
+            }
+        }
+    }
     pub fn contact_stiffness(&self) -> f64 {
         self.contact.stiffness_factor * self.material.bulk
     }
@@ -137,6 +150,7 @@ impl Params {
         if self.dynamics.t_end <= self.dynamics.t_start {
             return Err(ModelError::Invalid("t_end must be > t_start".into()));
         }
+        self.schedule.validate().map_err(ModelError::Invalid)?;
         if self.contact.proximity_skin <= self.contact.repulsive_skin {
             return Err(ModelError::Invalid("proximity_skin must exceed repulsive_skin".into()));
         }

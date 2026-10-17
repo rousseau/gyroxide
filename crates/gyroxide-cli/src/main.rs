@@ -373,6 +373,30 @@ fn run_on<B: Backend>(
 
     let t0 = Instant::now();
     let mut sim = Simulation::<B>::new(mesh.clone(), params, device)?;
+    if let gyroxide_model::Schedule::Nodal { a, h, tensor, .. } = &sim.params.schedule {
+        let read = |path: &str| -> Result<Vec<f64>> {
+            let arr = gyroxide_validate::npy::read(path).with_context(|| format!("reading {path}"))?;
+            Ok(arr.data)
+        };
+        let (va, vh) = (read(a)?, read(h)?);
+        let table = gyroxide_model::NodalTable::new(&sim.params.schedule, &va, &vh, mesh.n_nodes())
+            .map_err(|e| anyhow::anyhow!(e))?;
+        let table = match tensor {
+            Some(path) => {
+                println!("  anisotropic growth tensors: {path}");
+                table
+                    .with_tensor(&sim.params.schedule, &read(path)?)
+                    .map_err(|e| anyhow::anyhow!(e))?
+            }
+            None => table,
+        };
+        println!(
+            "  nodal schedule: {} knots x {} nodes ({a}, {h})",
+            table.t.len(),
+            mesh.n_nodes()
+        );
+        sim.set_nodal_table(table);
+    }
     println!("  setup {:.2}s", t0.elapsed().as_secs_f64());
     println!(
         "{:>9} {:>9} {:>11} {:>11} {:>9} {:>9} {:>8} {:>8} {:>6}",
@@ -385,6 +409,7 @@ fn run_on<B: Backend>(
     }
 
     let start = Instant::now();
+    let step0 = sim.step; // > 0 after --resume
     let mut out = Outputs {
         args: &args,
         mesh: &mesh,
@@ -402,6 +427,10 @@ fn run_on<B: Backend>(
             save_checkpoint(&sim, &args.out.join("checkpoint"))?;
         }
     }
+    if args.checkpoint_every > 0 && !sim.step.is_multiple_of(args.checkpoint_every) {
+        // Last state (t_end is generally not a multiple of the checkpoint period).
+        save_checkpoint(&sim, &args.out.join("checkpoint"))?;
+    }
     let x = sim.positions(); // also synchronises the device queue
     let el = start.elapsed().as_secs_f64();
     vtk::write_surface(args.out.join("surface_final.vtk"), &mesh, &x, &[])?;
@@ -410,7 +439,7 @@ fn run_on<B: Backend>(
         sim.step,
         sim.t,
         el,
-        1e3 * el / sim.step.max(1) as f64,
+        1e3 * el / (sim.step - step0).max(1) as f64,
         sim.n_rebuilds,
         sim.n_contact_pairs()
     );

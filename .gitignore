@@ -4,3 +4,4 @@
 *.npy
 !crates/**/tests/data/*.npy
 /data/
+/target-dev*

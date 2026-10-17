@@ -24,3 +24,13 @@ default = ["wgpu"]
 # wgpu picks Metal / Vulkan / DX12 natively; fusion merges element-wise chains.
 wgpu = ["burn/wgpu", "burn/fusion"]
 cuda = ["burn/cuda", "burn/fusion"]
+# Reverse-mode automatic differentiation (examples/ad_bench.rs).
+autodiff = ["burn/autodiff"]
+
+[[example]]
+name = "ad_bench"
+required-features = ["wgpu", "autodiff"]
+
+[[example]]
+name = "adjoint_week"
+required-features = ["wgpu", "autodiff"]

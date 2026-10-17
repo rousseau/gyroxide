@@ -16,11 +16,11 @@ pub mod elastic;
 pub mod setup;
 pub mod trace;
 
-use algebra::{floats, scalar, to_f64, T1, V3};
+use algebra::{floats, scalar, to_f64, M3, T1, V3};
 use burn::tensor::backend::Backend;
 use contact::ContactPairs;
 use gyroxide_mesh::TetMesh;
-use gyroxide_model::Params;
+use gyroxide_model::{NodalTable, Params};
 use setup::{HostFields, Precomputed};
 pub use trace::{Snapshot, TraceSink};
 
@@ -61,6 +61,59 @@ pub struct Simulation<B: Backend> {
     pub n_rebuilds: usize,
     pub t: f64,
     pub step: usize,
+    /// Per-tetrahedron a_t and H at each knot of a nodal schedule.
+    nodal: Option<NodalTets<B>>,
+    /// Growth g_m a_t held fixed (relaxation at constant growth, adjoint
+    /// studies): when set, steps use it and do not advance t.
+    growth_fixed: Option<T1<B>>,
+}
+
+/// Expansion a_t: one value, or one per tetrahedron.
+enum Expansion<B: Backend> {
+    Uniform(f64),
+    PerTet(T1<B>),
+}
+
+/// A [`NodalTable`] averaged over the 4 nodes of each tetrahedron, on the device.
+struct NodalTets<B: Backend> {
+    table_t: NodalTable,
+    a: Vec<T1<B>>,
+    h: Vec<T1<B>>,
+    /// Per knot: the 6 components (xx, yy, zz, xy, xz, yz) of the growth tensor
+    /// per tetrahedron; empty without anisotropic growth.
+    tensor: Vec<[T1<B>; 6]>,
+}
+
+impl<B: Backend> NodalTets<B> {
+    fn at(&self, t: f64) -> (T1<B>, T1<B>) {
+        let (i0, i1, w) = self.table_t.bracket(t);
+        let lerp = |v: &[T1<B>]| {
+            if i0 == i1 {
+                v[i0].clone()
+            } else {
+                v[i0].clone() * (1.0 - w) + v[i1].clone() * w
+            }
+        };
+        (lerp(&self.a), lerp(&self.h))
+    }
+
+    fn tensor_at(&self, t: f64) -> Option<M3<B>> {
+        if self.tensor.is_empty() {
+            return None;
+        }
+        let (i0, i1, w) = self.table_t.bracket(t);
+        let c: [T1<B>; 6] = std::array::from_fn(|k| {
+            if i0 == i1 {
+                self.tensor[i0][k].clone()
+            } else {
+                self.tensor[i0][k].clone() * (1.0 - w) + self.tensor[i1][k].clone() * w
+            }
+        });
+        let [xx, yy, zz, xy, xz, yz] = c;
+        Some(M3 {
+            m: [[xx, xy.clone(), xz.clone()], [xy, yy, yz.clone()], [xz, yz, zz]],
+        })
+    }
 }
 
 impl<B: Backend> Simulation<B> {
@@ -86,7 +139,134 @@ impl<B: Backend> Simulation<B> {
             n_rebuilds: 0,
             t,
             step: 0,
+            nodal: None,
+            growth_fixed: None,
         })
+    }
+
+    /// Installs the per-node a_t and H of a nodal schedule (required before
+    /// the first step when `params.schedule` is nodal). Each tetrahedron takes
+    /// the mean of its 4 nodes.
+    pub fn set_nodal_table(&mut self, table: NodalTable) {
+        let per_tet = |rows: &[Vec<f64>]| -> Vec<T1<B>> {
+            rows.iter()
+                .map(|r| {
+                    let v: Vec<f64> = self
+                        .mesh
+                        .tets
+                        .iter()
+                        .map(|t| 0.25 * t.iter().map(|&i| r[i as usize]).sum::<f64>())
+                        .collect();
+                    floats(&v, &self.device)
+                })
+                .collect()
+        };
+        let a = per_tet(&table.a);
+        let h = per_tet(&table.h);
+        let tensor = table
+            .tensor
+            .iter()
+            .map(|row| {
+                std::array::from_fn(|k| {
+                    let v: Vec<f64> = self
+                        .mesh
+                        .tets
+                        .iter()
+                        .map(|t| 0.25 * t.iter().map(|&i| row[6 * i as usize + k]).sum::<f64>())
+                        .collect();
+                    floats(&v, &self.device)
+                })
+            })
+            .collect();
+        self.nodal = Some(NodalTets {
+            table_t: table,
+            a,
+            h,
+            tensor,
+        });
+    }
+
+    /// Holds the per-tetrahedron growth g_m a_t fixed (`None` resumes the
+    /// schedule). While fixed, steps relax towards the equilibrium of that
+    /// growth and `t` does not advance.
+    pub fn set_fixed_growth(&mut self, growth: Option<&[f64]>) {
+        self.growth_fixed = growth.map(|g| floats(g, &self.device));
+    }
+
+    /// Per-tetrahedron thickness H at time t (host copy).
+    pub fn tet_thickness(&self, t: f64) -> Vec<f64> {
+        match self.thickness_at(t) {
+            elastic::Thickness::Uniform(h) => vec![h; self.mesh.n_tets()],
+            elastic::Thickness::PerTet(h) => to_f64(h),
+        }
+    }
+
+    /// Cortical indicator g_m per tetrahedron at time t (host copy).
+    pub fn cortical_indicator(&self, t: f64) -> Vec<f64> {
+        let el = elastic::forces_with(
+            &self.pre,
+            &self.params.material_at(t),
+            &self.x,
+            &self.growth_prev,
+            &self.thickness_at(t),
+            false,
+        );
+        to_f64(el.gm)
+    }
+
+    /// Total nodal force (elastic + contact + midplane) at positions `x`, with
+    /// the current growth, contact lists and time; the state is unchanged.
+    pub fn total_force(&self, x: &[[f64; 3]]) -> Vec<[f64; 3]> {
+        let xv = V3::from_rows(x, &self.device);
+        let (force, _) = self.compute_force(&xv, &self.thickness_at(self.t), false);
+        force.to_rows()
+    }
+
+    /// Rebuilds the contact proximity lists if the surface moved enough.
+    pub fn refresh_contact(&mut self) {
+        self.maybe_rebuild_contact();
+    }
+
+    fn thickness_at(&self, t: f64) -> elastic::Thickness<B> {
+        match &self.nodal {
+            None => elastic::Thickness::Uniform(self.params.schedule.thickness(t)),
+            Some(nd) => elastic::Thickness::PerTet(nd.at(t).1),
+        }
+    }
+
+    fn compute_force(
+        &self,
+        x: &V3<B>,
+        thickness: &elastic::Thickness<B>,
+        record: bool,
+    ) -> (V3<B>, elastic::ElasticOutput<B>) {
+        let tensor = self.nodal.as_ref().and_then(|nd| nd.tensor_at(self.t));
+        let p = &self.params;
+        let (a, k) = (p.dynamics.mesh_spacing, p.material.bulk);
+        let hc = p.repulsive_skin();
+        let mut force = V3::zeros(self.pre.n_nodes, &self.device);
+        if let Some(pairs) = &self.pairs {
+            force = force.add(&contact::penalty_forces(
+                pairs,
+                x,
+                self.pre.n_nodes,
+                hc,
+                p.contact_stiffness(),
+                a,
+            ));
+        }
+        let material = p.material_at(self.t);
+        let el = match &tensor {
+            None => elastic::forces_with(&self.pre, &material, x, &self.growth_prev, thickness, record),
+            Some(tm) => elastic::forces_tensor(&self.pre, &material, x, &self.growth_prev, tm, thickness, record),
+        };
+        force = force.add(&el.force);
+        if let Some(mpy) = p.contact.midplane {
+            let (lo, hi) = (&self.pre.midplane_low, &self.pre.midplane_high);
+            let fy = contact::midplane_force(&x.y, lo, hi, mpy, hc, k, a, p.contact.midplane_restoring);
+            force.y = force.y + fy;
+        }
+        (force, el)
     }
 
     pub fn dt(&self) -> f64 {
@@ -156,37 +336,43 @@ impl<B: Backend> Simulation<B> {
     fn advance(&mut self, record: bool) -> Option<Snapshot> {
         let p = &self.params;
         let (t, dt) = (self.t, p.dt());
-        let thickness = p.schedule.thickness(t);
-        let expansion = p.schedule.expansion(t);
+        let (thickness, expansion) = match &self.nodal {
+            None => {
+                assert!(
+                    !p.schedule.is_nodal(),
+                    "nodal schedule: call set_nodal_table before stepping"
+                );
+                (
+                    elastic::Thickness::Uniform(p.schedule.thickness(t)),
+                    Expansion::Uniform(p.schedule.expansion(t)),
+                )
+            }
+            Some(nd) => {
+                let (a, h) = nd.at(t);
+                (elastic::Thickness::PerTet(h), Expansion::PerTet(a))
+            }
+        };
 
         self.maybe_rebuild_contact();
+        if let Some(g) = &self.growth_fixed {
+            self.growth_prev = g.clone();
+        }
+        let (force, el) = self.compute_force(&self.x, &thickness, record);
         let p = &self.params;
-        let (a, k) = (p.dynamics.mesh_spacing, p.material.bulk);
-        let hc = p.repulsive_skin();
-
-        let mut force = V3::zeros(self.pre.n_nodes, &self.device);
-        if let Some(pairs) = &self.pairs {
-            force = force.add(&contact::penalty_forces(
-                pairs,
-                &self.x,
-                self.pre.n_nodes,
-                hc,
-                p.contact_stiffness(),
-                a,
-            ));
-        }
-        let el = elastic::forces(&self.pre, &p.material, &self.x, &self.growth_prev, thickness, record);
-        force = force.add(&el.force);
-        if let Some(mpy) = p.contact.midplane {
-            let (lo, hi) = (&self.pre.midplane_low, &self.pre.midplane_high);
-            let fy = contact::midplane_force(&self.x.y, lo, hi, mpy, hc, k, a, p.contact.midplane_restoring);
-            force.y = force.y + fy;
-        }
 
         let snapshot = record.then(|| self.snapshot(&force, &el));
 
         // Growth tensor for the next step (end of the C loop).
-        self.growth_prev = el.gm * expansion;
+        let fixed = self.growth_fixed.is_some();
+        if !fixed {
+            let tensor_mode = self.nodal.as_ref().is_some_and(|nd| !nd.tensor.is_empty());
+            self.growth_prev = match expansion {
+                // Anisotropic growth: G = I + g_m T(t), so the state carries g_m.
+                _ if tensor_mode => el.gm,
+                Expansion::Uniform(a) => el.gm * a,
+                Expansion::PerTet(a) => el.gm * a,
+            };
+        }
 
         // Damped semi-implicit Euler, lumped mass rho Vn0.
         let damped = force.sub(&self.v.mul(&(el.vn0.clone() * p.dynamics.damping)));
@@ -194,7 +380,9 @@ impl<B: Backend> Simulation<B> {
         self.v = self.v.add(&damped.mul(&inv_m));
         self.x = self.x.add(&self.v.mul_scalar(dt));
 
-        self.t += dt;
+        if !fixed {
+            self.t += dt;
+        }
         self.step += 1;
         snapshot
     }

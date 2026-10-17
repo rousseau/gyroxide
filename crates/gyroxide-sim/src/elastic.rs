@@ -42,6 +42,31 @@ fn gather_v3<B: Backend>(pre: &Precomputed<B>, f: [V3<B>; 4]) -> V3<B> {
     )
 }
 
+/// Nodal forces of the first Piola-Kirchhoff stress `p` on the grown reference
+/// edges `ar`: P (N_a + N_b + N_c) / 6 per vertex, then gathered.
+fn nodal_forces<B: Backend>(pre: &Precomputed<B>, ar: &M3<B>, p: &M3<B>) -> V3<B> {
+    // Undeformed (grown) face normals.
+    let (xr1, xr2, xr3) = (ar.col(0), ar.col(1), ar.col(2));
+    let n1 = xr3.cross(&xr1);
+    let n2 = xr2.cross(&xr3);
+    let n3 = xr1.cross(&xr2);
+    let n4 = xr2.sub(&xr3).cross(&xr1.sub(&xr3));
+    let sixth = 1.0 / 6.0;
+    let f_local = [
+        p.mul_vec(&n1.add(&n2).add(&n3)).mul_scalar(sixth),
+        p.mul_vec(&n1.add(&n3).add(&n4)).mul_scalar(sixth),
+        p.mul_vec(&n2.add(&n3).add(&n4)).mul_scalar(sixth),
+        p.mul_vec(&n1.add(&n2).add(&n4)).mul_scalar(sixth),
+    ];
+    gather_v3(pre, f_local)
+}
+
+/// Thickness H of the growing layer: one value, or one per tetrahedron.
+pub enum Thickness<B: Backend> {
+    Uniform(f64),
+    PerTet(T1<B>),
+}
+
 /// Elastic forces for positions `x`, given the growth stretch `growth_prev`
 /// (= g_m a_t of the previous step, as in the C code where G is updated at
 /// the end of the loop and used at the next step) and thickness `h`.
@@ -53,18 +78,78 @@ pub fn forces<B: Backend>(
     thickness: f64,
     with_energy: bool,
 ) -> ElasticOutput<B> {
+    forces_with(pre, mat, x, growth_prev, &Thickness::Uniform(thickness), with_energy)
+}
+
+/// [`forces`] with a uniform or per-tetrahedron thickness.
+pub fn forces_with<B: Backend>(
+    pre: &Precomputed<B>,
+    mat: &Material,
+    x: &V3<B>,
+    growth_prev: &T1<B>,
+    thickness: &Thickness<B>,
+    with_energy: bool,
+) -> ElasticOutput<B> {
+    forces_impl(pre, mat, x, growth_prev, None, thickness, with_energy, false)
+}
+
+/// [`forces_with`] with an anisotropic growth tensor T per tetrahedron:
+/// G = I + g T, with `g` (= g_m of the previous step) in `growth_prev`.
+pub fn forces_tensor<B: Backend>(
+    pre: &Precomputed<B>,
+    mat: &Material,
+    x: &V3<B>,
+    growth_prev: &T1<B>,
+    tensor: &M3<B>,
+    thickness: &Thickness<B>,
+    with_energy: bool,
+) -> ElasticOutput<B> {
+    forces_impl(pre, mat, x, growth_prev, Some(tensor), thickness, with_energy, false)
+}
+
+/// Nodal forces from the regular (neo-Hookean) branch only, for every
+/// tetrahedron. Equal to [`forces_with`] when no element is inverted or below
+/// the stretch floor; meant for reverse-mode differentiation, where the
+/// unselected inverted branch would otherwise propagate NaN (0 * NaN).
+pub fn forces_regular<B: Backend>(
+    pre: &Precomputed<B>,
+    mat: &Material,
+    x: &V3<B>,
+    growth: &T1<B>,
+    thickness: &Thickness<B>,
+) -> V3<B> {
+    forces_impl(pre, mat, x, growth, None, thickness, false, true).force
+}
+
+fn forces_impl<B: Backend>(
+    pre: &Precomputed<B>,
+    mat: &Material,
+    x: &V3<B>,
+    growth_prev: &T1<B>,
+    tensor: Option<&M3<B>>,
+    thickness: &Thickness<B>,
+    with_energy: bool,
+    regular_only: bool,
+) -> ElasticOutput<B> {
     let nt = pre.n_tets;
     let device = x.x.device();
 
     // Grey / white matter indicator and shear modulus.
-    let gm = pre.gr_mean.clone() / ((pre.d_mean.clone() / thickness - 1.0) * 10.0).exp().add_scalar(1.0);
+    let d_over_h = match thickness {
+        Thickness::Uniform(h) => pre.d_mean.clone() / *h,
+        Thickness::PerTet(h) => pre.d_mean.clone() / h.clone(),
+    };
+    let gm = pre.gr_mean.clone() / ((d_over_h - 1.0) * 10.0).exp().add_scalar(1.0);
     let mu = (gm.clone() * (mat.mu_gray - mat.mu_white)).add_scalar(mat.mu_white);
 
     // Growth tensor G = I + s (I - n n^T), applied to the reference edges.
     let n = &pre.growth_normal;
     let nn = M3::from_cols(&n.mul(&n.x), &n.mul(&n.y), &n.mul(&n.z));
     let eye = M3::<B>::identity(nt, &device);
-    let g = eye.add(&eye.sub(&nn).mul_s(growth_prev));
+    let g = match tensor {
+        None => eye.add(&eye.sub(&nn).mul_s(growth_prev)),
+        Some(t) => eye.add(&t.mul_s(growth_prev)),
+    };
     let ar = g.matmul(&pre.ar0);
 
     // Current edges.
@@ -98,6 +183,17 @@ pub fn forces<B: Backend>(
     let sigma = dev_b.mul_s(&coef).add(&eye.mul_s(&kja));
     let p_reg = sigma.matmul(&f.adjugate().transpose());
 
+    if regular_only {
+        let force = nodal_forces(pre, &ar, &p_reg);
+        return ElasticOutput {
+            force,
+            vn0,
+            vn,
+            gm,
+            energy: None,
+        };
+    }
+
     // --- Inverted / strongly compressed branch (diagonalised, stretch floor eps).
     let eig = sym_eigen(&c);
     let (p_inv, w_inv_dev, ninv_mask) = inverted_branch(&f, &j, &eig, &mu, &kja, mat);
@@ -108,20 +204,7 @@ pub fn forces<B: Backend>(
         .bool_and(j.clone().greater_elem(0.0));
     let p = p_inv.where_(&regular, &p_reg);
 
-    // Undeformed (grown) face normals and nodal forces.
-    let (xr1, xr2, xr3) = (ar.col(0), ar.col(1), ar.col(2));
-    let n1 = xr3.cross(&xr1);
-    let n2 = xr2.cross(&xr3);
-    let n3 = xr1.cross(&xr2);
-    let n4 = xr2.sub(&xr3).cross(&xr1.sub(&xr3));
-    let sixth = 1.0 / 6.0;
-    let f_local = [
-        p.mul_vec(&n1.add(&n2).add(&n3)).mul_scalar(sixth),
-        p.mul_vec(&n1.add(&n3).add(&n4)).mul_scalar(sixth),
-        p.mul_vec(&n2.add(&n3).add(&n4)).mul_scalar(sixth),
-        p.mul_vec(&n1.add(&n2).add(&n4)).mul_scalar(sixth),
-    ];
-    let force = gather_v3(pre, f_local);
+    let force = nodal_forces(pre, &ar, &p);
 
     let energy = with_energy.then(|| {
         let vol_term = js
