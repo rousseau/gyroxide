@@ -13,8 +13,14 @@ pub struct Array {
 
 impl Array {
     pub fn rows3(&self) -> Option<Vec<[f64; 3]>> {
-        (self.shape.len() == 2 && self.shape[1] == 3)
-            .then(|| self.data.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect())
+        (self.shape.len() == 2 && self.shape[1] == 3).then(|| {
+            self.data
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|c| [c[0], c[1], c[2]])
+                .collect()
+        })
     }
 }
 
@@ -85,24 +91,32 @@ pub fn read(path: impl AsRef<Path>) -> std::io::Result<Array> {
     let body = &bytes[start + hlen..];
     let data: Vec<f64> = match descr {
         "<f8" => body
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .take(n)
-            .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+            .map(|c| f64::from_le_bytes(*c))
             .collect(),
         "<f4" => body
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .take(n)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64)
+            .map(|c| f32::from_le_bytes(*c) as f64)
             .collect(),
         "<i8" => body
-            .chunks_exact(8)
+            .as_chunks::<8>()
+            .0
+            .iter()
             .take(n)
-            .map(|c| i64::from_le_bytes(c.try_into().unwrap()) as f64)
+            .map(|c| i64::from_le_bytes(*c) as f64)
             .collect(),
         "<i4" => body
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .take(n)
-            .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as f64)
+            .map(|c| i32::from_le_bytes(*c) as f64)
             .collect(),
         d => return Err(bad(&format!("unsupported dtype {d}"))),
     };
