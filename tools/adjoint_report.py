@@ -22,7 +22,8 @@ import scipy.sparse as sp
 from scipy.spatial import ConvexHull
 
 ROOT = Path(__file__).resolve().parent.parent
-ATLAS = Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas")
+ATLAS = next((p for p in [Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas"),
+              Path(__file__).resolve().parent.parent / "data/atlas_dhcp"] if p.is_dir()), None)
 run, week = Path(sys.argv[1]), int(sys.argv[2])
 prep = run.parent
 F = json.loads((ROOT / "data/meshes/w21_left_610k.json").read_text())

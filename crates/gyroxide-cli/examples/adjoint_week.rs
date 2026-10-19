@@ -6,6 +6,7 @@
 //!         [--theta0-table] [--write-table a.npy] [--save-checkpoint dir] [--save-surface f.vtk]
 //!         [--multiscale "k1:n1,k2:n2,..."] [--min-growth a] [--carry]
 //!         [--alpha a --measured a_table.npy] [--fi-weight g]
+//!         [--absolute | --rigid] [--mm-per-unit u] [--tol-mm t] [--shift s] [--diag] [--fd-k]
 //!
 //! Multi-resolution (coarse to fine) loss, --multiscale "200:4,50:4,10:4,0:4": n1 L-BFGS
 //! iterations on the shape loss of the smoothed surfaces S^k1 x vs S^k1 y (S: neighbour
@@ -19,13 +20,27 @@
 //! theta = theta_start_of_level + S^m z with m = round(f k) (gradient (S^T)^m dL/dtheta):
 //! the parameters get the resolution of the data they are fitted to.
 //! --min-growth a: projects theta onto theta >= a at every trial point (a = 0: no tangential
-//! shrinkage). --carry (with --write-table): the correction theta - theta0 is also added to
+//! shrinkage). --max-step d (default 0.05): the step of an iteration changes theta by at most d;
+//! trial points whose equilibrium has inverted elements are rejected (step halved).
+//! --ftol r: stops when the loss decreased by less than r (relative) over the last 5 iterations
+//! of a level. --carry (with --write-table): the correction theta - theta0 is also added to
 //! the later rows of the table, so the next weeks grow from the corrected state instead of
 //! jumping back to the measured growth.
 //! --alpha a: keeps theta near the measured growth, + a/2 mean((theta - a_mes)^2) / mean(a_mes^2)
 //! (a_mes: row of --measured at the checkpoint time, default theta0). --fi-weight g: + g/2
 //! ((FI(x) - FI_atlas) / FI_atlas)^2, FI = A / |V|^(2/3) of the surface (prep/faces.npy), so that
 //! the fit cannot gain by cutting growth (the folding index of the atlas is imposed).
+//!
+//! --absolute: the level losses compare the vertex positions themselves, in the common frame of
+//! the simulation and the atlas (no centring, no scaling): size, position and folds must all
+//! match. Deviation in mm (--mm-per-unit, default 32.99 = atlas maxd of w21_left_610k): at the
+//! start, after every iteration and at the end, for every level k of --multiscale, RMS / p50 /
+//! p95 / max of |S^k x_i - S^k y_i| over the cortex, absolute and shape-only (normalised surfaces
+//! rescaled to the atlas rms radius); final values in <out>/deviation_mm.json. --tol-mm t stops
+//! as soon as the absolute RMS deviation of the finest level is below t mm.
+//! --rigid: like --absolute after the best rotation + translation of the smoothed surface onto
+//! the smoothed target (no scaling: size, lobes and folds count, the placement of the
+//! hemisphere in the atlas frame does not); --tol-mm then applies to the rigid deviation.
 //!
 //! Week-by-week chaining (tools/adjoint_chain.sh): --theta0-table starts from the row of the
 //! config's a table at the checkpoint time (instead of prep/theta0.npy); at the end
@@ -86,6 +101,11 @@ struct Problem {
     cortex: Vec<usize>,
     edges: Vec<[usize; 2]>,
     beta: f64,
+    /// Absolute loss (raw positions, no normalisation) and the length unit in mm.
+    absolute: bool,
+    /// Rigid loss: absolute positions after the best rotation + translation (no scaling).
+    rigid: bool,
+    mm: f64,
     /// Pull towards the measured growth (relative mean square) and its scale mean(a_mes^2).
     alpha: f64,
     theta_mes: Vec<f64>,
@@ -104,6 +124,9 @@ struct Problem {
     /// 3x3 diagonal blocks of K + sigma I (block-Jacobi preconditioner).
     colours: Vec<Vec<usize>>,
     pre_inv: Vec<[[f64; 3]; 3]>,
+    /// K products by finite differences of the total force (old path, --fd-k), and the
+    /// growth / thickness tensors of the autodiff path.
+    fd_k: bool,
 }
 
 fn colour_nodes(n: usize, tets: &[[u32; 4]]) -> Vec<Vec<usize>> {
@@ -154,6 +177,43 @@ fn inv3(m: [[f64; 3]; 3]) -> Option<[[f64; 3]; 3]> {
         [-c(1, 0, 2, 2) / det, c(0, 0, 2, 2) / det, -c(0, 0, 1, 2) / det],
         [c(1, 0, 2, 1) / det, -c(0, 0, 2, 1) / det, c(0, 0, 1, 1) / det],
     ])
+}
+
+/// Rotation R minimising sum |R x_i - y_i|^2 for centred point sets: orthogonal polar factor
+/// of M = sum y_i x_i^T (Newton iteration X <- (X + X^-T) / 2).
+fn best_rotation(x: &[[f64; 3]], y: &[[f64; 3]]) -> [[f64; 3]; 3] {
+    let mut m = [[0.0; 3]; 3];
+    for (a, b) in x.iter().zip(y) {
+        for r in 0..3 {
+            for c in 0..3 {
+                m[r][c] += b[r] * a[c];
+            }
+        }
+    }
+    let scale = m.iter().flatten().fold(0.0f64, |s, v| s.max(v.abs())).max(1e-300);
+    let mut r = m.map(|row| row.map(|v| v / scale));
+    for _ in 0..50 {
+        let det = r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1]) - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+            + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
+        // X^-T = cofactor(X) / det.
+        let cof = |i: usize, j: usize| {
+            let (i1, i2, j1, j2) = ((i + 1) % 3, (i + 2) % 3, (j + 1) % 3, (j + 2) % 3);
+            r[i1][j1] * r[i2][j2] - r[i1][j2] * r[i2][j1]
+        };
+        let next: [[f64; 3]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| 0.5 * (r[i][j] + cof(i, j) / det)));
+        let diff = (0..3).flat_map(|i| (0..3).map(move |j| (i, j))).map(|(i, j)| (next[i][j] - r[i][j]).abs()).fold(0.0, f64::max);
+        r = next;
+        if diff < 1e-14 {
+            break;
+        }
+    }
+    r
+}
+
+fn centred(p: &[[f64; 3]]) -> Vec<[f64; 3]> {
+    let n = p.len() as f64;
+    let c = [0, 1, 2].map(|d| p.iter().map(|v| v[d]).sum::<f64>() / n);
+    p.iter().map(|v| [0, 1, 2].map(|d| v[d] - c[d])).collect()
 }
 
 fn read(p: &Path) -> Vec<f64> {
@@ -214,7 +274,7 @@ impl Problem {
         let r0 = norm(&f);
         let mut rn = r0;
         for _ in 0..self.newton {
-            let (delta, _, _) = self.adjoint(&x, &f, self.sigma, 100);
+            let (delta, _, _) = self.solve(&x, &f, self.sigma, 100, false);
             let mut accepted = false;
             for alpha in [1.0, 0.5, 0.25] {
                 let xt: Vec<[f64; 3]> = x
@@ -412,7 +472,34 @@ impl Problem {
         for _ in 0..k {
             sm = self.smooth(&sm);
         }
-        let (xh, _, r) = normalise(&sm, &self.cortex);
+        if self.rigid {
+            // t_hat: centred smoothed target. L = 1/(2N) sum |R xc_i - t_i|^2, R fixed in the
+            // gradient (optimal R: envelope theorem), then centring.
+            let xc = centred(&self.cortex.iter().map(|&i| sm[i]).collect::<Vec<_>>());
+            let r = best_rotation(&xc, t_hat);
+            let n = xc.len() as f64;
+            let mut ls = 0.0;
+            let mut g: Vec<[f64; 3]> = Vec::with_capacity(xc.len());
+            for (a, b) in xc.iter().zip(t_hat) {
+                let e: [f64; 3] = std::array::from_fn(|i| r[i][0] * a[0] + r[i][1] * a[1] + r[i][2] * a[2] - b[i]);
+                ls += 0.5 * (e[0] * e[0] + e[1] * e[1] + e[2] * e[2]) / n;
+                g.push(std::array::from_fn(|j| (r[0][j] * e[0] + r[1][j] * e[1] + r[2][j] * e[2]) / n));
+            }
+            let mean = [0, 1, 2].map(|d| g.iter().map(|v| v[d]).sum::<f64>() / n);
+            let mut st = vec![[0.0; 3]; ns];
+            for (k, &i) in self.cortex.iter().enumerate() {
+                st[i] = [0, 1, 2].map(|d| g[k][d] - mean[d]);
+            }
+            for _ in 0..k {
+                st = self.smooth_t(&st);
+            }
+            return (ls, st);
+        }
+        let xh: Vec<[f64; 3]> = if self.absolute {
+            self.cortex.iter().map(|&i| sm[i]).collect()
+        } else {
+            normalise(&sm, &self.cortex).0
+        };
         let n = self.cortex.len() as f64;
         let mut ls = 0.0;
         let mut g = vec![[0.0; 3]; xh.len()];
@@ -423,18 +510,80 @@ impl Problem {
                 g[i][d] = e / n;
             }
         }
-        let mut st = self.through_normalisation(&xh, r, &g, ns);
+        let mut st = if self.absolute {
+            let mut gs = vec![[0.0; 3]; ns];
+            for (k, &i) in self.cortex.iter().enumerate() {
+                gs[i] = g[k];
+            }
+            gs
+        } else {
+            let r = normalise(&sm, &self.cortex).2;
+            self.through_normalisation(&xh, r, &g, ns)
+        };
         for _ in 0..k {
             st = self.smooth_t(&st);
         }
         (ls, st)
     }
 
-    /// Normalised smoothed target of level k.
-    fn level_target(&self, k: usize) -> Vec<[f64; 3]> {
-        let mut sm = self.target.clone();
+    /// Smoothed surface S^k of the surface vertices of x.
+    fn smoothed(&self, x: &[[f64; 3]], k: usize) -> Vec<[f64; 3]> {
+        let mut sm = x[..self.nbr.len()].to_vec();
         for _ in 0..k {
             sm = self.smooth(&sm);
+        }
+        sm
+    }
+
+    /// Deviation in mm from the atlas at level k over the cortex: (absolute, shape-only), each
+    /// [rms, p50, p95, max]. Shape-only: normalised surfaces, rescaled to the atlas rms radius.
+    fn deviation_mm(&self, x: &[[f64; 3]], k: usize) -> ([f64; 4], [f64; 4], [f64; 4]) {
+        let sx = self.smoothed(x, k);
+        let sy = self.smoothed(&self.target, k);
+        let stats = |mut d: Vec<f64>| {
+            let rms = (d.iter().map(|v| v * v).sum::<f64>() / d.len() as f64).sqrt();
+            d.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let q = |f: f64| d[((d.len() - 1) as f64 * f).round() as usize];
+            [rms, q(0.5), q(0.95), d[d.len() - 1]]
+        };
+        let dist = |a: &[f64; 3], b: &[f64; 3]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+        let abs = stats(self.cortex.iter().map(|&i| self.mm * dist(&sx[i], &sy[i])).collect());
+        let xc = centred(&self.cortex.iter().map(|&i| sx[i]).collect::<Vec<_>>());
+        let yc = centred(&self.cortex.iter().map(|&i| sy[i]).collect::<Vec<_>>());
+        let r = best_rotation(&xc, &yc);
+        let rigid = stats(
+            xc.iter()
+                .zip(&yc)
+                .map(|(a, b)| self.mm * dist(&std::array::from_fn(|i| r[i][0] * a[0] + r[i][1] * a[1] + r[i][2] * a[2]), b))
+                .collect(),
+        );
+        let (xh, _, _) = normalise(&sx, &self.cortex);
+        let (yh, _, ry) = normalise(&sy, &self.cortex);
+        let shape = stats(xh.iter().zip(&yh).map(|(a, b)| self.mm * ry * dist(a, b)).collect());
+        (abs, rigid, shape)
+    }
+
+    fn report_mm(&self, tag: &str, x: &[[f64; 3]], levels: &[usize]) -> Vec<(usize, [f64; 4], [f64; 4], [f64; 4])> {
+        let mut out = Vec::new();
+        for &k in levels {
+            let (a, g, s) = self.deviation_mm(x, k);
+            println!(
+                "{tag} mm k={k:>3}: absolute rms {:.3} p95 {:.3} | rigid rms {:.3} p50 {:.3} p95 {:.3} max {:.3} | shape rms {:.3} p95 {:.3}",
+                a[0], a[2], g[0], g[1], g[2], g[3], s[0], s[2]
+            );
+            out.push((k, a, g, s));
+        }
+        out
+    }
+
+    /// Normalised smoothed target of level k.
+    fn level_target(&self, k: usize) -> Vec<[f64; 3]> {
+        let sm = self.smoothed(&self.target, k);
+        if self.rigid {
+            return centred(&self.cortex.iter().map(|&i| sm[i]).collect::<Vec<_>>());
+        }
+        if self.absolute {
+            return self.cortex.iter().map(|&i| sm[i]).collect();
         }
         normalise(&sm, &self.cortex).0
     }
@@ -599,13 +748,27 @@ impl Problem {
         (ls, lr, gfull)
     }
 
+    /// K v with K = -dF/dx for the adjoint: elastic part exact (forward-mode tangent),
+    /// contact and mid-plane by central differences (central differences of the whole f32
+    /// force at equilibrium are dominated by round-off and break CG). --fd-k: old path.
     fn k_mul(&self, x: &[[f64; 3]], v: &[[f64; 3]]) -> Vec<[f64; 3]> {
+        if self.fd_k {
+            return self.k_mul_fd(x, v);
+        }
+        self.sim.stiffness_product(x, v)
+    }
+
+    fn k_mul_fd(&self, x: &[[f64; 3]], v: &[[f64; 3]]) -> Vec<[f64; 3]> {
+        self.k_mul_fd_eps(x, v, 3e-5)
+    }
+
+    fn k_mul_fd_eps(&self, x: &[[f64; 3]], v: &[[f64; 3]], e: f64) -> Vec<[f64; 3]> {
         let vmax = v
             .iter()
             .flat_map(|r| r.iter())
             .fold(0.0f64, |m, a| m.max(a.abs()))
             .max(1e-30);
-        let eps = 3e-5 / vmax;
+        let eps = e / vmax;
         let shift = |s: f64| -> Vec<[f64; 3]> {
             x.iter()
                 .zip(v)
@@ -630,7 +793,7 @@ impl Problem {
                 for &i in group {
                     v[i][d] = 1.0;
                 }
-                let kv = self.k_mul(x, &v);
+                let kv = self.k_mul_fd(x, &v);
                 for &i in group {
                     for r in 0..3 {
                         blocks[i][r][d] = kv[i][r];
@@ -677,6 +840,12 @@ impl Problem {
     /// a non-finite residual and returns the iterate of smallest residual (near buckling K is
     /// indefinite and the residual can grow by orders of magnitude before p.Kp turns negative).
     fn adjoint(&self, x: &[[f64; 3]], b: &[[f64; 3]], sigma: f64, iters: usize) -> (Vec<[f64; 3]>, usize, f64) {
+        self.solve(x, b, sigma, iters, true)
+    }
+
+    /// CG on (K + sigma I) z = b; `exact`: autodiff K products (adjoint), else finite
+    /// differences (Newton steps of the forward equilibrium, where accuracy matters less).
+    fn solve(&self, x: &[[f64; 3]], b: &[[f64; 3]], sigma: f64, iters: usize, exact: bool) -> (Vec<[f64; 3]>, usize, f64) {
         let dot = |a: &[[f64; 3]], c: &[[f64; 3]]| {
             a.iter()
                 .zip(c)
@@ -700,7 +869,7 @@ impl Problem {
         let mut it = 0;
         let (mut best, mut best_rr) = (lam.clone(), rr);
         while it < iters && rr > 1e-8 * b2 {
-            let mut kp = self.k_mul(x, &p);
+            let mut kp = if exact { self.k_mul(x, &p) } else { self.k_mul_fd(x, &p) };
             axpy(&mut kp, sigma, &p);
             let pkp = dot(&p, &kp);
             if pkp <= 0.0 {
@@ -749,7 +918,7 @@ impl Problem {
             &dev,
         );
         let mat = self.ad.params.material_at(self.sim.t);
-        let f = forces_regular(self.ad.precomputed(), &mat, &xv, &st, &Thickness::PerTet(h));
+        let f = forces_regular(self.ad.precomputed(), &mat, &xv, &st, &Thickness::PerTet(h), self.ad.core_growth().as_ref());
         let l = (f.x * lv.x).sum() + (f.y * lv.y).sum() + (f.z * lv.z).sum();
         let grads = l.backward();
         to_f64(st.grad(&grads).expect("gradient w.r.t. growth"))
@@ -786,11 +955,23 @@ impl Problem {
         (g, it, res)
     }
 
+    /// Number of inverted elements at positions x with the growth of theta (one recorded
+    /// step under fixed growth; the simulation state is reset to x afterwards).
+    fn n_inverted(&mut self, x: &[[f64; 3]], theta: &[f64]) -> usize {
+        let s = self.growth(theta);
+        self.sim.set_state(x, &self.v0, &s);
+        self.sim.set_fixed_growth(Some(&s));
+        let n = self.sim.step_recorded().diagnostics.n_inverted;
+        self.sim.set_state(x, &self.v0, &s);
+        self.sim.refresh_contact();
+        n
+    }
+
     fn rayleigh(&self, x: &[[f64; 3]]) -> f64 {
         let v: Vec<[f64; 3]> = (0..x.len())
             .map(|i| [0, 1, 2].map(|d| (((i * 7 + d * 13) % 17) as f64 / 8.0) - 1.0))
             .collect();
-        let kv = self.k_mul(x, &v);
+        let kv = self.k_mul_fd(x, &v);
         let num: f64 = v
             .iter()
             .zip(&kv)
@@ -842,15 +1023,18 @@ fn main() {
     let mesh = netgen::read(mesh_path).unwrap();
     let t0 = Instant::now();
     let mut sim = Simulation::<Fwd>::new(mesh.clone(), params.clone(), WgpuDevice::default()).unwrap();
-    if let Schedule::Nodal { a, h, .. } = &params.schedule {
-        let table = NodalTable::new(
-            &params.schedule,
-            &npy::read(a).unwrap().data,
-            &npy::read(h).unwrap().data,
-            mesh.n_nodes(),
-        )
-        .unwrap();
-        sim.set_nodal_table(table);
+    let mut ad = Simulation::<Ad>::new(mesh.clone(), params.clone(), WgpuDevice::default()).unwrap();
+    if let Schedule::Nodal { a, h, core, .. } = &params.schedule {
+        let table = || {
+            let t = NodalTable::new(&params.schedule, &npy::read(a).unwrap().data, &npy::read(h).unwrap().data, mesh.n_nodes())
+                .unwrap();
+            match core {
+                Some(path) => t.with_core(&npy::read(path).unwrap().data).unwrap(),
+                None => t,
+            }
+        };
+        sim.set_nodal_table(table());
+        ad.set_nodal_table(table());
     }
     let xs = npy::read(ckpt.join("x.npy")).unwrap().rows3().unwrap();
     let vs = npy::read(ckpt.join("v.npy")).unwrap().rows3().unwrap();
@@ -867,7 +1051,7 @@ fn main() {
     let t = sim.t;
     let gm = sim.cortical_indicator(t);
     let thick = sim.tet_thickness(t);
-    let ad = Simulation::<Ad>::new(mesh.clone(), params.clone(), WgpuDevice::default()).unwrap();
+    ad.t = t;
     println!(
         "setup {:.1}s, t = {t:.4}, {} nodes, {} tets",
         t0.elapsed().as_secs_f64(),
@@ -927,6 +1111,9 @@ fn main() {
         cortex,
         edges,
         beta,
+        absolute: args.iter().any(|a| a == "--absolute" || a == "--rigid"),
+        rigid: args.iter().any(|a| a == "--rigid"),
+        mm: flag("--mm-per-unit", 32.99),
         alpha: flag("--alpha", 0.0),
         theta_mes,
         mes_scale,
@@ -951,6 +1138,7 @@ fn main() {
         last_residual: (0.0, 0.0),
         colours: colour_nodes(mesh.n_nodes(), &mesh.tets),
         pre_inv: Vec::new(),
+        fd_k: args.iter().any(|a| a == "--fd-k"),
     };
     println!("{} colours for the block-Jacobi preconditioner", p.colours.len());
     let ns = target.len();
@@ -987,10 +1175,21 @@ fn main() {
             vec![(0, iters)]
         }
     };
-    let cumulative = args.iter().any(|a| a == "--cumulative");
+    let cumulative = args.iter().any(|a| a == "--cumulative") || p.absolute;
+    let tol_mm = flag("--tol-mm", 0.0);
+    let only_last = !args.iter().any(|a| a == "--cumulative");
+    let mut mm_levels: Vec<usize> = levels.iter().map(|l| l.0).collect();
+    mm_levels.sort_unstable_by(|a, b| b.cmp(a));
+    mm_levels.dedup();
+    if !mm_levels.contains(&0) {
+        mm_levels.push(0);
+    }
     let param_smooth = flag("--param-smooth", 0.0);
     let min_growth = args.iter().position(|a| a == "--min-growth").map(|i| args[i + 1].parse::<f64>().unwrap());
     let carry = args.iter().any(|a| a == "--carry");
+    let max_step = flag("--max-step", 0.05);
+    let ftol = flag("--ftol", 0.0);
+    let mut hist_f: Vec<f64> = Vec::new();
     if levels.len() > 1 || levels[0].0 > 0 {
         assert!(p.hp == 0 && !p.chamfer, "--multiscale replaces --hp / --chamfer");
         println!("multi-resolution loss, levels (smoothing iterations : L-BFGS iterations) {levels:?}");
@@ -1000,7 +1199,7 @@ fn main() {
     // Equilibrium of the measured growth, from the checkpoint state.
     p.sim.set_state(&xs, &p.v0.clone(), &p.growth(&theta));
     let ray = p.rayleigh(&xs);
-    let sigma = 1e-3 * ray.abs();
+    let sigma = flag("--shift", 1e-3) * ray.abs();
     p.sigma = sigma;
     let mut x = p.equilibrium(&theta, &xs, relax);
     // Cumulative loss: weights w_s / L_s(start) for every level, first level active.
@@ -1014,12 +1213,47 @@ fn main() {
         }
         p.active = norm_levels[..1].to_vec();
     }
+    p.report_mm("start", &x, &mm_levels);
     let (mut ls, mut lr, mut gx) = p.loss(&x, &theta);
     println!(
         "start: shape loss {ls:.6e}, reg {lr:.3e}; K Rayleigh {ray:.3e}, shift {sigma:.3e}; |F| {:.3e} -> {:.3e}",
         p.last_residual.0, p.last_residual.1
     );
     save_rows(out.join("x_0.npy"), &x);
+    if args.iter().any(|a| a == "--diag") {
+        // Loss gradient w.r.t. x vs central differences of the loss (no equilibrium).
+        let d: Vec<[f64; 3]> = (0..x.len()).map(|i| [0, 1, 2].map(|c| (((i * 7 + c * 13) % 17) as f64 / 8.0) - 1.0)).collect();
+        let an: f64 = gx.iter().zip(&d).map(|(a, b)| a[0] * b[0] + a[1] * b[1] + a[2] * b[2]).sum();
+        for e in [1e-4, 1e-5] {
+            let xp: Vec<[f64; 3]> = x.iter().zip(&d).map(|(a, b)| [0, 1, 2].map(|c| a[c] + e * b[c])).collect();
+            let xm: Vec<[f64; 3]> = x.iter().zip(&d).map(|(a, b)| [0, 1, 2].map(|c| a[c] - e * b[c])).collect();
+            let fd = (p.loss(&xp, &theta).0 - p.loss(&xm, &theta).0) / (2.0 * e);
+            println!("diag loss gradient eps {e:.0e}: finite difference {fd:.6e}, analytic {an:.6e}, ratio {:.6}", fd / an);
+        }
+        for _ in 0..2 {
+            let tk = Instant::now();
+            let _ = p.k_mul(&x, &gx);
+            let t_ad = tk.elapsed().as_secs_f64();
+            let tk = Instant::now();
+            let _ = p.k_mul_fd(&x, &gx);
+            println!("diag K product: exact {t_ad:.2}s, finite differences {:.2}s", tk.elapsed().as_secs_f64());
+        }
+        let dot = |a: &[[f64; 3]], b: &[[f64; 3]]| a.iter().zip(b).map(|(p, q)| p[0] * q[0] + p[1] * q[1] + p[2] * q[2]).sum::<f64>();
+        let rel = |a: &[[f64; 3]], b: &[[f64; 3]]| {
+            let d: Vec<[f64; 3]> = a.iter().zip(b).map(|(p, q)| [0, 1, 2].map(|k| p[k] - q[k])).collect();
+            (dot(&d, &d) / dot(b, b)).sqrt()
+        };
+        let v = &gx;
+        let base = p.k_mul(&x, v);
+        println!("diag K determinism: {:.3e}", rel(&p.k_mul(&x, v), &base));
+        let v2: Vec<[f64; 3]> = v.iter().map(|r| r.map(|c| 2.0 * c)).collect();
+        let k2: Vec<[f64; 3]> = p.k_mul(&x, &v2).iter().map(|r| r.map(|c| 0.5 * c)).collect();
+        println!("diag K linearity K(2v)/2 vs K(v): {:.3e}", rel(&k2, &base));
+        for e in [1e-3, 1e-4, 1e-5] {
+            let k = p.k_mul_fd_eps(&x, v, e);
+            println!("diag f32 finite-difference K, eps {e:.0e}: rel diff to exact {:.3e}", rel(&k, &base));
+        }
+    }
 
     let tg = Instant::now();
     let (mut g, it, res) = p.gradient(&x, &theta, &gx, sigma, cg);
@@ -1028,6 +1262,70 @@ fn main() {
         "gradient: CG {it} it (residual {res:.1e}), |g| {gnorm:.3e}, {:.1}s",
         tg.elapsed().as_secs_f64()
     );
+
+    if args.iter().any(|a| a == "--diag") {
+        // Link-by-link test of the adjoint at the start equilibrium.
+        let dot = |a: &[[f64; 3]], b: &[[f64; 3]]| a.iter().zip(b).map(|(p, q)| p[0] * q[0] + p[1] * q[1] + p[2] * q[2]).sum::<f64>();
+        let (lam, it, res) = p.adjoint(&x, &gx, sigma, cg);
+        let klam = p.k_mul(&x, &lam);
+        let kres: Vec<[f64; 3]> = klam.iter().zip(&lam).zip(&gx).map(|((k, l), b)| [0, 1, 2].map(|d| k[d] + sigma * l[d] - b[d])).collect();
+        println!("diag adjoint: CG {it} (res {res:.1e}); |K lam - b| / |b| = {:.3e} (with shift)", (dot(&kres, &kres) / dot(&gx, &gx)).sqrt());
+        // Symmetry of K.
+        let n = x.len();
+        let v: Vec<[f64; 3]> = (0..n).map(|i| [0, 1, 2].map(|d| ((i * 7 + d * 13) % 17) as f64 / 8.0 - 1.0)).collect();
+        let w: Vec<[f64; 3]> = (0..n).map(|i| [0, 1, 2].map(|d| ((i * 11 + d * 5) % 19) as f64 / 9.0 - 1.0)).collect();
+        let (vkw, wkv) = (dot(&v, &p.k_mul(&x, &w)), dot(&w, &p.k_mul(&x, &v)));
+        println!("diag symmetry: v.Kw {vkw:.6e}, w.Kv {wkv:.6e}, rel diff {:.2e}", (vkw - wkv).abs() / vkw.abs().max(wkv.abs()));
+        let sv: Vec<[f64; 3]> = v.iter().enumerate().map(|(i, a)| if i < ns { *a } else { [0.0; 3] }).collect();
+        let sw: Vec<[f64; 3]> = w.iter().enumerate().map(|(i, a)| if i < ns { *a } else { [0.0; 3] }).collect();
+        let (vkw, wkv) = (dot(&sv, &p.k_mul(&x, &sw)), dot(&sw, &p.k_mul(&x, &sv)));
+        println!("diag symmetry (surface only): v.Kw {vkw:.6e}, w.Kv {wkv:.6e}, rel diff {:.2e}", (vkw - wkv).abs() / vkw.abs().max(wkv.abs()));
+        // VJP lambda . dF/ds: autodiff vs central difference of the total force.
+        let s0 = p.growth(&theta);
+        let gs = p.vjp_growth(&x, &s0, &lam);
+        let gmax = g.iter().fold(0.0f64, |m, a| m.max(a.abs()));
+        let dth: Vec<f64> = g.iter().map(|a| -a / gmax).collect();
+        let ds = p.growth(&dth);
+        let an: f64 = gs.iter().zip(&ds).map(|(a, b)| a * b).sum();
+        for eps in [1e-3, 3e-3, 1e-2] {
+            let sp: Vec<f64> = s0.iter().zip(&ds).map(|(a, b)| a + eps * b).collect();
+            let sm: Vec<f64> = s0.iter().zip(&ds).map(|(a, b)| a - eps * b).collect();
+            p.sim.set_state(&x, &p.v0.clone(), &sp);
+            let fp = p.sim.total_force(&x);
+            p.sim.set_state(&x, &p.v0.clone(), &sm);
+            let fm = p.sim.total_force(&x);
+            let fd = (dot(&lam, &fp) - dot(&lam, &fm)) / (2.0 * eps);
+            println!("diag vjp eps {eps}: finite difference {fd:.5e}, autodiff {an:.5e}, ratio {:.4}", fd / an);
+        }
+        // Linearised response: dx = K^-1 dF/ds ds vs equilibrium difference; dL = gx . dx.
+        p.sim.set_state(&x, &p.v0.clone(), &s0);
+        let eps = 3e-3;
+        let sp: Vec<f64> = s0.iter().zip(&ds).map(|(a, b)| a + eps * b).collect();
+        let sm: Vec<f64> = s0.iter().zip(&ds).map(|(a, b)| a - eps * b).collect();
+        p.sim.set_state(&x, &p.v0.clone(), &sp);
+        let fp = p.sim.total_force(&x);
+        p.sim.set_state(&x, &p.v0.clone(), &sm);
+        let fm = p.sim.total_force(&x);
+        let rhs: Vec<[f64; 3]> = fp.iter().zip(&fm).map(|(a, b)| [0, 1, 2].map(|d| (a[d] - b[d]) / (2.0 * eps))).collect();
+        p.sim.set_state(&x, &p.v0.clone(), &s0);
+        p.sim.refresh_contact();
+        let (dx, it2, res2) = p.adjoint(&x, &rhs, sigma, cg);
+        let tp: Vec<f64> = theta.iter().zip(&dth).map(|(a, b)| a + eps * b).collect();
+        let tm: Vec<f64> = theta.iter().zip(&dth).map(|(a, b)| a - eps * b).collect();
+        let xp = p.equilibrium(&tp, &x, 2 * relax);
+        let rp = p.last_residual;
+        let xm = p.equilibrium(&tm, &x, 2 * relax);
+        let dxe: Vec<[f64; 3]> = xp.iter().zip(&xm).map(|(a, b)| [0, 1, 2].map(|d| (a[d] - b[d]) / (2.0 * eps))).collect();
+        let diff: Vec<[f64; 3]> = dxe.iter().zip(&dx).map(|(a, b)| [0, 1, 2].map(|d| a[d] - b[d])).collect();
+        println!(
+            "diag response: CG {it2} (res {res2:.1e}); |dx_eq| {:.4e}, |dx_lin| {:.4e}, |diff|/|dx_eq| {:.3e}; gx.dx_eq {:.5e}, gx.dx_lin {:.5e}; residuals {rp:?} {:?}",
+            dot(&dxe, &dxe).sqrt(), dot(&dx, &dx).sqrt(), (dot(&diff, &diff) / dot(&dxe, &dxe)).sqrt(),
+            dot(&gx, &dxe), dot(&gx, &dx), p.last_residual
+        );
+        let surf = |a: &[[f64; 3]]| a[..ns].iter().map(|r| r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sum::<f64>().sqrt();
+        println!("diag response surface: |dx_eq| {:.4e}, |dx_lin| {:.4e}, |diff| {:.4e}", surf(&dxe), surf(&dx), surf(&diff));
+        return;
+    }
 
     if check {
         // Directional finite difference along -g, normalised to max |d| = 0.01 (x --check-scale).
@@ -1069,9 +1367,10 @@ fn main() {
     let m = 5;
     let mut hist: Vec<(Vec<f64>, Vec<f64>)> = Vec::new();
     let mut k = 0;
-    for (li, &(level, level_iters)) in levels.iter().enumerate() {
+    'levels: for (li, &(level, level_iters)) in levels.iter().enumerate() {
     if cumulative {
-        p.active = norm_levels[..=li].to_vec();
+        // --absolute without --cumulative: only the current level is in the loss.
+        p.active = if only_last { norm_levels[li..=li].to_vec() } else { norm_levels[..=li].to_vec() };
     }
     if li > 0 {
         p.set_level(level);
@@ -1125,7 +1424,16 @@ fn main() {
         }
         let dir_z: Vec<f64> = q.iter().map(|v| -v).collect();
         let slope: f64 = gz.iter().zip(&dir_z).map(|(a, b)| a * b).sum();
-        let dir = p.smooth_scalar(&dir_z, pm, false);
+        let mut dir = p.smooth_scalar(&dir_z, pm, false);
+        // Trust region on the growth: max |step 1| <= --max-step.
+        let dmax = dir.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+        let cap = if dmax > max_step { max_step / dmax } else { 1.0 };
+        if cap < 1.0 {
+            for v in dir.iter_mut() {
+                *v *= cap;
+            }
+        }
+        let slope = slope * cap;
         // Reference value relaxed exactly like the trial points (same start, same steps),
         // so that residual drift of the dynamics cancels in the comparison.
         let x_ref = p.equilibrium(&theta, &x, p.relax);
@@ -1151,7 +1459,7 @@ fn main() {
             parts = p.loss(&xn, &tn);
             fn_ = parts.0 + parts.1;
             let finite = fn_.is_finite() && xn.iter().flatten().all(|v| v.is_finite());
-            if !finite {
+            if !finite || p.n_inverted(&xn, &tn) > 0 {
                 fn_ = f64::INFINITY;
             } else if fn_ <= f0 + 1e-4 * step * slope {
                 break;
@@ -1171,7 +1479,7 @@ fn main() {
             break;
         }
         let gzn = p.smooth_scalar(&gn, pm, true);
-        let s: Vec<f64> = dir_z.iter().map(|d| step * d).collect();
+        let s: Vec<f64> = dir_z.iter().map(|d| step * cap * d).collect();
         let y: Vec<f64> = gzn.iter().zip(&gz).map(|(a, b)| a - b).collect();
         if s.iter().zip(&y).map(|(a, b)| a * b).sum::<f64>() > 0.0 {
             hist.push((s, y));
@@ -1193,7 +1501,24 @@ fn main() {
         );
         save_rows(out.join(format!("x_{k}.npy")), &x);
         npy::write_f64(out.join(format!("theta_{k}.npy")), &[theta.len()], &theta).unwrap();
+        let dev = p.report_mm(&format!("iter {k}"), &x, &mm_levels);
+        let last = dev.last().unwrap();
+        let crit = if p.rigid { last.2[0] } else { last.1[0] };
+        if tol_mm > 0.0 && crit < tol_mm {
+            println!("iter {k}: {} rms deviation below {tol_mm} mm, done", if p.rigid { "rigid" } else { "absolute" });
+            break 'levels;
+        }
+        // Convergence: relative decrease of the loss over the last 5 iterations below --ftol.
+        hist_f.push(ls + lr);
+        if ftol > 0.0 && hist_f.len() > 5 {
+            let old = hist_f[hist_f.len() - 6];
+            if (old - (ls + lr)) / old.abs() < ftol {
+                println!("iter {k}: converged (relative decrease {:.2e} over 5 iterations < {ftol:.0e})", (old - (ls + lr)) / old.abs());
+                break 'levels;
+            }
+        }
     }
+    hist_f.clear();
     }
     if levels.len() > 1 {
         // Final loss at every level, for the report.
@@ -1203,6 +1528,22 @@ fn main() {
             .collect();
         println!("final loss per level: {}", report.join(", "));
     }
+
+    let dev = p.report_mm("final", &x, &mm_levels);
+    // Admissibility of the fit: inverted elements at the fitted equilibrium, growth range.
+    let s_fit = p.growth(&theta);
+    p.sim.set_state(&x, &p.v0.clone(), &s_fit);
+    p.sim.set_fixed_growth(Some(&s_fit));
+    let n_inv = p.sim.step_recorded().diagnostics.n_inverted;
+    let (tmin, tmax) = theta.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &v| (a.min(v), b.max(v)));
+    println!("inverted elements at the fitted equilibrium: {n_inv}; fitted a in [{tmin:.3}, {tmax:.3}]");
+    let json: Vec<serde_json::Value> = dev
+        .iter()
+        .map(|(k, a, g, s)| serde_json::json!({ "k": k, "absolute_mm": { "rms": a[0], "p50": a[1], "p95": a[2], "max": a[3] },
+                                               "rigid_mm": { "rms": g[0], "p50": g[1], "p95": g[2], "max": g[3] },
+                                               "shape_mm": { "rms": s[0], "p50": s[1], "p95": s[2], "max": s[3] } }))
+        .collect();
+    std::fs::write(out.join("deviation_mm.json"), serde_json::to_string_pretty(&json).unwrap()).unwrap();
 
     // Chaining outputs: fitted theta into the a table, fitted equilibrium as a restart point.
     npy::write_f64(out.join("theta_final.npy"), &[theta.len()], &theta).unwrap();

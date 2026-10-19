@@ -23,7 +23,8 @@ import scipy.sparse as sp
 from scipy.spatial import ConvexHull
 
 ROOT = Path(__file__).resolve().parent.parent
-ATLAS = Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas")
+ATLAS = next((p for p in [Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas"),
+              Path(__file__).resolve().parent.parent / "data/atlas_dhcp"] if p.is_dir()), None)
 ap = argparse.ArgumentParser()
 ap.add_argument("out")
 ap.add_argument("runs", nargs="+", help='"label=run dir"')

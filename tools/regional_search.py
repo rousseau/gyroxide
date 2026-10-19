@@ -26,7 +26,8 @@ from scipy.cluster.vq import kmeans2
 from scipy.spatial import ConvexHull, cKDTree
 
 ROOT = Path(__file__).resolve().parent.parent
-ATLAS = Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas")
+ATLAS = next((p for p in [Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas"),
+              Path(__file__).resolve().parent.parent / "data/atlas_dhcp"] if p.is_dir()), None)
 FI_ATLAS = {w: v for w, v in zip(range(21, 37), [6.18, 6.18, 6.20, 6.23, 6.29, 6.40, 6.60, 6.83, 7.09, 7.43, 7.82, 8.10, 8.34, 8.59, 8.78, 8.92])}
 ap = argparse.ArgumentParser()
 ap.add_argument("--week", type=int, default=29)

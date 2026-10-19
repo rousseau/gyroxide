@@ -90,7 +90,7 @@ pub fn forces_with<B: Backend>(
     thickness: &Thickness<B>,
     with_energy: bool,
 ) -> ElasticOutput<B> {
-    forces_impl(pre, mat, x, growth_prev, None, thickness, with_energy, false)
+    forces_impl(pre, mat, x, growth_prev, None, None, thickness, with_energy, false)
 }
 
 /// [`forces_with`] with an anisotropic growth tensor T per tetrahedron:
@@ -104,7 +104,7 @@ pub fn forces_tensor<B: Backend>(
     thickness: &Thickness<B>,
     with_energy: bool,
 ) -> ElasticOutput<B> {
-    forces_impl(pre, mat, x, growth_prev, Some(tensor), thickness, with_energy, false)
+    forces_impl(pre, mat, x, growth_prev, Some(tensor), None, thickness, with_energy, false)
 }
 
 /// Nodal forces from the regular (neo-Hookean) branch only, for every
@@ -117,8 +117,107 @@ pub fn forces_regular<B: Backend>(
     x: &V3<B>,
     growth: &T1<B>,
     thickness: &Thickness<B>,
+    core: Option<&M3<B>>,
 ) -> V3<B> {
-    forces_impl(pre, mat, x, growth, None, thickness, false, true).force
+    forces_impl(pre, mat, x, growth, None, core, thickness, false, true).force
+}
+
+/// Elastic forces with every growth term: tangential growth (scalar `growth_prev` along
+/// I - n n^T, or the anisotropic `tensor`) and the growth tensor U of the core,
+/// G = I + g_m a (I - n n^T) + (1 - g_m)(U - I).
+#[allow(clippy::too_many_arguments)]
+pub fn forces_full<B: Backend>(
+    pre: &Precomputed<B>,
+    mat: &Material,
+    x: &V3<B>,
+    growth_prev: &T1<B>,
+    tensor: Option<&M3<B>>,
+    core: Option<&M3<B>>,
+    thickness: &Thickness<B>,
+    with_energy: bool,
+) -> ElasticOutput<B> {
+    forces_impl(pre, mat, x, growth_prev, tensor, core, thickness, with_energy, false)
+}
+
+/// Directional derivative dF_reg/dx . v of the regular-branch elastic force (forward mode,
+/// exact): K v = -force_tangent(..). Same growth and thickness conventions as
+/// [`forces_regular`]; elements outside the regular branch use its formula too.
+pub fn force_tangent<B: Backend>(
+    pre: &Precomputed<B>,
+    mat: &Material,
+    x: &V3<B>,
+    v: &V3<B>,
+    growth: &T1<B>,
+    thickness: &Thickness<B>,
+    core: Option<&M3<B>>,
+) -> V3<B> {
+    let nt = pre.n_tets;
+    let device = x.x.device();
+    let frob = |a: &M3<B>, b: &M3<B>| -> T1<B> {
+        (0..3)
+            .flat_map(|r| (0..3).map(move |c| (r, c)))
+            .map(|(r, c)| a.get(r, c) * b.get(r, c))
+            .reduce(|s, t| s + t)
+            .unwrap()
+    };
+    let d_over_h = match thickness {
+        Thickness::Uniform(h) => pre.d_mean.clone() / *h,
+        Thickness::PerTet(h) => pre.d_mean.clone() / h.clone(),
+    };
+    let gm = pre.gr_mean.clone() / ((d_over_h - 1.0) * 10.0).exp().add_scalar(1.0);
+    let mu = (gm.clone() * (mat.mu_gray - mat.mu_white)).add_scalar(mat.mu_white);
+    let n = &pre.growth_normal;
+    let nn = M3::from_cols(&n.mul(&n.x), &n.mul(&n.y), &n.mul(&n.z));
+    let eye = M3::<B>::identity(nt, &device);
+    let mut g = eye.add(&eye.sub(&nn).mul_s(growth));
+    if mat.wm_growth != 0.0 {
+        g = g.add(&eye.mul_s(&((-gm.clone()).add_scalar(1.0) * mat.wm_growth)));
+    }
+    if let Some(u) = core {
+        g = g.add(&u.sub(&eye).mul_s(&(-gm).add_scalar(1.0)));
+    }
+    let ar = g.matmul(&pre.ar0);
+
+    let xs: [V3<B>; 4] = std::array::from_fn(|k| x.select(&pre.tet_nodes[k]));
+    let vs: [V3<B>; 4] = std::array::from_fn(|k| v.select(&pre.tet_nodes[k]));
+    let a = M3::from_cols(&xs[1].sub(&xs[0]), &xs[2].sub(&xs[0]), &xs[3].sub(&xs[0]));
+    let da = M3::from_cols(&vs[1].sub(&vs[0]), &vs[2].sub(&vs[0]), &vs[3].sub(&vs[0]));
+
+    // Nodal-averaged J and its derivative (d det A = adj(A)^T : dA).
+    let q0 = ar.det() / 24.0;
+    let q = a.det() / 24.0;
+    let dq = frob(&a.adjugate().transpose(), &da) / 24.0;
+    let vn0 = gather_nodes(pre, [q0.clone(), q0.clone(), q0.clone(), q0]);
+    let vn = gather_nodes(pre, [q.clone(), q.clone(), q.clone(), q]);
+    let dvn = gather_nodes(pre, [dq.clone(), dq.clone(), dq.clone(), dq]);
+    let jn = vn / vn0.clone();
+    let djn = dvn / vn0;
+    let mean4 = |t: &T1<B>| {
+        let s: [T1<B>; 4] = std::array::from_fn(|k| t.clone().select(0, pre.tet_nodes[k].clone()));
+        (s[0].clone() + s[1].clone() + s[2].clone() + s[3].clone()) / 4.0
+    };
+    let kja = (mean4(&jn) - 1.0) * mat.bulk;
+    let dkja = mean4(&djn) * mat.bulk;
+
+    let ari = ar.inverse();
+    let f = a.matmul(&ari);
+    let df = da.matmul(&ari);
+    let j = f.det();
+    let adjf = f.adjugate();
+    let dj = frob(&adjf.transpose(), &df);
+    let b = f.matmul(&f.transpose());
+    let db = df.matmul(&f.transpose()).add(&f.matmul(&df.transpose()));
+    let coef = mu / (j.clone() * j.clone().powf_scalar(2.0 / 3.0));
+    let dcoef = coef.clone() * dj.clone() / j.clone() * (-5.0 / 3.0);
+    let dev_b = b.sub(&eye.mul_s(&(b.trace() / 3.0)));
+    let ddev_b = db.sub(&eye.mul_s(&(db.trace() / 3.0)));
+    let sigma = dev_b.mul_s(&coef).add(&eye.mul_s(&kja));
+    let dsigma = dev_b.mul_s(&dcoef).add(&ddev_b.mul_s(&coef)).add(&eye.mul_s(&dkja));
+    // d adj(F) = adj(F) tr(F^-1 dF) - F^-1 dF adj(F), F^-1 = adj(F) / J.
+    let finv = adjf.mul_s(&j.clone().recip());
+    let dadj = adjf.mul_s(&(dj / j)).sub(&finv.matmul(&df).matmul(&adjf));
+    let dp = dsigma.matmul(&adjf.transpose()).add(&sigma.matmul(&dadj.transpose()));
+    nodal_forces(pre, &ar, &dp)
 }
 
 fn forces_impl<B: Backend>(
@@ -127,6 +226,7 @@ fn forces_impl<B: Backend>(
     x: &V3<B>,
     growth_prev: &T1<B>,
     tensor: Option<&M3<B>>,
+    core: Option<&M3<B>>,
     thickness: &Thickness<B>,
     with_energy: bool,
     regular_only: bool,
@@ -146,10 +246,16 @@ fn forces_impl<B: Backend>(
     let n = &pre.growth_normal;
     let nn = M3::from_cols(&n.mul(&n.x), &n.mul(&n.y), &n.mul(&n.z));
     let eye = M3::<B>::identity(nt, &device);
-    let g = match tensor {
+    let mut g = match tensor {
         None => eye.add(&eye.sub(&nn).mul_s(growth_prev)),
         Some(t) => eye.add(&t.mul_s(growth_prev)),
     };
+    if mat.wm_growth != 0.0 {
+        g = g.add(&eye.mul_s(&((-gm.clone()).add_scalar(1.0) * mat.wm_growth)));
+    }
+    if let Some(u) = core {
+        g = g.add(&u.sub(&eye).mul_s(&(-gm.clone()).add_scalar(1.0)));
+    }
     let ar = g.matmul(&pre.ar0);
 
     // Current edges.

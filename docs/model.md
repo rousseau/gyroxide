@@ -158,6 +158,23 @@ triangulation à toutes les semaines) : a = √(aire locale(SG) / aire locale(21
 intérieurs = valeur du sommet de surface le plus proche. Exemple :
 `configs/atlas_w21_nodal.toml`.
 
+### Croissance du cœur (extension)
+
+Dans le modèle de l'article seul le cortex croît, tangentiellement : le volume reste
+quasi constant, alors que l'hémisphère de l'atlas passe de 29 à 93 cm³ entre SG 21 et 36.
+Deux clés optionnelles de la loi nodale ajoutent une croissance du cœur (substance
+blanche, sous-plaque), pondérée par 1 − g_m :
+
+```toml
+wm_growth = [0.0, 0.0076, ...]                     # b(t) par nœud temporel : + (1 - g_m) b I
+core = "data/meshes/w21_left_610k.nodal_core.npy"  # U par nœud, [n_t, n_nœuds, 6] : + (1 - g_m)(U - I)
+```
+
+soit G = I + g_m a (I − n nᵀ) + (1 − g_m)(b I + U − I). b = (V_wm(SG)/V_wm(21))^(1/3) − 1
+(volume intérieur de la surface wm de l'atlas, `configs/atlas_w21_nodal_wm.toml`) ;
+U = √(FᵀF) de l'extension harmonique du déplacement de la surface wm lissé à l'échelle
+des lobes (S²⁰⁰), `tools/atlas_core_tensors.py`, `configs/atlas_w21_nodal_core.toml`.
+
 ## Écarts connus avec les codes de référence
 
 - **Signe du plan médian.** Dans Brains.cpp comme dans BrainGrowth

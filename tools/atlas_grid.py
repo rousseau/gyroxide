@@ -20,7 +20,8 @@ import pyvista as pv
 
 pv.OFF_SCREEN = True
 ROOT = Path(__file__).resolve().parent.parent
-ATLAS = Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas")
+ATLAS = next((p for p in [Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas"),
+              Path(__file__).resolve().parent.parent / "data/atlas_dhcp"] if p.is_dir()), None)
 FRAME = json.loads((ROOT / "data/meshes/w21_left_610k.json").read_text())
 NS = FRAME["n_surface"]
 fit = Path(sys.argv[1])

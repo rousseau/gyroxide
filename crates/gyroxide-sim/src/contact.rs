@@ -148,6 +148,73 @@ pub fn penalty_forces<B: Backend>(
     V3::new(gather(ox), gather(oy), gather(oz))
 }
 
+/// Gauss-Newton tangent of [`penalty_forces`] along `dx`: for each active pair, the
+/// symmetric stiffness k' n n^T (k' = kc a^2 / hc, n the unit direction from the point to its
+/// closest point) on the relative displacement of the point and of the closest point, with
+/// the barycentric weights frozen at `x` (the reflection of the C code is left out, so that
+/// the operator stays linear and symmetric). Returns dF.
+pub fn penalty_tangent<B: Backend>(
+    pairs: &ContactPairs<B>,
+    x: &V3<B>,
+    dx: &V3<B>,
+    n_nodes: usize,
+    hc: f64,
+    kc: f64,
+    a: f64,
+) -> V3<B> {
+    let p = x.select(&pairs.point);
+    let ta = x.select(&pairs.tri[0]);
+    let tb = x.select(&pairs.tri[1]);
+    let tc = x.select(&pairs.tri[2]);
+    let (q, [u, v, w]) = closest_point_triangle_t(&p, &ta, &tb, &tc);
+    let cc = q.sub(&p);
+    let rc = cc.norm();
+    let within = rc.lower_elem(hc);
+    let gate = pairs.active.clone().mask_fill(within.bool_not(), 0.0);
+    let n = cc.normalized();
+    let dq = dx.select(&pairs.tri[0]).mul(&u).add(&dx.select(&pairs.tri[1]).mul(&v)).add(&dx.select(&pairs.tri[2]).mul(&w));
+    let drc = n.dot(&dq.sub(&dx.select(&pairs.point)));
+    let df = n.mul(&(drc * gate * (kc * a * a / hc)));
+    let device = x.x.device();
+    let mut out = [vec![], vec![], vec![]];
+    let parts = [df.clone(), df.mul(&u).neg(), df.mul(&v).neg(), df.mul(&w).neg()];
+    for part in parts {
+        out[0].push(part.x);
+        out[1].push(part.y);
+        out[2].push(part.z);
+    }
+    let gather = |mut cols: Vec<T1<B>>| -> T1<B> {
+        cols.push(T1::<B>::zeros([1], &device));
+        T1::cat(cols, 0)
+            .select(0, pairs.ell.clone())
+            .reshape([n_nodes, pairs.ell_width])
+            .sum_dim(1)
+            .reshape([n_nodes])
+    };
+    let [ox, oy, oz] = out;
+    V3::new(gather(ox), gather(oy), gather(oz))
+}
+
+/// Tangent of [`midplane_force`] along `dy`, with the side flags frozen at `y`.
+#[allow(clippy::too_many_arguments)]
+pub fn midplane_tangent<B: Backend>(
+    y: &T1<B>,
+    dy: &T1<B>,
+    low: &T1<B>,
+    high: &T1<B>,
+    mpy: f64,
+    hc: f64,
+    k: f64,
+    a: f64,
+    restoring: bool,
+) -> T1<B> {
+    let above = y.clone().greater_elem(mpy).float();
+    let below = y.clone().lower_elem(mpy).float();
+    let on = low.clone() * above + high.clone() * below;
+    let sign = if restoring { -1.0 } else { 1.0 };
+    dy.clone() * (sign * a * a * k / hc) * on
+}
+
 /// Midplane force (y component only) on surface nodes that started on one
 /// side and are now on the other. `restoring = false` is Brains.cpp's
 /// `Ft.y -= (mpy - y)/hc * a^2 K`, which points away from the plane.

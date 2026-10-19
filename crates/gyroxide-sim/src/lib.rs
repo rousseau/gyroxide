@@ -82,6 +82,8 @@ struct NodalTets<B: Backend> {
     /// Per knot: the 6 components (xx, yy, zz, xy, xz, yz) of the growth tensor
     /// per tetrahedron; empty without anisotropic growth.
     tensor: Vec<[T1<B>; 6]>,
+    /// Per knot: the growth tensor U of the core per tetrahedron; empty if none.
+    core: Vec<[T1<B>; 6]>,
 }
 
 impl<B: Backend> NodalTets<B> {
@@ -98,15 +100,23 @@ impl<B: Backend> NodalTets<B> {
     }
 
     fn tensor_at(&self, t: f64) -> Option<M3<B>> {
-        if self.tensor.is_empty() {
+        self.sym_at(&self.tensor, t)
+    }
+
+    fn core_at(&self, t: f64) -> Option<M3<B>> {
+        self.sym_at(&self.core, t)
+    }
+
+    fn sym_at(&self, rows: &[[T1<B>; 6]], t: f64) -> Option<M3<B>> {
+        if rows.is_empty() {
             return None;
         }
         let (i0, i1, w) = self.table_t.bracket(t);
         let c: [T1<B>; 6] = std::array::from_fn(|k| {
             if i0 == i1 {
-                self.tensor[i0][k].clone()
+                rows[i0][k].clone()
             } else {
-                self.tensor[i0][k].clone() * (1.0 - w) + self.tensor[i1][k].clone() * w
+                rows[i0][k].clone() * (1.0 - w) + rows[i1][k].clone() * w
             }
         });
         let [xx, yy, zz, xy, xz, yz] = c;
@@ -163,26 +173,29 @@ impl<B: Backend> Simulation<B> {
         };
         let a = per_tet(&table.a);
         let h = per_tet(&table.h);
-        let tensor = table
-            .tensor
-            .iter()
-            .map(|row| {
-                std::array::from_fn(|k| {
-                    let v: Vec<f64> = self
-                        .mesh
-                        .tets
-                        .iter()
-                        .map(|t| 0.25 * t.iter().map(|&i| row[6 * i as usize + k]).sum::<f64>())
-                        .collect();
-                    floats(&v, &self.device)
+        let sym = |rows: &[Vec<f64>]| -> Vec<[T1<B>; 6]> {
+            rows.iter()
+                .map(|row| {
+                    std::array::from_fn(|k| {
+                        let v: Vec<f64> = self
+                            .mesh
+                            .tets
+                            .iter()
+                            .map(|t| 0.25 * t.iter().map(|&i| row[6 * i as usize + k]).sum::<f64>())
+                            .collect();
+                        floats(&v, &self.device)
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        };
+        let tensor = sym(&table.tensor);
+        let core = sym(&table.core);
         self.nodal = Some(NodalTets {
             table_t: table,
             a,
             h,
             tensor,
+            core,
         });
     }
 
@@ -241,6 +254,28 @@ impl<B: Backend> Simulation<B> {
         record: bool,
     ) -> (V3<B>, elastic::ElasticOutput<B>) {
         let tensor = self.nodal.as_ref().and_then(|nd| nd.tensor_at(self.t));
+        let material = self.params.material_at(self.t);
+        let core = self.core_growth();
+        let el = elastic::forces_full(
+            &self.pre,
+            &material,
+            x,
+            &self.growth_prev,
+            tensor.as_ref(),
+            core.as_ref(),
+            thickness,
+            record,
+        );
+        (self.non_elastic(x).add(&el.force), el)
+    }
+
+    /// Growth tensor U of the core per tetrahedron at the current time (`core` table).
+    pub fn core_growth(&self) -> Option<M3<B>> {
+        self.nodal.as_ref().and_then(|nd| nd.core_at(self.t))
+    }
+
+    /// Contact and mid-plane forces at `x` (current contact lists).
+    fn non_elastic(&self, x: &V3<B>) -> V3<B> {
         let p = &self.params;
         let (a, k) = (p.dynamics.mesh_spacing, p.material.bulk);
         let hc = p.repulsive_skin();
@@ -255,18 +290,44 @@ impl<B: Backend> Simulation<B> {
                 a,
             ));
         }
-        let material = p.material_at(self.t);
-        let el = match &tensor {
-            None => elastic::forces_with(&self.pre, &material, x, &self.growth_prev, thickness, record),
-            Some(tm) => elastic::forces_tensor(&self.pre, &material, x, &self.growth_prev, tm, thickness, record),
-        };
-        force = force.add(&el.force);
         if let Some(mpy) = p.contact.midplane {
             let (lo, hi) = (&self.pre.midplane_low, &self.pre.midplane_high);
             let fy = contact::midplane_force(&x.y, lo, hi, mpy, hc, k, a, p.contact.midplane_restoring);
             force.y = force.y + fy;
         }
-        (force, el)
+        force
+    }
+
+    /// Contact and mid-plane forces at `x` (host copy), without the elastic part.
+    pub fn non_elastic_force(&self, x: &[[f64; 3]]) -> Vec<[f64; 3]> {
+        self.non_elastic(&V3::from_rows(x, &self.device)).to_rows()
+    }
+
+    /// K v = -dF/dx . v at `x` with the current growth, contact lists and time: elastic part
+    /// exact (forward mode, regular branch), contact and mid-plane by their linear, symmetric
+    /// (Gauss-Newton) tangents.
+    pub fn stiffness_product(&self, x: &[[f64; 3]], v: &[[f64; 3]]) -> Vec<[f64; 3]> {
+        assert!(
+            self.nodal.as_ref().and_then(|nd| nd.tensor_at(self.t)).is_none(),
+            "stiffness_product: scalar growth only"
+        );
+        let xv = V3::from_rows(x, &self.device);
+        let vv = V3::from_rows(v, &self.device);
+        let material = self.params.material_at(self.t);
+        let thickness = self.thickness_at(self.t);
+        let df = elastic::force_tangent(&self.pre, &material, &xv, &vv, &self.growth_prev, &thickness, self.core_growth().as_ref());
+        let p = &self.params;
+        let (a, k) = (p.dynamics.mesh_spacing, p.material.bulk);
+        let hc = p.repulsive_skin();
+        let mut d = df;
+        if let Some(pairs) = &self.pairs {
+            d = d.add(&contact::penalty_tangent(pairs, &xv, &vv, self.pre.n_nodes, hc, p.contact_stiffness(), a));
+        }
+        if let Some(mpy) = p.contact.midplane {
+            let (lo, hi) = (&self.pre.midplane_low, &self.pre.midplane_high);
+            d.y = d.y + contact::midplane_tangent(&xv.y, &vv.y, lo, hi, mpy, hc, k, a, p.contact.midplane_restoring);
+        }
+        d.neg().to_rows()
     }
 
     pub fn dt(&self) -> f64 {

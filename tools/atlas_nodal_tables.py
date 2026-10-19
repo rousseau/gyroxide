@@ -20,7 +20,8 @@ import pyvista as pv
 import scipy.sparse as sp
 from scipy.spatial import cKDTree
 
-ATLAS = Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas")
+ATLAS = next((p for p in [Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas"),
+              Path(__file__).resolve().parent.parent / "data/atlas_dhcp"] if p.is_dir()), None)
 ap = argparse.ArgumentParser()
 ap.add_argument("base", help="mesh path without extension (reads .mesh and .json)")
 ap.add_argument("--smooth", type=int, default=20, help="neighbour-averaging iterations")

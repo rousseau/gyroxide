@@ -373,7 +373,7 @@ fn run_on<B: Backend>(
 
     let t0 = Instant::now();
     let mut sim = Simulation::<B>::new(mesh.clone(), params, device)?;
-    if let gyroxide_model::Schedule::Nodal { a, h, tensor, .. } = &sim.params.schedule {
+    if let gyroxide_model::Schedule::Nodal { a, h, tensor, core, .. } = &sim.params.schedule {
         let read = |path: &str| -> Result<Vec<f64>> {
             let arr = gyroxide_validate::npy::read(path).with_context(|| format!("reading {path}"))?;
             Ok(arr.data)
@@ -387,6 +387,13 @@ fn run_on<B: Backend>(
                 table
                     .with_tensor(&sim.params.schedule, &read(path)?)
                     .map_err(|e| anyhow::anyhow!(e))?
+            }
+            None => table,
+        };
+        let table = match core {
+            Some(path) => {
+                println!("  growth tensors of the core: {path}");
+                table.with_core(&read(path)?).map_err(|e| anyhow::anyhow!(e))?
             }
             None => table,
         };

@@ -51,6 +51,15 @@ pub struct Material {
     pub eps: f64,
     /// Extra stiffness on the floored stretch in the inverted branch, `k` (0 in both codes).
     pub k_inverted: f64,
+    /// Isotropic growth b of the core (white matter, subplate): G = I + g_m a_t (I - n n^T)
+    /// + (1 - g_m) b I. 0 in both codes (only the cortex grows); set over time by the
+    /// `wm_growth` table of the nodal schedule.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub wm_growth: f64,
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -114,12 +123,13 @@ impl Params {
     /// Material at time t: `[material]` with the shear moduli of the
     /// schedule, when it defines them.
     pub fn material_at(&self, t: f64) -> std::borrow::Cow<'_, Material> {
-        match self.schedule.shear_moduli(t) {
-            (None, None) => std::borrow::Cow::Borrowed(&self.material),
-            (g, w) => {
+        match (self.schedule.shear_moduli(t), self.schedule.wm_growth(t)) {
+            ((None, None), None) => std::borrow::Cow::Borrowed(&self.material),
+            ((g, w), b) => {
                 let mut m = self.material.clone();
                 m.mu_gray = g.unwrap_or(m.mu_gray);
                 m.mu_white = w.unwrap_or(m.mu_white);
+                m.wm_growth = b.unwrap_or(m.wm_growth);
                 std::borrow::Cow::Owned(m)
             }
         }
