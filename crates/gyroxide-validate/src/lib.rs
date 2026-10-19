@@ -206,12 +206,16 @@ pub fn load_static_mesh(dir: &Path) -> std::io::Result<gyroxide_mesh::TetMesh> {
     }
     let tets = t
         .data
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| [c[0] as u32, c[1] as u32, c[2] as u32, c[3] as u32])
         .collect();
     let faces = f
         .data
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| [c[0] as u32, c[1] as u32, c[2] as u32])
         .collect();
     Ok(gyroxide_mesh::TetMesh { nodes, tets, faces })

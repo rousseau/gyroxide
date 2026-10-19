@@ -441,7 +441,13 @@ impl Problem {
 
     /// FI = A / |V|^(2/3) of the surface triangles and its gradient w.r.t. the surface vertices.
     fn fi_grad(&self, x: &[[f64; 3]]) -> (f64, Vec<[f64; 3]>) {
-        let cross = |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let cross = |a: [f64; 3], b: [f64; 3]| {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
         let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
         let ns = self.nbr.len();
         let (mut area, mut vol) = (0.0, 0.0);
@@ -464,7 +470,10 @@ impl Problem {
                     gv[f[k]][d] += dv[d] / 6.0;
                 }
             }
-            vol += (a[0] * (b[1] * c[2] - b[2] * c[1]) + a[1] * (b[2] * c[0] - b[0] * c[2]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0;
+            vol += (a[0] * (b[1] * c[2] - b[2] * c[1])
+                + a[1] * (b[2] * c[0] - b[0] * c[2])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]))
+                / 6.0;
         }
         let av = vol.abs();
         let fi = area / av.powf(2.0 / 3.0);
@@ -493,7 +502,11 @@ impl Problem {
         if self.alpha > 0.0 {
             let n = theta.len() as f64;
             lr += 0.5 * self.alpha / self.mes_scale
-                * theta.iter().zip(&self.theta_mes).map(|(a, b)| (a - b).powi(2)).sum::<f64>()
+                * theta
+                    .iter()
+                    .zip(&self.theta_mes)
+                    .map(|(a, b)| (a - b).powi(2))
+                    .sum::<f64>()
                 / n;
         }
         (ls, lr, g)
@@ -830,14 +843,25 @@ fn main() {
     let gd_step = flag("--step", 0.01);
     let opt = |name: &str| args.iter().position(|a| a == name).map(|i| PathBuf::from(&args[i + 1]));
     let theta0_table = args.iter().any(|a| a == "--theta0-table");
-    let (write_table, save_ckpt, save_surface) = (opt("--write-table"), opt("--save-checkpoint"), opt("--save-surface"));
+    let (write_table, save_ckpt, save_surface) =
+        (opt("--write-table"), opt("--save-checkpoint"), opt("--save-surface"));
     std::fs::create_dir_all(&out).unwrap();
 
     let params = Params::load(cfg).unwrap();
-    let Schedule::Nodal { t: knots, a: a_path, a_scale, tensor, .. } = &params.schedule else {
+    let Schedule::Nodal {
+        t: knots,
+        a: a_path,
+        a_scale,
+        tensor,
+        ..
+    } = &params.schedule
+    else {
         panic!("adjoint_week needs the per-node growth law (law = \"nodal\")");
     };
-    assert!(tensor.is_none(), "adjoint_week fits the scalar growth a_t: remove `tensor` from the config");
+    assert!(
+        tensor.is_none(),
+        "adjoint_week fits the scalar growth a_t: remove `tensor` from the config"
+    );
     let (knots, a_path, a_scale) = (knots.clone(), a_path.clone(), *a_scale);
     let mesh = netgen::read(mesh_path).unwrap();
     let t0 = Instant::now();
@@ -894,7 +918,10 @@ fn main() {
     let mut theta = if theta0_table {
         let a = npy::read(&a_path).unwrap();
         let n = a.shape[1];
-        a.data[knot * n..knot * n + target.len()].iter().map(|v| v * a_scale).collect()
+        a.data[knot * n..knot * n + target.len()]
+            .iter()
+            .map(|v| v * a_scale)
+            .collect()
     } else {
         read(&prep.join("theta0.npy"))
     };
@@ -903,7 +930,10 @@ fn main() {
         Some(path) => {
             let a = npy::read(&path).unwrap();
             let n = a.shape[1];
-            a.data[knot * n..knot * n + target.len()].iter().map(|v| v * a_scale).collect()
+            a.data[knot * n..knot * n + target.len()]
+                .iter()
+                .map(|v| v * a_scale)
+                .collect()
         }
         None => theta0.clone(),
     };
@@ -962,10 +992,18 @@ fn main() {
     p.nbr = nbr;
     if p.fi_weight > 0.0 {
         p.fi_target = p.fi_grad(&target).0;
-        println!("folding-index penalty: weight {}, atlas FI {:.4}, start FI {:.4}", p.fi_weight, p.fi_target, p.fi_grad(&xs).0);
+        println!(
+            "folding-index penalty: weight {}, atlas FI {:.4}, start FI {:.4}",
+            p.fi_weight,
+            p.fi_target,
+            p.fi_grad(&xs).0
+        );
     }
     if p.alpha > 0.0 {
-        println!("pull towards the measured growth: alpha {}, mean a_mes^2 {:.3e}", p.alpha, p.mes_scale);
+        println!(
+            "pull towards the measured growth: alpha {}, mean a_mes^2 {:.3e}",
+            p.alpha, p.mes_scale
+        );
     }
     if p.hp > 0 {
         p.target_detail = p.detail(&target);
@@ -989,7 +1027,10 @@ fn main() {
     };
     let cumulative = args.iter().any(|a| a == "--cumulative");
     let param_smooth = flag("--param-smooth", 0.0);
-    let min_growth = args.iter().position(|a| a == "--min-growth").map(|i| args[i + 1].parse::<f64>().unwrap());
+    let min_growth = args
+        .iter()
+        .position(|a| a == "--min-growth")
+        .map(|i| args[i + 1].parse::<f64>().unwrap());
     let carry = args.iter().any(|a| a == "--carry");
     if levels.len() > 1 || levels[0].0 > 0 {
         assert!(p.hp == 0 && !p.chamfer, "--multiscale replaces --hp / --chamfer");
@@ -1032,7 +1073,10 @@ fn main() {
     if check {
         // Directional finite difference along -g, normalised to max |d| = 0.01 (x --check-scale).
         let gmax = g.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-        let dir: Vec<f64> = g.iter().map(|v| -0.01 * flag("--check-scale", 1.0) * v / gmax).collect();
+        let dir: Vec<f64> = g
+            .iter()
+            .map(|v| -0.01 * flag("--check-scale", 1.0) * v / gmax)
+            .collect();
         for h in [0.5, 1.0, 2.0] {
             let tp: Vec<f64> = theta.iter().zip(&dir).map(|(a, d)| a + h * d).collect();
             let tm: Vec<f64> = theta.iter().zip(&dir).map(|(a, d)| a - h * d).collect();
@@ -1070,130 +1114,130 @@ fn main() {
     let mut hist: Vec<(Vec<f64>, Vec<f64>)> = Vec::new();
     let mut k = 0;
     for (li, &(level, level_iters)) in levels.iter().enumerate() {
-    if cumulative {
-        p.active = norm_levels[..=li].to_vec();
-    }
-    if li > 0 {
-        p.set_level(level);
-        hist.clear();
-        (ls, lr, gx) = p.loss(&x, &theta);
-        let (gn, _, _) = p.gradient(&x, &theta, &gx, sigma, cg);
-        g = gn;
-    }
-    // Parameter resolution of this level: theta = theta + S^m z (m = 0: theta itself).
-    let pm = (param_smooth * level as f64).round() as usize;
-    let mut gz = p.smooth_scalar(&g, pm, true);
-    if pm > 0 {
-        println!("level {li}: growth corrections smoothed by S^{pm}");
-    }
-    if levels.len() > 1 {
-        println!("level {li} (smoothing {level}): loss {ls:.6e}, reg {lr:.3e}");
-    }
-    for _ in 0..level_iters {
-        if !gz.iter().any(|v| *v != 0.0) || !gz.iter().all(|v| v.is_finite()) {
-            // CG made no progress (indefinite K during buckling): no usable gradient.
-            println!("level {li}: no usable gradient, stopping this level");
-            break;
+        if cumulative {
+            p.active = norm_levels[..=li].to_vec();
         }
-        k += 1;
-        let ti = Instant::now();
-        let mut q = gz.clone();
-        let mut alphas = Vec::new();
-        for (s, y) in hist.iter().rev() {
-            let rho = 1.0 / y.iter().zip(s).map(|(a, b)| a * b).sum::<f64>();
-            let a = rho * s.iter().zip(&q).map(|(a, b)| a * b).sum::<f64>();
-            for (qi, yi) in q.iter_mut().zip(y) {
-                *qi -= a * yi;
-            }
-            alphas.push((a, rho));
+        if li > 0 {
+            p.set_level(level);
+            hist.clear();
+            (ls, lr, gx) = p.loss(&x, &theta);
+            let (gn, _, _) = p.gradient(&x, &theta, &gx, sigma, cg);
+            g = gn;
         }
-        if gd {
-            hist.clear(); // normalised steepest descent: max |step| = gd_step
+        // Parameter resolution of this level: theta = theta + S^m z (m = 0: theta itself).
+        let pm = (param_smooth * level as f64).round() as usize;
+        let mut gz = p.smooth_scalar(&g, pm, true);
+        if pm > 0 {
+            println!("level {li}: growth corrections smoothed by S^{pm}");
         }
-        let gamma = match hist.last() {
-            Some((s, y)) => s.iter().zip(y).map(|(a, b)| a * b).sum::<f64>() / y.iter().map(|v| v * v).sum::<f64>(),
-            None => gd_step / gz.iter().fold(0.0f64, |m, v| m.max(v.abs())),
-        };
-        for qi in q.iter_mut() {
-            *qi *= gamma;
+        if levels.len() > 1 {
+            println!("level {li} (smoothing {level}): loss {ls:.6e}, reg {lr:.3e}");
         }
-        for ((s, y), (a, rho)) in hist.iter().zip(alphas.iter().rev()) {
-            let b = rho * y.iter().zip(&q).map(|(a, b)| a * b).sum::<f64>();
-            for (qi, si) in q.iter_mut().zip(s) {
-                *qi += (a - b) * si;
-            }
-        }
-        let dir_z: Vec<f64> = q.iter().map(|v| -v).collect();
-        let slope: f64 = gz.iter().zip(&dir_z).map(|(a, b)| a * b).sum();
-        let dir = p.smooth_scalar(&dir_z, pm, false);
-        // Reference value relaxed exactly like the trial points (same start, same steps),
-        // so that residual drift of the dynamics cancels in the comparison.
-        let x_ref = p.equilibrium(&theta, &x, p.relax);
-        let f0 = {
-            let (a, b, _) = p.loss(&x_ref, &theta);
-            a + b
-        };
-        println!(
-            "iter {k}: reference {f0:.6e} (drift {:+.2e} from last), expected decrease {:.2e} at step 1",
-            f0 - (ls + lr),
-            -slope
-        );
-        let mut step = 1.0;
-        let (mut tn, mut xn, mut fn_, mut parts) = (theta.clone(), x.clone(), f0, (ls, lr, gx.clone()));
-        for _ in 0..6 {
-            tn = theta.iter().zip(&dir).map(|(a, d)| a + step * d).collect();
-            if let Some(lo) = min_growth {
-                for v in tn.iter_mut() {
-                    *v = v.max(lo);
-                }
-            }
-            xn = p.equilibrium(&tn, &x, p.relax);
-            parts = p.loss(&xn, &tn);
-            fn_ = parts.0 + parts.1;
-            let finite = fn_.is_finite() && xn.iter().flatten().all(|v| v.is_finite());
-            if !finite {
-                fn_ = f64::INFINITY;
-            } else if fn_ <= f0 + 1e-4 * step * slope {
+        for _ in 0..level_iters {
+            if !gz.iter().any(|v| *v != 0.0) || !gz.iter().all(|v| v.is_finite()) {
+                // CG made no progress (indefinite K during buckling): no usable gradient.
+                println!("level {li}: no usable gradient, stopping this level");
                 break;
             }
-            step *= 0.5;
-        }
-        if !(fn_ <= f0) {
-            println!("iter {k}: no decrease, stopping");
-            break;
-        }
-        let (gn, it, res) = p.gradient(&xn, &tn, &parts.2, sigma, cg);
-        if !gn.iter().all(|v| v.is_finite()) {
-            println!("iter {k}: non-finite gradient, stopping (accepted step kept)");
+            k += 1;
+            let ti = Instant::now();
+            let mut q = gz.clone();
+            let mut alphas = Vec::new();
+            for (s, y) in hist.iter().rev() {
+                let rho = 1.0 / y.iter().zip(s).map(|(a, b)| a * b).sum::<f64>();
+                let a = rho * s.iter().zip(&q).map(|(a, b)| a * b).sum::<f64>();
+                for (qi, yi) in q.iter_mut().zip(y) {
+                    *qi -= a * yi;
+                }
+                alphas.push((a, rho));
+            }
+            if gd {
+                hist.clear(); // normalised steepest descent: max |step| = gd_step
+            }
+            let gamma = match hist.last() {
+                Some((s, y)) => s.iter().zip(y).map(|(a, b)| a * b).sum::<f64>() / y.iter().map(|v| v * v).sum::<f64>(),
+                None => gd_step / gz.iter().fold(0.0f64, |m, v| m.max(v.abs())),
+            };
+            for qi in q.iter_mut() {
+                *qi *= gamma;
+            }
+            for ((s, y), (a, rho)) in hist.iter().zip(alphas.iter().rev()) {
+                let b = rho * y.iter().zip(&q).map(|(a, b)| a * b).sum::<f64>();
+                for (qi, si) in q.iter_mut().zip(s) {
+                    *qi += (a - b) * si;
+                }
+            }
+            let dir_z: Vec<f64> = q.iter().map(|v| -v).collect();
+            let slope: f64 = gz.iter().zip(&dir_z).map(|(a, b)| a * b).sum();
+            let dir = p.smooth_scalar(&dir_z, pm, false);
+            // Reference value relaxed exactly like the trial points (same start, same steps),
+            // so that residual drift of the dynamics cancels in the comparison.
+            let x_ref = p.equilibrium(&theta, &x, p.relax);
+            let f0 = {
+                let (a, b, _) = p.loss(&x_ref, &theta);
+                a + b
+            };
+            println!(
+                "iter {k}: reference {f0:.6e} (drift {:+.2e} from last), expected decrease {:.2e} at step 1",
+                f0 - (ls + lr),
+                -slope
+            );
+            let mut step = 1.0;
+            let (mut tn, mut xn, mut fn_, mut parts) = (theta.clone(), x.clone(), f0, (ls, lr, gx.clone()));
+            for _ in 0..6 {
+                tn = theta.iter().zip(&dir).map(|(a, d)| a + step * d).collect();
+                if let Some(lo) = min_growth {
+                    for v in tn.iter_mut() {
+                        *v = v.max(lo);
+                    }
+                }
+                xn = p.equilibrium(&tn, &x, p.relax);
+                parts = p.loss(&xn, &tn);
+                fn_ = parts.0 + parts.1;
+                let finite = fn_.is_finite() && xn.iter().flatten().all(|v| v.is_finite());
+                if !finite {
+                    fn_ = f64::INFINITY;
+                } else if fn_ <= f0 + 1e-4 * step * slope {
+                    break;
+                }
+                step *= 0.5;
+            }
+            if !(fn_ <= f0) {
+                println!("iter {k}: no decrease, stopping");
+                break;
+            }
+            let (gn, it, res) = p.gradient(&xn, &tn, &parts.2, sigma, cg);
+            if !gn.iter().all(|v| v.is_finite()) {
+                println!("iter {k}: non-finite gradient, stopping (accepted step kept)");
+                theta = tn;
+                x = xn;
+                (ls, lr, gx) = parts;
+                break;
+            }
+            let gzn = p.smooth_scalar(&gn, pm, true);
+            let s: Vec<f64> = dir_z.iter().map(|d| step * d).collect();
+            let y: Vec<f64> = gzn.iter().zip(&gz).map(|(a, b)| a - b).collect();
+            if s.iter().zip(&y).map(|(a, b)| a * b).sum::<f64>() > 0.0 {
+                hist.push((s, y));
+                if hist.len() > m {
+                    hist.remove(0);
+                }
+            }
             theta = tn;
             x = xn;
             (ls, lr, gx) = parts;
-            break;
-        }
-        let gzn = p.smooth_scalar(&gn, pm, true);
-        let s: Vec<f64> = dir_z.iter().map(|d| step * d).collect();
-        let y: Vec<f64> = gzn.iter().zip(&gz).map(|(a, b)| a - b).collect();
-        if s.iter().zip(&y).map(|(a, b)| a * b).sum::<f64>() > 0.0 {
-            hist.push((s, y));
-            if hist.len() > m {
-                hist.remove(0);
-            }
-        }
-        theta = tn;
-        x = xn;
-        (ls, lr, gx) = parts;
-        g = gn;
-        gz = gzn;
-        let dth: Vec<f64> = theta.iter().zip(&theta0).map(|(a, b)| a - b).collect();
-        let dmax = dth.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-        let drms = (dth.iter().map(|v| v * v).sum::<f64>() / dth.len() as f64).sqrt();
-        println!(
+            g = gn;
+            gz = gzn;
+            let dth: Vec<f64> = theta.iter().zip(&theta0).map(|(a, b)| a - b).collect();
+            let dmax = dth.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            let drms = (dth.iter().map(|v| v * v).sum::<f64>() / dth.len() as f64).sqrt();
+            println!(
             "iter {k}: shape loss {ls:.6e}, reg {lr:.3e}, step {step}, CG {it} (res {res:.1e}), |theta - theta0| max {dmax:.4} rms {drms:.4}, {:.0}s",
             ti.elapsed().as_secs_f64()
         );
-        save_rows(out.join(format!("x_{k}.npy")), &x);
-        npy::write_f64(out.join(format!("theta_{k}.npy")), &[theta.len()], &theta).unwrap();
-    }
+            save_rows(out.join(format!("x_{k}.npy")), &x);
+            npy::write_f64(out.join(format!("theta_{k}.npy")), &[theta.len()], &theta).unwrap();
+        }
     }
     if levels.len() > 1 {
         // Final loss at every level, for the report.
@@ -1218,7 +1262,11 @@ fn main() {
             }
         }
         npy::write_f64(&path, &a.shape, &a.data).unwrap();
-        println!("table row {knot} (t = {:.4}) written to {}", knots[knot], path.display());
+        println!(
+            "table row {knot} (t = {:.4}) written to {}",
+            knots[knot],
+            path.display()
+        );
     }
     if let Some(dir) = save_ckpt {
         std::fs::create_dir_all(&dir).unwrap();

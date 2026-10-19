@@ -121,6 +121,7 @@ pub fn forces_regular<B: Backend>(
     forces_impl(pre, mat, x, growth, None, thickness, false, true).force
 }
 
+#[allow(clippy::too_many_arguments)]
 fn forces_impl<B: Backend>(
     pre: &Precomputed<B>,
     mat: &Material,
