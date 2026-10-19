@@ -99,6 +99,22 @@ impl<B: Backend> NodalTets<B> {
         (lerp(&self.a), lerp(&self.h))
     }
 
+    /// Thickness H of the cortical layer: H(t), or H at the first knot with thickening.
+    fn thickness(&self, t: f64) -> T1<B> {
+        if self.table_t.thickening {
+            self.h[0].clone()
+        } else {
+            self.at(t).1
+        }
+    }
+
+    /// Thickening c = H(t) / H(t_0) - 1 of the cortex, if enabled.
+    fn radial_at(&self, t: f64) -> Option<T1<B>> {
+        self.table_t
+            .thickening
+            .then(|| self.at(t).1 / self.h[0].clone() - 1.0)
+    }
+
     fn tensor_at(&self, t: f64) -> Option<M3<B>> {
         self.sym_at(&self.tensor, t)
     }
@@ -243,7 +259,7 @@ impl<B: Backend> Simulation<B> {
     fn thickness_at(&self, t: f64) -> elastic::Thickness<B> {
         match &self.nodal {
             None => elastic::Thickness::Uniform(self.params.schedule.thickness(t)),
-            Some(nd) => elastic::Thickness::PerTet(nd.at(t).1),
+            Some(nd) => elastic::Thickness::PerTet(nd.thickness(t)),
         }
     }
 
@@ -256,6 +272,7 @@ impl<B: Backend> Simulation<B> {
         let tensor = self.nodal.as_ref().and_then(|nd| nd.tensor_at(self.t));
         let material = self.params.material_at(self.t);
         let core = self.core_growth();
+        let radial = self.radial_growth();
         let el = elastic::forces_full(
             &self.pre,
             &material,
@@ -263,6 +280,7 @@ impl<B: Backend> Simulation<B> {
             &self.growth_prev,
             tensor.as_ref(),
             core.as_ref(),
+            radial.as_ref(),
             thickness,
             record,
         );
@@ -272,6 +290,11 @@ impl<B: Backend> Simulation<B> {
     /// Growth tensor U of the core per tetrahedron at the current time (`core` table).
     pub fn core_growth(&self) -> Option<M3<B>> {
         self.nodal.as_ref().and_then(|nd| nd.core_at(self.t))
+    }
+
+    /// Thickening c of the cortex per tetrahedron at the current time (`thickening`).
+    pub fn radial_growth(&self) -> Option<T1<B>> {
+        self.nodal.as_ref().and_then(|nd| nd.radial_at(self.t))
     }
 
     /// Contact and mid-plane forces at `x` (current contact lists).
@@ -315,7 +338,7 @@ impl<B: Backend> Simulation<B> {
         let vv = V3::from_rows(v, &self.device);
         let material = self.params.material_at(self.t);
         let thickness = self.thickness_at(self.t);
-        let df = elastic::force_tangent(&self.pre, &material, &xv, &vv, &self.growth_prev, &thickness, self.core_growth().as_ref());
+        let df = elastic::force_tangent(&self.pre, &material, &xv, &vv, &self.growth_prev, &thickness, self.core_growth().as_ref(), self.radial_growth().as_ref());
         let p = &self.params;
         let (a, k) = (p.dynamics.mesh_spacing, p.material.bulk);
         let hc = p.repulsive_skin();
@@ -408,10 +431,7 @@ impl<B: Backend> Simulation<B> {
                     Expansion::Uniform(p.schedule.expansion(t)),
                 )
             }
-            Some(nd) => {
-                let (a, h) = nd.at(t);
-                (elastic::Thickness::PerTet(h), Expansion::PerTet(a))
-            }
+            Some(nd) => (elastic::Thickness::PerTet(nd.thickness(t)), Expansion::PerTet(nd.at(t).0)),
         };
 
         self.maybe_rebuild_contact();

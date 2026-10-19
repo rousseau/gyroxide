@@ -59,6 +59,11 @@ pub enum Schedule {
         /// xz, yz), G = I + g_m a (I - n n^T) + (1 - g_m)(U - I) (tools/atlas_core_tensors.py).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         core: Option<String>,
+        /// Thickening of the cortex: the cortical layer (g_m) is set once by H at the first
+        /// knot, and that material grows along the normal by c = H(t) / H(t_0) - 1,
+        /// G += g_m c n n^T (instead of moving the layer boundary with H(t)).
+        #[serde(default, skip_serializing_if = "is_false")]
+        thickening: bool,
         /// Optional isotropic growth b of the core per knot (`Material::wm_growth`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wm_growth: Option<Vec<f64>>,
@@ -67,6 +72,10 @@ pub enum Schedule {
 
 fn one() -> f64 {
     1.0
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl Schedule {
@@ -230,6 +239,8 @@ pub struct NodalTable {
     pub tensor: Vec<Vec<f64>>,
     /// Growth tensors U of the core per knot (6 values per node), empty if none.
     pub core: Vec<Vec<f64>>,
+    /// Thickening of the cortex (see [`Schedule::Nodal`]).
+    pub thickening: bool,
 }
 
 impl NodalTable {
@@ -237,7 +248,11 @@ impl NodalTable {
     /// against the schedule (knots, scales) and the node count.
     pub fn new(schedule: &Schedule, a: &[f64], h: &[f64], n_nodes: usize) -> Result<Self, String> {
         let Schedule::Nodal {
-            t, a_scale, h_scale, ..
+            t,
+            a_scale,
+            h_scale,
+            thickening,
+            ..
         } = schedule
         else {
             return Err("NodalTable needs a nodal schedule".into());
@@ -273,6 +288,7 @@ impl NodalTable {
             h: rows(h, *h_scale),
             tensor: Vec::new(),
             core: Vec::new(),
+            thickening: *thickening,
         })
     }
 
@@ -501,6 +517,7 @@ mod tests {
             mu_white: None,
             tensor: None,
             core: None,
+            thickening: false,
             wm_growth: None,
         };
         assert!(s.validate().is_ok() && s.is_nodal() && s.expansion(0.3).is_nan());
@@ -526,6 +543,7 @@ mod tests {
             mu_white: None,
             tensor: None,
             core: None,
+            thickening: false,
             wm_growth: None,
         };
         assert!(bad.validate().unwrap_err().contains("strictly increasing"));
@@ -539,6 +557,7 @@ mod tests {
             mu_white: Some(vec![0.5, 0.25]),
             tensor: None,
             core: None,
+            thickening: false,
             wm_growth: None,
         };
         assert!(mu.validate().is_ok());
@@ -553,6 +572,7 @@ mod tests {
             mu_white: Some(vec![0.5, 0.0]),
             tensor: None,
             core: None,
+            thickening: false,
             wm_growth: None,
         };
         assert!(bad_mu.validate().unwrap_err().contains("mu_white[1] must be > 0"));

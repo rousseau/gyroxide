@@ -53,7 +53,10 @@
 //!
 //! Parameters theta_v = a_t of surface vertex v (interior nodes take their owner's value);
 //! growth of tetrahedron e: s_e = g_m,e * mean of theta over its 4 nodes.
-//! Forward: hold s fixed, relax the damped dynamics to equilibrium x*(theta) (warm start).
+//! Forward: hold s fixed, relax the damped dynamics to equilibrium x*(theta) (warm start), then
+//! Newton with the exact K until |F| < max(1e-3 |F_0|, --force-tol) (default 1e-5, at most
+//! --newton 20 steps); --relax0: damped steps of the first equilibrium (from the checkpoint,
+//! where the explicit dynamics lags behind the growth), default --relax.
 //! Loss: 1/(2N) sum over cortex vertices |x^_i - y^_i|^2, x^ = (x - centroid) / rms radius
 //! (shape only: the atlas also grows in volume, the model does not), or with --hp k the fold
 //! loss on high-pass positions x - S^k x (S: neighbour averaging on the surface); + beta/2
@@ -127,6 +130,8 @@ struct Problem {
     /// K products by finite differences of the total force (old path, --fd-k), and the
     /// growth / thickness tensors of the autodiff path.
     fd_k: bool,
+    /// Absolute tolerance on |F| of the Newton iterations of the equilibrium.
+    force_tol: f64,
 }
 
 fn colour_nodes(n: usize, tets: &[[u32; 4]]) -> Vec<Vec<usize>> {
@@ -274,7 +279,7 @@ impl Problem {
         let r0 = norm(&f);
         let mut rn = r0;
         for _ in 0..self.newton {
-            let (delta, _, _) = self.solve(&x, &f, self.sigma, 100, false);
+            let (delta, _, _) = self.solve(&x, &f, self.sigma, 100, !self.fd_k);
             let mut accepted = false;
             for alpha in [1.0, 0.5, 0.25] {
                 let xt: Vec<[f64; 3]> = x
@@ -292,7 +297,7 @@ impl Problem {
                     break;
                 }
             }
-            if !accepted || rn < 1e-3 * r0 {
+            if !accepted || rn < (1e-3 * r0).max(self.force_tol) {
                 break;
             }
         }
@@ -918,7 +923,7 @@ impl Problem {
             &dev,
         );
         let mat = self.ad.params.material_at(self.sim.t);
-        let f = forces_regular(self.ad.precomputed(), &mat, &xv, &st, &Thickness::PerTet(h), self.ad.core_growth().as_ref());
+        let f = forces_regular(self.ad.precomputed(), &mat, &xv, &st, &Thickness::PerTet(h), self.ad.core_growth().as_ref(), self.ad.radial_growth().as_ref());
         let l = (f.x * lv.x).sum() + (f.y * lv.y).sum() + (f.z * lv.z).sum();
         let grads = l.backward();
         to_f64(st.grad(&grads).expect("gradient w.r.t. growth"))
@@ -1133,12 +1138,13 @@ fn main() {
         r_ref,
         thick,
         v0: vec![[0.0; 3]; xs.len()],
-        newton: flag("--newton", 6.0) as usize,
+        newton: flag("--newton", 20.0) as usize,
         sigma: 0.0,
         last_residual: (0.0, 0.0),
         colours: colour_nodes(mesh.n_nodes(), &mesh.tets),
         pre_inv: Vec::new(),
         fd_k: args.iter().any(|a| a == "--fd-k"),
+        force_tol: flag("--force-tol", 1e-5),
     };
     println!("{} colours for the block-Jacobi preconditioner", p.colours.len());
     let ns = target.len();
@@ -1201,7 +1207,7 @@ fn main() {
     let ray = p.rayleigh(&xs);
     let sigma = flag("--shift", 1e-3) * ray.abs();
     p.sigma = sigma;
-    let mut x = p.equilibrium(&theta, &xs, relax);
+    let mut x = p.equilibrium(&theta, &xs, flag("--relax0", relax as f64) as usize);
     // Cumulative loss: weights w_s / L_s(start) for every level, first level active.
     let mut norm_levels: Vec<(usize, f64, Vec<[f64; 3]>)> = Vec::new();
     if cumulative {

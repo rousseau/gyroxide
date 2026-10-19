@@ -90,7 +90,7 @@ pub fn forces_with<B: Backend>(
     thickness: &Thickness<B>,
     with_energy: bool,
 ) -> ElasticOutput<B> {
-    forces_impl(pre, mat, x, growth_prev, None, None, thickness, with_energy, false)
+    forces_impl(pre, mat, x, growth_prev, None, None, None, thickness, with_energy, false)
 }
 
 /// [`forces_with`] with an anisotropic growth tensor T per tetrahedron:
@@ -104,7 +104,7 @@ pub fn forces_tensor<B: Backend>(
     thickness: &Thickness<B>,
     with_energy: bool,
 ) -> ElasticOutput<B> {
-    forces_impl(pre, mat, x, growth_prev, Some(tensor), None, thickness, with_energy, false)
+    forces_impl(pre, mat, x, growth_prev, Some(tensor), None, None, thickness, with_energy, false)
 }
 
 /// Nodal forces from the regular (neo-Hookean) branch only, for every
@@ -118,13 +118,14 @@ pub fn forces_regular<B: Backend>(
     growth: &T1<B>,
     thickness: &Thickness<B>,
     core: Option<&M3<B>>,
+    radial: Option<&T1<B>>,
 ) -> V3<B> {
-    forces_impl(pre, mat, x, growth, None, core, thickness, false, true).force
+    forces_impl(pre, mat, x, growth, None, core, radial, thickness, false, true).force
 }
 
 /// Elastic forces with every growth term: tangential growth (scalar `growth_prev` along
-/// I - n n^T, or the anisotropic `tensor`) and the growth tensor U of the core,
-/// G = I + g_m a (I - n n^T) + (1 - g_m)(U - I).
+/// I - n n^T, or the anisotropic `tensor`), thickening c of the cortex and the growth tensor
+/// U of the core, G = I + g_m a (I - n n^T) + g_m c n n^T + (1 - g_m)(U - I).
 #[allow(clippy::too_many_arguments)]
 pub fn forces_full<B: Backend>(
     pre: &Precomputed<B>,
@@ -133,10 +134,11 @@ pub fn forces_full<B: Backend>(
     growth_prev: &T1<B>,
     tensor: Option<&M3<B>>,
     core: Option<&M3<B>>,
+    radial: Option<&T1<B>>,
     thickness: &Thickness<B>,
     with_energy: bool,
 ) -> ElasticOutput<B> {
-    forces_impl(pre, mat, x, growth_prev, tensor, core, thickness, with_energy, false)
+    forces_impl(pre, mat, x, growth_prev, tensor, core, radial, thickness, with_energy, false)
 }
 
 /// Directional derivative dF_reg/dx . v of the regular-branch elastic force (forward mode,
@@ -150,6 +152,7 @@ pub fn force_tangent<B: Backend>(
     growth: &T1<B>,
     thickness: &Thickness<B>,
     core: Option<&M3<B>>,
+    radial: Option<&T1<B>>,
 ) -> V3<B> {
     let nt = pre.n_tets;
     let device = x.x.device();
@@ -174,7 +177,10 @@ pub fn force_tangent<B: Backend>(
         g = g.add(&eye.mul_s(&((-gm.clone()).add_scalar(1.0) * mat.wm_growth)));
     }
     if let Some(u) = core {
-        g = g.add(&u.sub(&eye).mul_s(&(-gm).add_scalar(1.0)));
+        g = g.add(&u.sub(&eye).mul_s(&(-gm.clone()).add_scalar(1.0)));
+    }
+    if let Some(c) = radial {
+        g = g.add(&nn.mul_s(&(gm * c.clone())));
     }
     let ar = g.matmul(&pre.ar0);
 
@@ -227,6 +233,7 @@ fn forces_impl<B: Backend>(
     growth_prev: &T1<B>,
     tensor: Option<&M3<B>>,
     core: Option<&M3<B>>,
+    radial: Option<&T1<B>>,
     thickness: &Thickness<B>,
     with_energy: bool,
     regular_only: bool,
@@ -255,6 +262,9 @@ fn forces_impl<B: Backend>(
     }
     if let Some(u) = core {
         g = g.add(&u.sub(&eye).mul_s(&(-gm.clone()).add_scalar(1.0)));
+    }
+    if let Some(c) = radial {
+        g = g.add(&nn.mul_s(&(gm.clone() * c.clone())));
     }
     let ar = g.matmul(&pre.ar0);
 

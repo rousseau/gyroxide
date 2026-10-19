@@ -288,12 +288,13 @@ fn force_tangent_matches_finite_differences() {
     let (xx, yy, zz) = (comp(1.3, &mut r), comp(1.2, &mut r), comp(1.4, &mut r));
     let (xy, xz, yz) = (comp(0.0, &mut r), comp(0.0, &mut r), comp(0.0, &mut r));
     let core = M3 { m: [[xx, xy.clone(), xz.clone()], [xy, yy, yz.clone()], [xz, yz, zz]] };
-    let f = |y: &[[f64; 3]]| elastic::forces_regular(pre, mat, &V3::from_rows(y, &device()), &gt, &th, Some(&core)).to_rows();
+    let rad = comp(-0.2, &mut r);
+    let f = |y: &[[f64; 3]]| elastic::forces_regular(pre, mat, &V3::from_rows(y, &device()), &gt, &th, Some(&core), Some(&rad)).to_rows();
     let eps = 1e-6;
     let shift = |s: f64| -> Vec<[f64; 3]> { x.iter().zip(&v).map(|(a, b)| [0, 1, 2].map(|d| a[d] + s * b[d])).collect() };
     let (fp, fm) = (f(&shift(eps)), f(&shift(-eps)));
     let fd: Vec<[f64; 3]> = fp.iter().zip(&fm).map(|(a, b)| [0, 1, 2].map(|d| (a[d] - b[d]) / (2.0 * eps))).collect();
-    let an = elastic::force_tangent(pre, mat, &V3::from_rows(&x, &device()), &V3::from_rows(&v, &device()), &gt, &th, Some(&core)).to_rows();
+    let an = elastic::force_tangent(pre, mat, &V3::from_rows(&x, &device()), &V3::from_rows(&v, &device()), &gt, &th, Some(&core), Some(&rad)).to_rows();
     let err = an.iter().zip(&fd).flat_map(|(a, b)| (0..3).map(move |d| (a[d] - b[d]).abs())).fold(0.0f64, f64::max);
     assert!(err < 1e-6 * max_abs(&fd), "max error {err:.3e}, max |fd| {:.3e}", max_abs(&fd));
 }
@@ -322,5 +323,30 @@ fn core_growth_is_stress_free() {
         .collect();
     let x = V3::<B>::from_rows(&grown, &device());
     let out = elastic::forces(sim.precomputed(), mat, &x, &g, h, false);
+    assert!(max_abs(&out.force.to_rows()) < 1e-12, "{:?}", out.force.to_rows());
+}
+
+#[test]
+fn thickening_is_stress_free() {
+    // G = I + s (I - n n^T) + g_m c n n^T: nodes placed at G X carry no force.
+    let mesh = single_tet();
+    let sim = Simulation::<B>::new(mesh.clone(), params_no_contact(), device()).unwrap();
+    let n = sim.precomputed().growth_normal.to_rows()[0];
+    let (s, c, h) = (0.3, -0.25, 0.05);
+    let g = floats::<B>(&[s], &device());
+    let mat = &sim.params.material;
+    let th = elastic::Thickness::Uniform(h);
+    let gm = to_f64(elastic::forces(sim.precomputed(), mat, &sim.x, &g, h, false).gm)[0];
+    let grown: Vec<[f64; 3]> = mesh
+        .nodes
+        .iter()
+        .map(|x| {
+            let d = n[0] * x[0] + n[1] * x[1] + n[2] * x[2];
+            std::array::from_fn(|k| x[k] + s * (x[k] - n[k] * d) + gm * c * n[k] * d)
+        })
+        .collect();
+    let x = V3::<B>::from_rows(&grown, &device());
+    let rad = floats::<B>(&[c], &device());
+    let out = elastic::forces_full(sim.precomputed(), mat, &x, &g, None, None, Some(&rad), &th, false);
     assert!(max_abs(&out.force.to_rows()) < 1e-12, "{:?}", out.force.to_rows());
 }
