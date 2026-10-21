@@ -66,6 +66,14 @@ pub struct Simulation<B: Backend> {
     /// Growth g_m a_t held fixed (relaxation at constant growth, adjoint
     /// studies): when set, steps use it and do not advance t.
     growth_fixed: Option<T1<B>>,
+    /// Optional spring w (target - x) on the first nodes (target positions, per-node weight).
+    pull: Option<(V3<B>, T1<B>)>,
+    /// Optional correction added to the cortical thickening c per tetrahedron (inverse studies).
+    radial_delta: Option<T1<B>>,
+    /// Optional isotropic correction delta I added to the core growth tensor U per tetrahedron.
+    core_delta: Option<T1<B>>,
+    /// Unit normals of the pull targets: if set, springs act along them only (tangential sliding).
+    pull_normals: Option<V3<B>>,
 }
 
 /// Expansion a_t: one value, or one per tetrahedron.
@@ -167,6 +175,10 @@ impl<B: Backend> Simulation<B> {
             step: 0,
             nodal: None,
             growth_fixed: None,
+            pull: None,
+            radial_delta: None,
+            core_delta: None,
+            pull_normals: None,
         })
     }
 
@@ -289,12 +301,55 @@ impl<B: Backend> Simulation<B> {
 
     /// Growth tensor U of the core per tetrahedron at the current time (`core` table).
     pub fn core_growth(&self) -> Option<M3<B>> {
-        self.nodal.as_ref().and_then(|nd| nd.core_at(self.t))
+        let mut u = self.nodal.as_ref().and_then(|nd| nd.core_at(self.t));
+        if let (Some(u), Some(d)) = (u.as_mut(), &self.core_delta) {
+            for k in 0..3 {
+                u.m[k][k] = u.m[k][k].clone() + d.clone();
+            }
+        }
+        u
+    }
+
+    /// Isotropic correction delta I added to the core growth U per tetrahedron; `None` removes it.
+    pub fn set_core_delta(&mut self, delta: Option<&[f64]>) {
+        self.core_delta = delta.map(|d| floats(d, &self.device));
     }
 
     /// Thickening c of the cortex per tetrahedron at the current time (`thickening`).
     pub fn radial_growth(&self) -> Option<T1<B>> {
-        self.nodal.as_ref().and_then(|nd| nd.radial_at(self.t))
+        let base = self.nodal.as_ref().and_then(|nd| nd.radial_at(self.t));
+        match (base, &self.radial_delta) {
+            (Some(c), Some(d)) => Some(c + d.clone()),
+            (None, Some(d)) => Some(d.clone()),
+            (c, None) => c,
+        }
+    }
+
+    /// Correction added to the thickening c per tetrahedron; `None` removes it.
+    pub fn set_radial_delta(&mut self, delta: Option<&[f64]>) {
+        self.radial_delta = delta.map(|d| floats(d, &self.device));
+    }
+
+    /// Springs of stiffness `k` pulling the first `target.len()` nodes (the surface nodes) to
+    /// `target`; `None` removes them. Added to every force evaluation and to `stiffness_product`.
+    pub fn set_pull(&mut self, target: Option<(&[[f64; 3]], f64)>) {
+        self.pull = target.map(|(t, k)| {
+            let n = self.pre.n_nodes;
+            let mut rows = vec![[0.0; 3]; n];
+            rows[..t.len()].copy_from_slice(t);
+            let w: Vec<f64> = (0..n).map(|i| if i < t.len() { k } else { 0.0 }).collect();
+            (V3::from_rows(&rows, &self.device), floats(&w, &self.device))
+        });
+    }
+
+    /// Normals of the pull targets (first nodes): springs then act along them only, w n n.(t - x),
+    /// so that the nodes slide freely in the tangent plane of their target. `None`: full springs.
+    pub fn set_pull_normals(&mut self, normals: Option<&[[f64; 3]]>) {
+        self.pull_normals = normals.map(|nr| {
+            let mut rows = vec![[0.0; 3]; self.pre.n_nodes];
+            rows[..nr.len()].copy_from_slice(nr);
+            V3::from_rows(&rows, &self.device)
+        });
     }
 
     /// Contact and mid-plane forces at `x` (current contact lists).
@@ -317,6 +372,12 @@ impl<B: Backend> Simulation<B> {
             let (lo, hi) = (&self.pre.midplane_low, &self.pre.midplane_high);
             let fy = contact::midplane_force(&x.y, lo, hi, mpy, hc, k, a, p.contact.midplane_restoring);
             force.y = force.y + fy;
+        }
+        if let Some((t, w)) = &self.pull {
+            force = force.add(&match &self.pull_normals {
+                None => t.sub(x).mul(w),
+                Some(n) => n.mul(&(t.sub(x).dot(n) * w.clone())),
+            });
         }
         force
     }
@@ -349,6 +410,12 @@ impl<B: Backend> Simulation<B> {
         if let Some(mpy) = p.contact.midplane {
             let (lo, hi) = (&self.pre.midplane_low, &self.pre.midplane_high);
             d.y = d.y + contact::midplane_tangent(&xv.y, &vv.y, lo, hi, mpy, hc, k, a, p.contact.midplane_restoring);
+        }
+        if let Some((_, w)) = &self.pull {
+            d = d.sub(&match &self.pull_normals {
+                None => vv.mul(w),
+                Some(n) => n.mul(&(vv.dot(n) * w.clone())),
+            });
         }
         d.neg().to_rows()
     }

@@ -6,7 +6,7 @@
 //!         [--theta0-table] [--write-table a.npy] [--save-checkpoint dir] [--save-surface f.vtk]
 //!         [--multiscale "k1:n1,k2:n2,..."] [--min-growth a] [--carry]
 //!         [--alpha a --measured a_table.npy] [--fi-weight g]
-//!         [--absolute | --rigid] [--mm-per-unit u] [--tol-mm t] [--shift s] [--diag] [--fd-k]
+//!         [--absolute | --rigid] [--mm-per-unit u] [--tol-mm t] [--pull-target t.npy --pull-k k] [--shift s] [--diag] [--fd-k]
 //!
 //! Multi-resolution (coarse to fine) loss, --multiscale "200:4,50:4,10:4,0:4": n1 L-BFGS
 //! iterations on the shape loss of the smoothed surfaces S^k1 x vs S^k1 y (S: neighbour
@@ -41,6 +41,8 @@
 //! --rigid: like --absolute after the best rotation + translation of the smoothed surface onto
 //! the smoothed target (no scaling: size, lobes and folds count, the placement of the
 //! hemisphere in the atlas frame does not); --tol-mm then applies to the rigid deviation.
+//! --highpass K: each level k < K compares the band S^k x - S^K x with S^k y - S^K y (plain L2,
+//! translation-free): the lobar shape, which dominates the vertex loss, is left out.
 //!
 //! Week-by-week chaining (tools/adjoint_chain.sh): --theta0-table starts from the row of the
 //! config's a table at the checkpoint time (instead of prep/theta0.npy); at the end
@@ -106,6 +108,8 @@ struct Problem {
     beta: f64,
     /// Absolute loss (raw positions, no normalisation) and the length unit in mm.
     absolute: bool,
+    /// Band-pass levels: compare S^k x - S^K x with K = --highpass (0 = off).
+    highpass: usize,
     /// Rigid loss: absolute positions after the best rotation + translation (no scaling).
     rigid: bool,
     mm: f64,
@@ -477,6 +481,34 @@ impl Problem {
         for _ in 0..k {
             sm = self.smooth(&sm);
         }
+        if self.highpass > k {
+            // Band S^k x - S^K x (K = --highpass): the lobar shape is left out, translation-free.
+            let mut lo = sm.clone();
+            for _ in k..self.highpass {
+                lo = self.smooth(&lo);
+            }
+            let n = self.cortex.len() as f64;
+            let mut ls = 0.0;
+            let mut g = vec![[0.0; 3]; ns];
+            for (j, &i) in self.cortex.iter().enumerate() {
+                for d in 0..3 {
+                    let e = sm[i][d] - lo[i][d] - t_hat[j][d];
+                    ls += 0.5 * e * e / n;
+                    g[i][d] = e / n;
+                }
+            }
+            // d/dx = ((S^T)^k - (S^T)^K) g.
+            let mut gk = g;
+            for _ in 0..k {
+                gk = self.smooth_t(&gk);
+            }
+            let mut gkk = gk.clone();
+            for _ in k..self.highpass {
+                gkk = self.smooth_t(&gkk);
+            }
+            let st = gk.iter().zip(&gkk).map(|(a, b)| [0, 1, 2].map(|d| a[d] - b[d])).collect();
+            return (ls, st);
+        }
         if self.rigid {
             // t_hat: centred smoothed target. L = 1/(2N) sum |R xc_i - t_i|^2, R fixed in the
             // gradient (optimal R: envelope theorem), then centring.
@@ -584,6 +616,10 @@ impl Problem {
     /// Normalised smoothed target of level k.
     fn level_target(&self, k: usize) -> Vec<[f64; 3]> {
         let sm = self.smoothed(&self.target, k);
+        if self.highpass > k {
+            let lo = self.smoothed(&sm, self.highpass - k);
+            return self.cortex.iter().map(|&i| [0, 1, 2].map(|d| sm[i][d] - lo[i][d])).collect();
+        }
         if self.rigid {
             return centred(&self.cortex.iter().map(|&i| sm[i]).collect::<Vec<_>>());
         }
@@ -878,6 +914,12 @@ impl Problem {
             axpy(&mut kp, sigma, &p);
             let pkp = dot(&p, &kp);
             if pkp <= 0.0 {
+                if std::env::var_os("CG_DEBUG").is_some() {
+                    println!("cg: negative curvature at iteration {it}: p.(K+sigma)p / p.p = {:.4e}", pkp / dot(&p, &p));
+                    if let Some(path) = std::env::var_os("CG_DEBUG_SAVE") {
+                        save_rows(PathBuf::from(path), &p);
+                    }
+                }
                 break;
             }
             let alpha = rz / pkp;
@@ -927,6 +969,40 @@ impl Problem {
         let l = (f.x * lv.x).sum() + (f.y * lv.y).sum() + (f.z * lv.z).sum();
         let grads = l.backward();
         to_f64(st.grad(&grads).expect("gradient w.r.t. growth"))
+    }
+
+    /// lambda . dF/ds per tetrahedron, and optionally lambda . dF/dc (thickening c) and
+    /// lambda . dF/d delta (isotropic correction delta I of the core growth U) of `ad`.
+    fn vjp_fields(&self, x: &[[f64; 3]], s: &[f64], lam: &[[f64; 3]], want_c: bool, want_k: bool) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let dev = WgpuDevice::default();
+        let xv = V3::<Ad>::from_rows(x, &dev);
+        let lv = V3::<Ad>::from_rows(lam, &dev);
+        let t1 = |v: &[f64]| -> Tensor<Ad, 1> {
+            Tensor::from_data(TensorData::new(v.iter().map(|&a| a as f32).collect::<Vec<_>>(), [v.len()]), &dev)
+        };
+        let st = t1(s).require_grad();
+        let ct = self.ad.radial_growth().map(|c| {
+            let t = t1(&to_f64(c));
+            if want_c { t.require_grad() } else { t }
+        });
+        let nt = s.len();
+        let kt = t1(&vec![0.0; nt]).require_grad();
+        let core = self.ad.core_growth().map(|mut u| {
+            if want_k {
+                for k in 0..3 {
+                    u.m[k][k] = u.m[k][k].clone() + kt.clone();
+                }
+            }
+            u
+        });
+        let h = t1(&self.thick);
+        let mat = self.ad.params.material_at(self.sim.t);
+        let f = forces_regular(self.ad.precomputed(), &mat, &xv, &st, &Thickness::PerTet(h), core.as_ref(), ct.as_ref());
+        let l = (f.x * lv.x).sum() + (f.y * lv.y).sum() + (f.z * lv.z).sum();
+        let grads = l.backward();
+        let gc = if want_c { to_f64(ct.as_ref().expect("field c needs thickening = true").grad(&grads).expect("gradient w.r.t. c")) } else { Vec::new() };
+        let gk = if want_k { to_f64(kt.grad(&grads).expect("field k needs a core growth table")) } else { Vec::new() };
+        (to_f64(st.grad(&grads).expect("gradient w.r.t. growth")), gc, gk)
     }
 
     /// Full gradient w.r.t. theta at the equilibrium x of theta.
@@ -1118,6 +1194,7 @@ fn main() {
         beta,
         absolute: args.iter().any(|a| a == "--absolute" || a == "--rigid"),
         rigid: args.iter().any(|a| a == "--rigid"),
+        highpass: flag("--highpass", 0.0) as usize,
         mm: flag("--mm-per-unit", 32.99),
         alpha: flag("--alpha", 0.0),
         theta_mes,
@@ -1226,6 +1303,271 @@ fn main() {
         p.last_residual.0, p.last_residual.1
     );
     save_rows(out.join("x_0.npy"), &x);
+    if let Some(path) = opt("--pull-target") {
+        // Branch test: equilibrium pulled onto the target (surface springs), then released.
+        let tgt = npy::read(&path).unwrap().rows3().unwrap();
+        let k = flag("--pull-k", 1.0);
+        // Continuation: the spring anchors move from x to the target in `stages` Newton solves
+        // (no damped steps: explicit dynamics is unstable with stiff springs).
+        let stages = flag("--pull-stages", 10.0) as usize;
+        if let Some(np_) = opt("--pull-normals") {
+            // Springs along the target normals only: no vertex correspondence imposed tangentially.
+            let nr = npy::read(&np_).unwrap().rows3().unwrap();
+            p.sim.set_pull_normals(Some(&nr));
+            println!("pull along the target normals only ({} nodes)", nr.len());
+        }
+        let x_start = x.clone();
+        for s in 1..=stages {
+            let f = s as f64 / stages as f64;
+            let anchors: Vec<[f64; 3]> =
+                tgt.iter().zip(&x_start).map(|(t, a)| [0, 1, 2].map(|d| a[d] + f * (t[d] - a[d]))).collect();
+            p.sim.set_pull(Some((&anchors, k)));
+            let xs_ = p.equilibrium(&theta, &x, 0);
+            let inv = p.n_inverted(&xs_, &theta);
+            println!("pull stage {s}/{stages}: |F| {:.3e} -> {:.3e}, inverted {inv}", p.last_residual.0, p.last_residual.1);
+            if inv > 0 || p.last_residual.1 > 1e-2 * p.last_residual.0 {
+                println!("pull stopped at stage {}: last admissible, converged state kept", s - 1);
+                break;
+            }
+            x = xs_;
+            p.report_mm(&format!("stage {s}"), &x, &[0]);
+        }
+        println!("pulled (k = {k}): |F| {:.3e} -> {:.3e}", p.last_residual.0, p.last_residual.1);
+        p.report_mm("pulled", &x, &mm_levels);
+        save_rows(out.join("x_pulled.npy"), &x);
+        p.sim.set_pull(None);
+        x = p.equilibrium(&theta, &x, relax);
+        println!("released: |F| {:.3e} -> {:.3e}", p.last_residual.0, p.last_residual.1);
+        p.report_mm("released", &x, &mm_levels);
+        save_rows(out.join("x_released.npy"), &x);
+        return;
+    }
+    if let Some(path) = opt("--inverse-eq") {
+        // Inverse equilibrium: geometry fixed at x_g (e.g. the pulled state), growth fitted so that
+        // x_g is an equilibrium: min R = |F(x_g; theta)|^2 / 2 + reg, dR/ds = F . dF/ds (one VJP,
+        // no equilibrium solve). Then released from x_g with the fitted growth.
+        let xg = npy::read(&path).unwrap().rows3().unwrap();
+        let v0 = p.v0.clone();
+        let energy = args.iter().any(|a| a == "--energy-norm");
+        let fields = opt("--inverse-fields").map_or(String::new(), |f| f.to_string_lossy().into_owned());
+        let (with_c, with_k) = (fields.contains('c'), fields.contains('k'));
+        let na = theta.len();
+        // z = [a per vertex; correction of the thickening c (if c); core correction delta (if k)].
+        let (oc, ok) = (na, na * (1 + with_c as usize));
+        let nz = na * (1 + with_c as usize + with_k as usize);
+        let per_tet = |p: &Problem, d: &[f64]| -> Vec<f64> {
+            p.tets.iter().map(|t| 0.25 * t.iter().map(|&n| d[p.owner[n as usize]]).sum::<f64>()).collect()
+        };
+        let reg_d = |p: &Problem, d: &[f64]| 0.5 * p.beta * p.edges.iter().map(|[i, j]| (d[*i] - d[*j]).powi(2)).sum::<f64>();
+        let residual = |p: &mut Problem, z: &[f64]| -> (f64, Vec<[f64; 3]>) {
+            let s = p.growth(&z[..na]);
+            let mut rd = 0.0;
+            if with_c {
+                let d = per_tet(p, &z[oc..oc + na]);
+                p.sim.set_radial_delta(Some(&d));
+                p.ad.set_radial_delta(Some(&d));
+                rd += reg_d(p, &z[oc..oc + na]);
+            }
+            if with_k {
+                let d = per_tet(p, &z[ok..ok + na]);
+                p.sim.set_core_delta(Some(&d));
+                p.ad.set_core_delta(Some(&d));
+                rd += reg_d(p, &z[ok..ok + na]);
+            }
+            p.sim.set_state(&xg, &v0, &s);
+            p.sim.set_fixed_growth(Some(&s));
+            let f = p.sim.total_force(&xg);
+            if energy {
+                // Energy norm F.K^-1 F / 2: u = K^-1 F is the linearised displacement on release;
+                // its VJP u . dF/dtheta is the Gauss-Newton gradient (dK/dtheta term dropped).
+                p.sim.refresh_contact();
+                let (u, it, res) = p.solve(&xg, &f, p.sigma, cg, true);
+                if std::env::var_os("CG_DEBUG").is_some() {
+                    println!("cg: {it} iterations, relative residual {res:.3e}");
+                }
+                let e: f64 = u.iter().zip(&f).map(|(a, b)| a[0] * b[0] + a[1] * b[1] + a[2] * b[2]).sum();
+                return (0.5 * e + p.reg(&z[..na]) + rd, u);
+            }
+            (0.5 * f.iter().flatten().map(|v| v * v).sum::<f64>() + p.reg(&z[..na]) + rd, f)
+        };
+        let grad = |p: &Problem, z: &[f64], f: &[[f64; 3]]| -> Vec<f64> {
+            let th = &z[..na];
+            let (gs, gc, gk) = p.vjp_fields(&xg, &p.growth(th), f, with_c, with_k);
+            let mut g = vec![0.0; z.len()];
+            for ((t, gm), gse) in p.tets.iter().zip(&p.gm).zip(&gs) {
+                for &n in t {
+                    g[p.owner[n as usize]] += gse * gm * 0.25;
+                }
+            }
+            for (off, gf) in [(oc, &gc), (ok, &gk)] {
+                for (t, ge) in p.tets.iter().zip(gf.iter()) {
+                    for &n in t {
+                        g[off + p.owner[n as usize]] += ge * 0.25;
+                    }
+                }
+            }
+            for [i, j] in &p.edges {
+                let d = p.beta * (th[*i] - p.theta0[*i] - th[*j] + p.theta0[*j]);
+                g[*i] += d;
+                g[*j] -= d;
+                for (on, off) in [(with_c, oc), (with_k, ok)] {
+                    if on {
+                        let d = p.beta * (z[off + *i] - z[off + *j]);
+                        g[off + *i] += d;
+                        g[off + *j] -= d;
+                    }
+                }
+            }
+            g
+        };
+        let mut theta: Vec<f64> = theta.iter().copied().chain(std::iter::repeat(0.0)).take(nz).collect();
+        if let Some(zp) = opt("--inverse-z0") {
+            theta = read(&zp);
+            assert_eq!(theta.len(), nz, "--inverse-z0 does not match --inverse-fields");
+        }
+        let surf_norm = |f: &[[f64; 3]]| f[..ns].iter().flatten().map(|v| v * v).sum::<f64>().sqrt();
+        let full_norm = |f: &[[f64; 3]]| f.iter().flatten().map(|v| v * v).sum::<f64>().sqrt();
+        p.sim.set_state(&xg, &v0, &p.growth(&theta));
+        p.sim.refresh_contact();
+        if energy {
+            let s_ = p.growth(&theta);
+            p.sim.set_state(&xg, &v0, &s_);
+            p.sim.set_fixed_growth(Some(&s_));
+            p.build_preconditioner(&xg);
+        }
+        let u_mm = |p: &Problem, u: &[[f64; 3]]| p.mm * (u[..ns].iter().flatten().map(|v| v * v).sum::<f64>() / ns as f64).sqrt();
+        let (mut r, mut f) = residual(&mut p, &theta);
+        let (r_start, f_start) = (r, f.clone());
+        save_rows(out.join("force_start.npy"), &f);
+        println!("inverse-eq start: R {r:.6e}, |F| {:.4e} (surface {:.4e})", full_norm(&f), surf_norm(&f));
+        if energy {
+            println!("energy norm: predicted release displacement (surface rms) {:.3} mm", u_mm(&p, &f));
+        }
+        let mut g = grad(&p, &theta, &f);
+        {
+            // Directional check of the gradient: R(theta - e g/|g|_inf) - R(theta) vs -e |g|^2/|g|_inf.
+            let gi = g.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            let g2: f64 = g.iter().map(|v| v * v).sum();
+            for e in [1e-2, 1e-3, 1e-4, 1e-5] {
+                let tp: Vec<f64> = theta.iter().zip(&g).map(|(a, d)| a - e * d / gi).collect();
+                let tm: Vec<f64> = theta.iter().zip(&g).map(|(a, d)| a + e * d / gi).collect();
+                let (rp, rm) = (residual(&mut p, &tp).0, residual(&mut p, &tm).0);
+                println!(
+                    "gradient check e {e:.0e}: R(-) - R {:+.4e}, R(+) - R {:+.4e}, predicted -/+ {:.4e}, central ratio {:.4}",
+                    rp - r,
+                    rm - r,
+                    e * g2 / gi,
+                    (rm - rp) / (2.0 * e * g2 / gi)
+                );
+            }
+        }
+        let mut hist: Vec<(Vec<f64>, Vec<f64>)> = Vec::new();
+        for it in 1..=iters {
+            let mut q = g.clone();
+            let mut al = Vec::new();
+            for (s, y) in hist.iter().rev() {
+                let rho = 1.0 / y.iter().zip(s).map(|(a, b)| a * b).sum::<f64>();
+                let a = rho * s.iter().zip(&q).map(|(a, b)| a * b).sum::<f64>();
+                q.iter_mut().zip(y).for_each(|(qi, yi)| *qi -= a * yi);
+                al.push((a, rho));
+            }
+            let gamma = match hist.last() {
+                Some((s, y)) => s.iter().zip(y).map(|(a, b)| a * b).sum::<f64>() / y.iter().map(|v| v * v).sum::<f64>(),
+                None => max_step / g.iter().fold(0.0f64, |m, v| m.max(v.abs())),
+            };
+            q.iter_mut().for_each(|v| *v *= gamma);
+            for ((s, y), (a, rho)) in hist.iter().zip(al.iter().rev()) {
+                let b = rho * y.iter().zip(&q).map(|(a, b)| a * b).sum::<f64>();
+                q.iter_mut().zip(s).for_each(|(qi, si)| *qi += (a - b) * si);
+            }
+            let mut dir: Vec<f64> = q.iter().map(|v| -v).collect();
+            let dmax = dir.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+            if dmax > max_step {
+                dir.iter_mut().for_each(|v| *v *= max_step / dmax);
+            }
+            let slope: f64 = g.iter().zip(&dir).map(|(a, b)| a * b).sum();
+            if slope >= 0.0 {
+                hist.clear();
+                println!("iter {it}: not a descent direction, history reset");
+                continue;
+            }
+            let mut step = 1.0;
+            let mut accepted = None;
+            for _ in 0..10 {
+                let mut tn: Vec<f64> = theta.iter().zip(&dir).map(|(a, d)| a + step * d).collect();
+                if let Some(lo) = min_growth {
+                    tn[..na].iter_mut().for_each(|v| *v = v.max(lo));
+                }
+                let (rn, fnew) = residual(&mut p, &tn);
+                if rn.is_finite() && rn <= r + 1e-4 * step * slope {
+                    accepted = Some((tn, rn, fnew));
+                    break;
+                }
+                step *= 0.5;
+            }
+            let Some((tn, rn, fnew)) = accepted else {
+                println!("iter {it}: no decrease, stopping");
+                break;
+            };
+            let gn = grad(&p, &tn, &fnew);
+            let s: Vec<f64> = tn.iter().zip(&theta).map(|(a, b)| a - b).collect();
+            let y: Vec<f64> = gn.iter().zip(&g).map(|(a, b)| a - b).collect();
+            if s.iter().zip(&y).map(|(a, b)| a * b).sum::<f64>() > 0.0 {
+                hist.push((s, y));
+                if hist.len() > 10 {
+                    hist.remove(0);
+                }
+            }
+            (theta, r, f, g) = (tn, rn, fnew, gn);
+            if it % 10 == 0 || it == 1 {
+                let range = |v: &[f64]| v.iter().fold((f64::MAX, f64::MIN), |(l, h), &x| (l.min(x), h.max(x)));
+                let (lo, hi) = range(&theta[..na]);
+                let mut c = String::new();
+                if with_c {
+                    let (l, h) = range(&theta[oc..oc + na]);
+                    c += &format!(", dc in [{l:.3}, {h:.3}]");
+                }
+                if with_k {
+                    let (l, h) = range(&theta[ok..ok + na]);
+                    c += &format!(", dk in [{l:.3}, {h:.3}]");
+                }
+                println!(
+                    "iter {it}: R {r:.6e} ({:.4} of start), |F| {:.4e} (surface {:.4e}), a in [{lo:.3}, {hi:.3}]{c}, step {step}",
+                    r / r_start,
+                    full_norm(&f),
+                    surf_norm(&f)
+                );
+                if energy {
+                    println!("iter {it}: predicted release displacement {:.3} mm", u_mm(&p, &f));
+                }
+            }
+        }
+        let fs = surf_norm(&f_start);
+        println!("inverse-eq end: R {:.4} of start, surface |F| {:.4} of start", r / r_start, surf_norm(&f) / fs);
+        save_rows(out.join("force_end.npy"), &f);
+        npy::write_f64(out.join("theta_inv.npy"), &[theta.len()], &theta).unwrap();
+        let th = theta[..na].to_vec();
+        if let Some(rp) = opt("--fold-ref") {
+            // Curvature of the energy along the fold direction v = x_g - x_ref (x_ref: unfolded
+            // equilibrium), at x_g with the fitted fields: v.Kv / v.v vs a generic direction.
+            let xr = npy::read(&rp).unwrap().rows3().unwrap();
+            let v: Vec<[f64; 3]> = xg.iter().zip(&xr).map(|(a, b)| [0, 1, 2].map(|d| a[d] - b[d])).collect();
+            let s_ = p.growth(&th);
+            p.sim.set_state(&xg, &v0, &s_);
+            p.sim.set_fixed_growth(Some(&s_));
+            p.sim.refresh_contact();
+            let kv = p.k_mul(&xg, &v);
+            let dot = |a: &[[f64; 3]], b: &[[f64; 3]]| a.iter().zip(b).map(|(p, q)| p[0] * q[0] + p[1] * q[1] + p[2] * q[2]).sum::<f64>();
+            println!("fold-direction Rayleigh v.Kv/v.v {:.4e} (generic direction {:.4e})", dot(&v, &kv) / dot(&v, &v), p.rayleigh(&xg));
+        }
+        let rr = flag("--release-relax", relax as f64) as usize;
+        x = p.equilibrium(&th, &xg, rr);
+        println!("released with fitted growth: |F| {:.3e} -> {:.3e}", p.last_residual.0, p.last_residual.1);
+        p.report_mm("released", &x, &mm_levels);
+        println!("inverted elements: {}", p.n_inverted(&x, &th));
+        save_rows(out.join("x_released.npy"), &x);
+        return;
+    }
     if args.iter().any(|a| a == "--diag") {
         // Loss gradient w.r.t. x vs central differences of the loss (no equilibrium).
         let d: Vec<[f64; 3]> = (0..x.len()).map(|i| [0, 1, 2].map(|c| (((i * 7 + c * 13) % 17) as f64 / 8.0) - 1.0)).collect();
