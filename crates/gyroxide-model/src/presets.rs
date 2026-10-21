@@ -40,6 +40,7 @@ impl Preset {
             eps: 0.1,
             k_inverted: 0.0,
             wm_growth: 0.0,
+            vol_stab: 0.0,
         };
         let contact = Contact {
             enabled: true,

@@ -1,0 +1,43 @@
+# Growth run on the dHCP fetal atlas, week 21, left hemisphere, with a weekly
+# tabulated schedule (a_t = 1.85 t, H from the atlas cortical thickness).
+# Mesh: tools/atlas_to_mesh.py (data/meshes/w21_left_610k_s.mesh), already in
+# Tallinen's normalised frame (1 unit = 32.99 mm).
+name = "atlas w21 growth, tabulated H"
+normalization = "none"
+
+[material]
+mu_gray = 1.0
+mu_white = 1.167
+bulk = 5.0
+eps = 0.1
+k_inverted = 0.0
+
+[dynamics]
+mesh_spacing = 0.0136   # mean atlas surface edge (0.45 mm)
+density = 0.0025
+damping = 0.5
+step_factor = 0.025
+t_start = 0.0
+t_end = 1.0
+
+[schedule]
+# One knot per gestational week, t = (SG - 21)/15: weeks 21, 22, ..., 36.
+law = "tabulated"
+t = [0.000000, 0.066667, 0.133333, 0.200000, 0.266667, 0.333333, 0.400000, 0.466667, 0.533333, 0.600000, 0.666667, 0.733333, 0.800000, 0.866667, 0.933333, 1.000000]
+a = [0.000000, 0.123333, 0.246667, 0.370000, 0.493333, 0.616667, 0.740000, 0.863333, 0.986667, 1.110000, 1.233333, 1.356667, 1.480000, 1.603333, 1.726667, 1.850000]   # 1.85 t (Tallinen)
+# Atlas pial-white distance (weekly medians, mm) / 32.986 mm:
+# 1.45, 1.45, 1.45, 1.47, 1.50, 1.53, 1.50, 1.45, 1.36, 1.29, 1.18, 1.12, 1.07, 1.04, 1.03, 1.03
+h = [0.043958, 0.043958, 0.043958, 0.044564, 0.045474, 0.046383, 0.045474, 0.043958, 0.041230, 0.039108, 0.035773, 0.033954, 0.032438, 0.031529, 0.031225, 0.031225]
+
+[contact]
+enabled = true
+stiffness_factor = 10.0
+repulsive_skin = 0.2
+proximity_skin = 0.6
+check_every = 10
+midplane = 0.3902       # most medial atlas point
+midplane_restoring = true
+
+[growth_mask]
+kind = "file"
+path = "data/meshes/w21_left_610k_s.gr.txt"

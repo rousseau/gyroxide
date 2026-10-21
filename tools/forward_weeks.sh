@@ -5,6 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 cfg=$1; D=$2; w1=${3:-36}
+mkdir -p "$D"
 BIN=${BIN:-target/release/gyroxide}
 MESH=${MESH:-data/meshes/w21_left_610k.mesh}
 WEEK=8769

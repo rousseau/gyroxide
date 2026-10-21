@@ -202,15 +202,15 @@ pub fn force_tangent<B: Backend>(
         let s: [T1<B>; 4] = std::array::from_fn(|k| t.clone().select(0, pre.tet_nodes[k].clone()));
         (s[0].clone() + s[1].clone() + s[2].clone() + s[3].clone()) / 4.0
     };
-    let kja = (mean4(&jn) - 1.0) * mat.bulk;
-    let dkja = mean4(&djn) * mat.bulk;
-
     let ari = ar.inverse();
     let f = a.matmul(&ari);
     let df = da.matmul(&ari);
     let j = f.det();
     let adjf = f.adjugate();
     let dj = frob(&adjf.transpose(), &df);
+    let beta = mat.vol_stab;
+    let kja = (mean4(&jn) - 1.0) * (mat.bulk * (1.0 - beta)) + (j.clone() - 1.0) * (mat.bulk * beta);
+    let dkja = mean4(&djn) * (mat.bulk * (1.0 - beta)) + dj.clone() * (mat.bulk * beta);
     let b = f.matmul(&f.transpose());
     let db = df.matmul(&f.transpose()).add(&f.matmul(&df.transpose()));
     let coef = mu / (j.clone() * j.clone().powf_scalar(2.0 / 3.0));
@@ -282,11 +282,12 @@ fn forces_impl<B: Backend>(
     let jn = vn.clone() / vn0.clone();
     let js: [T1<B>; 4] = std::array::from_fn(|k| jn.clone().select(0, pre.tet_nodes[k].clone()));
     let ja = (js[0].clone() + js[1].clone() + js[2].clone() + js[3].clone()) / 4.0;
-    let kja = (ja.clone() - 1.0) * mat.bulk; // K (Ja - 1)
-
     // Kinematics.
     let f = a.matmul(&ar.inverse());
     let j = f.det();
+    // K [(1 - beta)(Ja - 1) + beta (J - 1)] (beta = 0: Tallinen's nodal-averaged pressure).
+    let beta = mat.vol_stab;
+    let kja = (ja.clone() - 1.0) * (mat.bulk * (1.0 - beta)) + (j.clone() - 1.0) * (mat.bulk * beta);
     let b = f.matmul(&f.transpose());
     let c = f.transpose().matmul(&f);
     let tr_b = b.trace();
@@ -328,7 +329,8 @@ fn forces_impl<B: Backend>(
             .map(|ji| (ji.clone() - 1.0).powf_scalar(2.0))
             .reduce(|s, v| s + v)
             .unwrap()
-            * (0.125 * mat.bulk); // 0.5 K mean((Ji - 1)^2)
+            * (0.125 * mat.bulk * (1.0 - mat.vol_stab)) // 0.5 K (1 - beta) mean((Ji - 1)^2)
+            + (j.clone() - 1.0).powf_scalar(2.0) * (0.5 * mat.bulk * mat.vol_stab);
         let w_reg = (tr_b / pow_j23 - 3.0) * mu.clone() * 0.5;
         let w = w_inv_dev.mask_where(regular.clone(), w_reg) + vol_term;
         let ok = (j.clone() * j.clone()).greater_elem(1e-50);

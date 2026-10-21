@@ -271,9 +271,17 @@ fn growing_ball_smoke_run() {
 
 #[test]
 fn force_tangent_matches_finite_differences() {
+    // Tallinen's nodal-averaged pressure, then with the element-J stabilisation.
+    for beta in [0.0, 0.3] {
+        force_tangent_case(beta);
+    }
+}
+
+fn force_tangent_case(beta: f64) {
     let mesh = voxel_ball(5, 1.0);
     let mut params = params_no_contact();
     params.material.wm_growth = 0.3;
+    params.material.vol_stab = beta;
     let sim = Simulation::<B>::new(mesh, params, device()).unwrap();
     let mut r = rng(7);
     let x0 = sim.x.to_rows();
@@ -296,7 +304,7 @@ fn force_tangent_matches_finite_differences() {
     let fd: Vec<[f64; 3]> = fp.iter().zip(&fm).map(|(a, b)| [0, 1, 2].map(|d| (a[d] - b[d]) / (2.0 * eps))).collect();
     let an = elastic::force_tangent(pre, mat, &V3::from_rows(&x, &device()), &V3::from_rows(&v, &device()), &gt, &th, Some(&core), Some(&rad)).to_rows();
     let err = an.iter().zip(&fd).flat_map(|(a, b)| (0..3).map(move |d| (a[d] - b[d]).abs())).fold(0.0f64, f64::max);
-    assert!(err < 1e-6 * max_abs(&fd), "max error {err:.3e}, max |fd| {:.3e}", max_abs(&fd));
+    assert!(err < 1e-6 * max_abs(&fd), "beta {beta}: max error {err:.3e}, max |fd| {:.3e}", max_abs(&fd));
 }
 
 #[test]

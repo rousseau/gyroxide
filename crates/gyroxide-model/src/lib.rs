@@ -56,6 +56,11 @@ pub struct Material {
     /// `wm_growth` table of the nodal schedule.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub wm_growth: f64,
+    /// Share beta of the element J in the volumetric pressure, K [(1 - beta)(J_a - 1) +
+    /// beta (J - 1)] (F-bar-like stabilisation). 0 in both codes: the nodal-averaged J_a alone
+    /// leaves element volume modes without stiffness (single tetrahedra collapse at the surface).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub vol_stab: f64,
 }
 
 fn is_zero(v: &f64) -> bool {
