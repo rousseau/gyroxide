@@ -301,6 +301,54 @@ pub fn surface_name(prefix: &str, hemi: char, step: u64) -> String {
 }
 
 // ------------------------------------------------------------------------------------------------
+// dataset_description.json
+
+/// Dépôt du code, déclaré dans `GeneratedBy`.
+pub const CODE_URL: &str = "https://github.com/rousseau/gyroxide";
+/// Version de BIDS déclarée dans `dataset_description.json` (comme medoxide et surfoxide).
+pub const BIDS_VERSION: &str = "1.9.0";
+
+/// Qui a écrit les fichiers : `GeneratedBy` de `dataset_description.json`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Generator {
+    /// Nom de l'outil, par exemple `gyroxide run`.
+    pub name: String,
+    pub version: String,
+    /// Commit du code compilé, s'il est connu.
+    pub commit: Option<String>,
+    /// Ligne de commande, si elle est connue.
+    pub command_line: Option<String>,
+}
+
+/// Écrit `<pipeline>/dataset_description.json` (`DatasetType: derivative`, version de BIDS, `GeneratedBy`
+/// avec `Name`, `Version`, `Commit`, `CodeURL`, `CommandLine`), au même format que medoxide et surfoxide.
+/// Réécrit à chaque lancement : il décrit le dernier.
+pub fn ecrire_dataset_description(pipeline: &Path, generator: &Generator) -> Result<()> {
+    let mut g = serde_json::Map::new();
+    g.insert("Name".into(), generator.name.clone().into());
+    g.insert("Version".into(), generator.version.clone().into());
+    if let Some(c) = &generator.commit {
+        g.insert("Commit".into(), c.clone().into());
+    }
+    g.insert("CodeURL".into(), CODE_URL.into());
+    if let Some(l) = &generator.command_line {
+        g.insert("CommandLine".into(), l.clone().into());
+    }
+    let v = serde_json::json!({
+        "Name": PIPELINE,
+        "BIDSVersion": BIDS_VERSION,
+        "DatasetType": "derivative",
+        "GeneratedBy": [serde_json::Value::Object(g)],
+    });
+    std::fs::create_dir_all(pipeline).map_err(|e| Error::io(pipeline, e))?;
+    let path = pipeline.join("dataset_description.json");
+    write_atomic(
+        &path,
+        (serde_json::to_string_pretty(&v).expect("JSON") + "\n").as_bytes(),
+    )
+}
+
+// ------------------------------------------------------------------------------------------------
 // Indice de gyrification
 
 fn area(points: &[[f64; 3]], faces: &[[u32; 3]]) -> f64 {
@@ -458,6 +506,29 @@ mod tests {
         let expected = (5.0 + 4.0 * 0.5 * (0.5f64 * 0.5 + 0.5 * 0.5).sqrt()) / 6.0;
         assert!((gi(&v2, &f2).unwrap() - expected).abs() < 1e-12);
         assert_eq!(gi(&v[..4], &f[..2]), None, "points coplanaires");
+    }
+
+    #[test]
+    fn description_de_la_derivee() {
+        let d = tmp("desc");
+        let g = Generator {
+            name: "gyroxide run".into(),
+            version: "0.1.0".into(),
+            commit: Some("abc123".into()),
+            command_line: Some("gyroxide run --bids x".into()),
+        };
+        ecrire_dataset_description(&d, &g).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(d.join("dataset_description.json")).unwrap()).unwrap();
+        assert_eq!(
+            (v["Name"].as_str(), v["DatasetType"].as_str()),
+            (Some("gyroxide"), Some("derivative"))
+        );
+        let gb = &v["GeneratedBy"][0];
+        assert_eq!(gb["Commit"], "abc123");
+        assert_eq!(gb["CodeURL"], CODE_URL);
+        assert_eq!(gb["CommandLine"], "gyroxide run --bids x");
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

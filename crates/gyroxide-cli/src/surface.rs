@@ -66,6 +66,10 @@ impl SurfaceOut {
             .collect()
     }
 
+    pub fn faces(&self) -> &[[u32; 3]] {
+        &self.faces
+    }
+
     /// Writes the surface as GIfTI and returns its vertices (image space).
     pub fn write_gifti(&self, path: &Path, x: &[[f64; 3]]) -> Result<Vec<[f64; 3]>> {
         let v = self.vertices(x);

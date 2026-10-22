@@ -301,6 +301,19 @@ fn closest_point_triangle_t<B: Backend>(p: &V3<B>, a: &V3<B>, b: &V3<B>, c: &V3<
     (q, bary)
 }
 
+/// Number of active contact pairs: points closer to their triangle than the repulsive skin `hc`
+/// (the pairs that [`penalty_forces`] pushes apart; one scalar read).
+pub fn count_active<B: Backend>(pairs: &ContactPairs<B>, x: &V3<B>, hc: f64) -> usize {
+    let p = x.select(&pairs.point);
+    let ta = x.select(&pairs.tri[0]);
+    let tb = x.select(&pairs.tri[1]);
+    let tc = x.select(&pairs.tri[2]);
+    let (q, _) = closest_point_triangle_t(&p, &ta, &tb, &tc);
+    let within = q.sub(&p).norm().lower_elem(hc);
+    let gate = pairs.active.clone().mask_fill(within.bool_not(), 0.0);
+    crate::algebra::scalar(gate.sum()).round() as usize
+}
+
 /// Maximum displacement of the surface nodes since `x_old` (one scalar read).
 pub fn max_surface_displacement<B: Backend>(x: &V3<B>, surface: &I1<B>, x_old: &V3<B>) -> f64 {
     crate::algebra::scalar(x.select(surface).sub(x_old).norm().max())

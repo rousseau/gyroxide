@@ -5,6 +5,7 @@ mod surface;
 use anyhow::{bail, Context, Result};
 use burn::tensor::backend::Backend;
 use clap::{Parser, Subcommand, ValueEnum};
+use gyroxide_io::{SequenceRow, SequenceWriter, State, Status};
 use gyroxide_mesh::{generate, netgen, normalize, vtk, TetMesh};
 use gyroxide_model::{GrowthMask, MeshNormalization, Params, Preset};
 use gyroxide_sim::{Simulation, Snapshot, TraceSink};
@@ -34,14 +35,16 @@ enum BackendKind {
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
 enum Hemi {
+    #[value(name = "L", alias = "l")]
     L,
+    #[value(name = "R", alias = "r")]
     R,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
     /// Runs a simulation.
-    Run(RunArgs),
+    Run(Box<RunArgs>),
     /// Prints the TOML parameters of a preset (tallinen2016, braingrowth).
     Preset { name: String },
     /// Writes a voxel-ball test mesh in Netgen .mesh format.
@@ -131,11 +134,32 @@ struct RunArgs {
     no_contact: bool,
     #[arg(long)]
     no_midplane: bool,
+    /// BIDS mode: root of the BIDS dataset (or its sourcedata/). The run is written to
+    /// <study>/derivatives/gyroxide/sub-X[/ses-Y]/anat/run-<label>/ (config.toml, status.json,
+    /// sequence.tsv, one GIfTI surface per output), instead of --out.
+    #[arg(long, requires_all = ["participant", "label"])]
+    bids: Option<PathBuf>,
+    /// BIDS participant (without sub-).
+    #[arg(long, requires = "bids")]
+    participant: Option<String>,
+    /// BIDS session (without ses-).
+    #[arg(long, requires = "bids")]
+    session: Option<String>,
+    /// Study root receiving derivatives/ (default: the parent of the BIDS root if it is named
+    /// sourcedata/, otherwise the root itself).
+    #[arg(long, requires = "bids")]
+    output_dir: Option<PathBuf>,
+    /// Run label (letters and digits): run-<label>/.
+    #[arg(long, requires = "bids")]
+    label: Option<String>,
 }
+
+/// Surfaces written every 1000 steps in BIDS mode when --surface-every is not given.
+const BIDS_SURFACE_EVERY: usize = 1000;
 
 fn main() -> Result<()> {
     match Cli::parse().cmd {
-        Cmd::Run(args) => run(args),
+        Cmd::Run(args) => run(*args),
         Cmd::Preset { name } => {
             let p = Preset::from_key(&name).with_context(|| format!("unknown preset '{name}'"))?;
             print!("{}", p.params().to_toml()?);
@@ -247,15 +271,59 @@ fn load_mesh(args: &RunArgs, params: &mut Params) -> Result<(TetMesh, String, no
     }
 }
 
-fn run(args: RunArgs) -> Result<()> {
+fn run(mut args: RunArgs) -> Result<()> {
     let mut params = load_params(&args)?;
     let (mesh, mesh_name, transform) = load_mesh(&args, &mut params)?;
     params.validate()?;
+    let bids = match &args.bids {
+        Some(_) => {
+            let b = BidsRun::create(&args, &params)?;
+            args.out = b.dir.clone();
+            if args.surface_every == 0 {
+                args.surface_every = BIDS_SURFACE_EVERY;
+            }
+            Some(b)
+        }
+        None => None,
+    };
+    let status = bids.as_ref().map(|b| (b.status_path.clone(), b.status.clone()));
+    let result = dispatch(args, params, mesh, mesh_name, transform, bids);
+    if let (Err(e), Some((path, mut st))) = (&result, status) {
+        // status.json: failed, with the message (the last step reached is kept when known).
+        if let Ok(last) = gyroxide_io::lire_status(&path) {
+            st.step = last.step;
+            st.total_steps = last.total_steps;
+        }
+        st.state = State::Failed;
+        st.updated = Some(gyroxide_io::now_iso8601());
+        st.message = Some(format!("{e:#}"));
+        gyroxide_io::ecrire_status(&path, &st)?;
+    }
+    result
+}
+
+fn dispatch(
+    args: RunArgs,
+    params: Params,
+    mesh: TetMesh,
+    mesh_name: String,
+    transform: normalize::Transform,
+    bids: Option<BidsRun>,
+) -> Result<()> {
     match args.backend {
         #[cfg(any(feature = "wgpu", feature = "cuda"))]
         BackendKind::Wgpu => {
             use burn::backend::wgpu::{Wgpu, WgpuDevice};
-            run_on::<Wgpu>(args, params, mesh, mesh_name, transform, WgpuDevice::default(), "f32")
+            run_on::<Wgpu>(
+                args,
+                params,
+                mesh,
+                mesh_name,
+                transform,
+                bids,
+                WgpuDevice::default(),
+                "f32",
+            )
         }
         #[cfg(not(any(feature = "wgpu", feature = "cuda")))]
         BackendKind::Wgpu => bail!("built without the wgpu feature"),
@@ -267,6 +335,7 @@ fn run(args: RunArgs) -> Result<()> {
                 mesh,
                 mesh_name,
                 transform,
+                bids,
                 NdArrayDevice::default(),
                 "f64",
             )
@@ -274,11 +343,135 @@ fn run(args: RunArgs) -> Result<()> {
     }
 }
 
+/// A run written as a BIDS derivative (gyroxide#3, guioxide `docs/donnees.md` section 4).
+struct BidsRun {
+    dir: PathBuf,
+    /// `sub-X[_ses-Y]`.
+    prefix: String,
+    hemi: char,
+    status_path: PathBuf,
+    status: Status,
+    sequence: SequenceWriter,
+    /// Last step whose surface is in sequence.tsv.
+    last_written: Option<usize>,
+}
+
+impl BidsRun {
+    fn create(args: &RunArgs, params: &Params) -> Result<Self> {
+        let root = args.bids.as_deref().expect("--bids");
+        let participant = args.participant.as_deref().context("--bids needs --participant")?;
+        let label = args.label.as_deref().context("--bids needs --label")?;
+        surfoxide_io::bids::check_label(label).map_err(|e| anyhow::anyhow!("--label: {e}"))?;
+        let mesh = args
+            .mesh
+            .as_deref()
+            .context("--bids needs --mesh (initial state; the default .vtu of surfoxide awaits surfoxide#3)")?;
+        let d = surfoxide_io::bids::derivative_dir(
+            root,
+            args.output_dir.as_deref(),
+            gyroxide_io::PIPELINE,
+            participant,
+            args.session.as_deref(),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let dir = d.anat.join(format!("run-{label}"));
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        gyroxide_io::ecrire_dataset_description(
+            &d.pipeline,
+            &gyroxide_io::Generator {
+                name: "gyroxide run".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                commit: option_env!("GYROXIDE_COMMIT").map(str::to_string),
+                command_line: Some(std::env::args().collect::<Vec<_>>().join(" ")),
+            },
+        )?;
+        // config.toml: the complete parameters (preset + overrides) and the initial state.
+        let initial = relative_path(&dir, mesh)?;
+        let config = format!(
+            "# gyroxide run --label {label}: complete parameters (preset + overrides).\n\
+             # initial_state: initial mesh, relative to this run directory.\n\
+             initial_state = {}\n\n{}",
+            toml_string(&initial),
+            params.to_toml()?
+        );
+        std::fs::write(dir.join("config.toml"), config)?;
+        let status_path = dir.join("status.json");
+        let status = Status {
+            state: State::Running,
+            step: Some(0),
+            total_steps: None,
+            started: Some(gyroxide_io::now_iso8601()),
+            updated: Some(gyroxide_io::now_iso8601()),
+            message: None,
+        };
+        gyroxide_io::ecrire_status(&status_path, &status)?;
+        let sequence = SequenceWriter::create(&dir.join("sequence.tsv"))?;
+        Ok(Self {
+            dir,
+            prefix: d.prefix,
+            hemi: if args.hemi == Hemi::L { 'L' } else { 'R' },
+            status_path,
+            status,
+            sequence,
+            last_written: None,
+        })
+    }
+
+    fn update_status(&mut self, state: State, step: usize) -> Result<()> {
+        self.status.state = state;
+        self.status.step = Some(step as u64);
+        self.status.updated = Some(gyroxide_io::now_iso8601());
+        Ok(gyroxide_io::ecrire_status(&self.status_path, &self.status)?)
+    }
+
+    /// Writes the surface of a snapshot and its line of sequence.tsv.
+    fn write_surface(&mut self, surface: &SurfaceOut, params: &Params, s: &Snapshot) -> Result<()> {
+        let g = &s.diagnostics;
+        let (step, t) = (g.step, g.t);
+        let file = gyroxide_io::surface_name(&self.prefix, self.hemi, step as u64);
+        let v = surface.write_gifti(&self.dir.join(&file), &s.x)?;
+        self.sequence.append(&SequenceRow {
+            step: step as u64,
+            time: Some(t),
+            ga_weeks: params.schedule.ga_weeks(t),
+            file,
+            gi: gyroxide_io::gi(&v, surface.faces()),
+            energy: Some(g.elastic),
+            n_contacts: Some(g.n_contacts as u64),
+        })?;
+        self.last_written = Some(step);
+        Ok(())
+    }
+}
+
+/// `path` relative to the directory `from` (both made absolute).
+fn relative_path(from: &std::path::Path, path: &std::path::Path) -> Result<String> {
+    let from = std::fs::canonicalize(from)?;
+    let to = std::fs::canonicalize(path).with_context(|| format!("reading {}", path.display()))?;
+    let (a, b): (Vec<_>, Vec<_>) = (from.components().collect(), to.components().collect());
+    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let mut rel = PathBuf::new();
+    for _ in common..a.len() {
+        rel.push("..");
+    }
+    for c in &b[common..] {
+        rel.push(c);
+    }
+    Ok(rel.to_string_lossy().into_owned())
+}
+
+/// A TOML basic string.
+fn toml_string(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 /// Prints diagnostics, writes the surfaces and forwards to the NPY writer.
 struct Outputs<'a> {
     args: &'a RunArgs,
+    params: &'a Params,
     mesh: &'a TetMesh,
     surface: &'a SurfaceOut,
+    bids: Option<BidsRun>,
     npy: Option<NpyTraceWriter>,
     start: Instant,
 }
@@ -294,6 +487,9 @@ impl TraceSink for Outputs<'_> {
     fn record(&mut self, s: &Snapshot) -> std::io::Result<()> {
         let g = &s.diagnostics;
         let every = |n: usize| n > 0 && g.step.is_multiple_of(n);
+        if !g.elastic.is_finite() || s.x.iter().flatten().any(|v| !v.is_finite()) {
+            return Err(std::io::Error::other(format!("non-finite state at step {}", g.step)));
+        }
         if every(self.args.print_every) {
             println!(
                 "{:>9} {:>9.4} {:>11.4e} {:>11.4e} {:>9.4} {:>9.4} {:>8.4} {:>8.4} {:>6}   {:.1}s",
@@ -310,9 +506,21 @@ impl TraceSink for Outputs<'_> {
             );
         }
         if every(self.args.surface_every) {
-            self.surface
-                .write_gifti(&self.args.out.join(format!("surface_{:07}.surf.gii", g.step)), &s.x)
-                .map_err(std::io::Error::other)?;
+            match &mut self.bids {
+                Some(b) => b
+                    .write_surface(self.surface, self.params, s)
+                    .map_err(std::io::Error::other)?,
+                None => {
+                    self.surface
+                        .write_gifti(&self.args.out.join(format!("surface_{:07}.surf.gii", g.step)), &s.x)
+                        .map_err(std::io::Error::other)?;
+                }
+            }
+        }
+        if let Some(b) = &mut self.bids {
+            if every(self.args.print_every) || every(self.args.surface_every) {
+                b.update_status(State::Running, g.step).map_err(std::io::Error::other)?;
+            }
         }
         if every(self.args.vtk_every) {
             vtk::write_surface(
@@ -355,7 +563,10 @@ fn save_checkpoint<B: Backend>(sim: &Simulation<B>, dir: &std::path::Path) -> Re
 
 fn load_checkpoint<B: Backend>(sim: &mut Simulation<B>, dir: &std::path::Path) -> Result<(usize, f64)> {
     use gyroxide_validate::npy;
-    let state: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("state.json"))?)?;
+    let state_path = dir.join("state.json");
+    let state: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&state_path).with_context(|| format!("reading {}", state_path.display()))?,
+    )?;
     let step = state["step"].as_u64().context("checkpoint step")? as usize;
     let t = state["t"].as_f64().context("checkpoint t")?;
     let x = npy::read(dir.join("x.npy"))?.rows3().context("x.npy")?;
@@ -368,17 +579,22 @@ fn load_checkpoint<B: Backend>(sim: &mut Simulation<B>, dir: &std::path::Path) -
     Ok((step, t))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_on<B: Backend>(
     args: RunArgs,
     params: Params,
     mesh: TetMesh,
     mesh_name: String,
     transform: normalize::Transform,
+    bids: Option<BidsRun>,
     device: B::Device,
     precision: &str,
 ) -> Result<()> {
     std::fs::create_dir_all(&args.out)?;
-    std::fs::write(args.out.join("params.toml"), params.to_toml()?)?;
+    if bids.is_none() {
+        // (in BIDS mode the parameters are in config.toml)
+        std::fs::write(args.out.join("params.toml"), params.to_toml()?)?;
+    }
     let (emin, emean, emax) = mesh.surface_edge_stats();
     println!("gyroxide | preset '{}' | mesh {mesh_name}", params.name);
     println!(
@@ -416,7 +632,7 @@ fn run_on<B: Backend>(
     };
 
     let t0 = Instant::now();
-    let mut sim = Simulation::<B>::new(mesh.clone(), params, device)?;
+    let mut sim = Simulation::<B>::new(mesh.clone(), params.clone(), device)?;
     if let gyroxide_model::Schedule::Nodal { a, h, tensor, .. } = &sim.params.schedule {
         let read = |path: &str| -> Result<Vec<f64>> {
             let arr = gyroxide_validate::npy::read(path).with_context(|| format!("reading {path}"))?;
@@ -455,14 +671,21 @@ fn run_on<B: Backend>(
     let surface = SurfaceOut::new(&mesh, transform, args.hemi == Hemi::L);
     let start = Instant::now();
     let step0 = sim.step; // > 0 after --resume
+    let stop = args.steps.map(|n| sim.step + n);
+    let mut bids = bids;
+    if let Some(b) = &mut bids {
+        b.status.total_steps = Some(stop.unwrap_or(sim.params.n_steps()).min(sim.params.n_steps()) as u64);
+        b.update_status(State::Running, sim.step)?;
+    }
     let mut out = Outputs {
         args: &args,
+        params: &params,
         mesh: &mesh,
         surface: &surface,
+        bids,
         npy,
         start,
     };
-    let stop = args.steps.map(|n| sim.step + n);
     while !sim.done() && stop.is_none_or(|s| sim.step < s) {
         let mut chunk = stop.map_or(usize::MAX, |s| s - sim.step);
         if args.checkpoint_every > 0 {
@@ -479,7 +702,21 @@ fn run_on<B: Backend>(
     }
     let x = sim.positions(); // also synchronises the device queue
     let el = start.elapsed().as_secs_f64();
-    surface.write_gifti(&args.out.join("surface_final.surf.gii"), &x)?;
+    if x.iter().flatten().any(|v| !v.is_finite()) {
+        bail!("non-finite positions at step {}", sim.step);
+    }
+    match &mut out.bids {
+        Some(b) => {
+            if b.last_written != Some(sim.step) {
+                // Final state, after the last update: diagnosed without advancing.
+                b.write_surface(&surface, &params, &sim.snapshot_now())?;
+            }
+            b.update_status(State::Done, sim.step)?;
+        }
+        None => {
+            surface.write_gifti(&args.out.join("surface_final.surf.gii"), &x)?;
+        }
+    }
     if args.vtk_every > 0 {
         vtk::write_surface(args.out.join("surface_final.vtk"), &mesh, &x, &[])?;
     }
@@ -492,8 +729,5 @@ fn run_on<B: Backend>(
         sim.n_rebuilds,
         sim.n_contact_pairs()
     );
-    if x.iter().flatten().any(|v| !v.is_finite()) {
-        bail!("non-finite positions");
-    }
     Ok(())
 }

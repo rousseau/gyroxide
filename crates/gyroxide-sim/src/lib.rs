@@ -42,6 +42,8 @@ pub struct Diagnostics {
     pub span_y: f64,
     /// Number of inverted tetrahedra.
     pub n_inverted: usize,
+    /// Number of active contact pairs (surface points within the repulsive skin of a triangle).
+    pub n_contacts: usize,
 }
 
 pub struct Simulation<B: Backend> {
@@ -429,11 +431,23 @@ impl<B: Backend> Simulation<B> {
                 span_x: span(0),
                 span_y: span(1),
                 n_inverted: ninv as usize,
+                n_contacts: self
+                    .pairs
+                    .as_ref()
+                    .map_or(0, |p| contact::count_active(p, &self.x, self.params.repulsive_skin())),
             },
             x,
             v,
             force: force.to_rows(),
         }
+    }
+
+    /// Diagnostics and state at the current step without advancing (e.g. the final state, after
+    /// the last update, which no recorded step sees).
+    pub fn snapshot_now(&mut self) -> Snapshot {
+        self.maybe_rebuild_contact();
+        let (force, el) = self.compute_force(&self.x, &self.thickness_at(self.t), true);
+        self.snapshot(&force, &el)
     }
 
     /// Device constants (for tests and alternative kernels).
