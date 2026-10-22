@@ -74,6 +74,8 @@ pub struct Simulation<B: Backend> {
     core_delta: Option<T1<B>>,
     /// Unit normals of the pull targets: if set, springs act along them only (tangential sliding).
     pull_normals: Option<V3<B>>,
+    /// Optional core growth tensor per tetrahedron replacing the scheduled one (remodelling).
+    core_override: Option<[T1<B>; 6]>,
 }
 
 /// Expansion a_t: one value, or one per tetrahedron.
@@ -179,6 +181,7 @@ impl<B: Backend> Simulation<B> {
             radial_delta: None,
             core_delta: None,
             pull_normals: None,
+            core_override: None,
         })
     }
 
@@ -301,13 +304,27 @@ impl<B: Backend> Simulation<B> {
 
     /// Growth tensor U of the core per tetrahedron at the current time (`core` table).
     pub fn core_growth(&self) -> Option<M3<B>> {
-        let mut u = self.nodal.as_ref().and_then(|nd| nd.core_at(self.t));
+        let mut u = match &self.core_override {
+            Some(c) => {
+                let [xx, yy, zz, xy, xz, yz] = c.clone();
+                Some(M3 { m: [[xx, xy.clone(), xz.clone()], [xy, yy, yz.clone()], [xz, yz, zz]] })
+            }
+            None => self.nodal.as_ref().and_then(|nd| nd.core_at(self.t)),
+        };
         if let (Some(u), Some(d)) = (u.as_mut(), &self.core_delta) {
             for k in 0..3 {
                 u.m[k][k] = u.m[k][k].clone() + d.clone();
             }
         }
         u
+    }
+
+    /// Core growth tensor U per tetrahedron, row-major [n_tets, 6] (xx, yy, zz, xy, xz, yz),
+    /// replacing the scheduled one (e.g. after absorbing the elastic deformation); `None` restores it.
+    pub fn set_core_override(&mut self, u: Option<&[f64]>) {
+        self.core_override = u.map(|u| {
+            std::array::from_fn(|k| floats(&u.iter().skip(k).step_by(6).copied().collect::<Vec<_>>(), &self.device))
+        });
     }
 
     /// Isotropic correction delta I added to the core growth U per tetrahedron; `None` removes it.

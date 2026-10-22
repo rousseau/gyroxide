@@ -1367,6 +1367,14 @@ fn main() {
         // no equilibrium solve). Then released from x_g with the fitted growth.
         let xg = npy::read(&path).unwrap().rows3().unwrap();
         let v0 = p.v0.clone();
+        if let Some(cp) = opt("--core-override") {
+            // Remodelled core: growth tensor U per tetrahedron (tools/absorb_core.py).
+            let u = read(&cp);
+            assert_eq!(u.len(), 6 * p.tets.len(), "--core-override needs [n_tets, 6]");
+            p.sim.set_core_override(Some(&u));
+            p.ad.set_core_override(Some(&u));
+            println!("core growth replaced per tetrahedron ({})", cp.display());
+        }
         let energy = args.iter().any(|a| a == "--energy-norm");
         let fields = opt("--inverse-fields").map_or(String::new(), |f| f.to_string_lossy().into_owned());
         let (with_c, with_k) = (fields.contains('c'), fields.contains('k'));
