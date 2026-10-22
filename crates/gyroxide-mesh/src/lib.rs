@@ -7,10 +7,13 @@
 
 pub mod distance;
 pub mod generate;
+pub mod inside;
 pub mod netgen;
 pub mod normalize;
+pub mod tetgen;
 pub mod topology;
 pub mod vtk;
+pub mod vtu;
 
 use thiserror::Error;
 
@@ -83,6 +86,33 @@ impl TetMesh {
             }
         }
         flipped
+    }
+
+    /// Smallest and largest dihedral angles over all tetrahedra, in degrees (quality check).
+    pub fn dihedral_range_deg(&self) -> (f64, f64) {
+        const EDGES: [(usize, usize, usize, usize); 6] = [
+            (0, 1, 2, 3),
+            (0, 2, 1, 3),
+            (0, 3, 1, 2),
+            (1, 2, 0, 3),
+            (1, 3, 0, 2),
+            (2, 3, 0, 1),
+        ];
+        let (mut lo, mut hi) = (180.0f64, 0.0f64);
+        for t in &self.tets {
+            let p = t.map(|n| self.nodes[n as usize]);
+            for (a, b, c, d) in EDGES {
+                // angle between the faces (a, b, c) and (a, b, d) along the edge ab
+                let e = sub(p[b], p[a]);
+                let n1 = cross(e, sub(p[c], p[a]));
+                let n2 = cross(e, sub(p[d], p[a]));
+                let cos = dot(n1, n2) / (norm(n1) * norm(n2));
+                let angle = cos.clamp(-1.0, 1.0).acos().to_degrees();
+                lo = lo.min(angle);
+                hi = hi.max(angle);
+            }
+        }
+        (lo, hi)
     }
 
     pub fn validate(&self) -> Result<(), MeshError> {

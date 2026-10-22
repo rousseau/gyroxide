@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use burn::tensor::backend::Backend;
 use clap::{Parser, Subcommand, ValueEnum};
 use gyroxide_io::{SequenceRow, SequenceWriter, State, Status};
-use gyroxide_mesh::{generate, netgen, normalize, vtk, TetMesh};
+use gyroxide_mesh::{generate, netgen, normalize, vtk, vtu, TetMesh};
 use gyroxide_model::{GrowthMask, MeshNormalization, Params, Preset};
 use gyroxide_sim::{Simulation, Snapshot, TraceSink};
 use gyroxide_validate::{compare_dirs, list_steps, NpyTraceWriter, TraceLayout, TraceMeta};
@@ -41,12 +41,28 @@ enum Hemi {
     R,
 }
 
+impl Hemi {
+    fn letter(self) -> char {
+        match self {
+            Hemi::L => 'L',
+            Hemi::R => 'R',
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Runs a simulation.
     Run(Box<RunArgs>),
     /// Prints the TOML parameters of a preset (tallinen2016, braingrowth).
     Preset { name: String },
+    /// Tetrahedral mesh of a session (gyroxide#5), initial state of `run --bids`: from the white and
+    /// pial surfaces and the cortex mask written by `surfx run --bids`, with TetGen run as an external
+    /// program (never linked). Writes derivatives/gyroxide/sub-X[/ses-Y]/anat/
+    /// sub-X[_ses-Y]_hemi-H_desc-<desc>_tet.vtu, in mm in the frame of the image, with the per-node
+    /// fields gray_matter (1 grey matter, 0 white matter: inside the white surface) and cortex (cortex
+    /// mask of the nearest pial vertex).
+    Mesh(MeshArgs),
     /// Writes a voxel-ball test mesh in Netgen .mesh format.
     Ball {
         /// Cubes per diameter.
@@ -69,6 +85,34 @@ enum Cmd {
 }
 
 #[derive(clap::Args)]
+struct MeshArgs {
+    /// Root of the BIDS dataset (or its sourcedata/).
+    #[arg(long)]
+    bids: PathBuf,
+    #[arg(long)]
+    participant: String,
+    #[arg(long)]
+    session: Option<String>,
+    /// Study root holding derivatives/ (default: as for `run --bids`).
+    #[arg(long)]
+    output_dir: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = Hemi::L)]
+    hemi: Hemi,
+    /// TetGen executable (external program, AGPL: never linked to gyroxide).
+    #[arg(long, default_value = "tetgen")]
+    tetgen: PathBuf,
+    /// TetGen switches (Y keeps the pial triangles exactly).
+    #[arg(long, default_value = gyroxide_mesh::tetgen::DEFAULT_SWITCHES)]
+    switches: String,
+    /// desc- entity of the output (the method).
+    #[arg(long, default_value = DEFAULT_MESH_DESC)]
+    desc: String,
+}
+
+/// desc- entity of the session meshes written by `gyroxide mesh` (and read by default by `run --bids`).
+const DEFAULT_MESH_DESC: &str = "tetgen";
+
+#[derive(clap::Args)]
 struct RunArgs {
     /// Parameter preset.
     #[arg(long, default_value = "tallinen2016")]
@@ -76,9 +120,14 @@ struct RunArgs {
     /// TOML parameter file (overrides the preset).
     #[arg(long)]
     config: Option<PathBuf>,
-    /// Netgen .mesh file. Without it, a voxel ball is generated (uniform growth, no midplane).
+    /// Initial state: Netgen .mesh, or .vtu of `gyroxide mesh` (in mm, normalised for the computation).
+    /// Without it, a voxel ball is generated (uniform growth, no midplane); in BIDS mode the default is
+    /// the session mesh derivatives/gyroxide/…/sub-X[_ses-Y]_hemi-H_desc-<mesh-desc>_tet.vtu.
     #[arg(long)]
     mesh: Option<PathBuf>,
+    /// desc- entity of the default session mesh in BIDS mode.
+    #[arg(long, default_value = DEFAULT_MESH_DESC)]
+    mesh_desc: String,
     /// Reference trace directory: read the mesh from its `static/` NPY files
     /// (X0, tets, faces; same node order, no normalisation applied).
     #[arg(long, conflicts_with = "mesh")]
@@ -165,6 +214,7 @@ fn main() -> Result<()> {
             print!("{}", p.params().to_toml()?);
             Ok(())
         }
+        Cmd::Mesh(args) => mesh_session(&args),
         Cmd::Ball { n, out } => {
             let m = generate::voxel_ball(n, 1.0);
             netgen::write(&m, &out)?;
@@ -202,6 +252,101 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn mesh_session(args: &MeshArgs) -> Result<()> {
+    use surfoxide_io::bids;
+    let session = args.session.as_deref();
+    let h = args.hemi.letter();
+    // surfx outputs: under --output-dir first (a chain run with the same --output-dir), then in the study.
+    let mut src = None;
+    for out in [args.output_dir.as_deref(), None] {
+        let d = bids::derivative_dir(&args.bids, out, bids::PIPELINE_SURFACES, &args.participant, session)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if d.anat.join(format!("{}_hemi-{h}_pial.surf.gii", d.prefix)).is_file() {
+            src = Some(d);
+            break;
+        }
+        src.get_or_insert(d);
+    }
+    let src = src.expect("at least one candidate");
+    let input = |name: &str| src.anat.join(format!("{}_hemi-{h}_{name}", src.prefix));
+    let read = |name: &str| {
+        let p = input(name);
+        surfoxide_io::gifti::read_surface(&p).with_context(|| format!("reading {}", p.display()))
+    };
+    let (pial, _) = read("pial.surf.gii")?;
+    let (white, _) = read("white.surf.gii")?;
+    let cortex_path = input("cortex.shape.gii");
+    let cortex = surfoxide_io::gifti::read_fields(&cortex_path)
+        .with_context(|| format!("reading {}", cortex_path.display()))?
+        .into_iter()
+        .next()
+        .with_context(|| format!("{}: no field", cortex_path.display()))?
+        .values;
+    let nv = pial.vertices().len();
+    if cortex.len() != nv {
+        bail!("cortex mask: {} values for {nv} pial vertices", cortex.len());
+    }
+    let work = std::env::temp_dir().join(format!("gyroxide-mesh-{}", std::process::id()));
+    let t0 = Instant::now();
+    let mesh =
+        gyroxide_mesh::tetgen::tetrahedralise(&args.tetgen, pial.vertices(), pial.faces(), &args.switches, &work)?;
+    let _ = std::fs::remove_dir_all(&work);
+    let white_matter = gyroxide_mesh::inside::inside(&mesh.nodes, white.vertices(), white.faces());
+    let near = gyroxide_mesh::distance::nearest(&mesh.nodes, &mesh.nodes[..nv]);
+    let gray: Vec<f64> = white_matter.iter().map(|&w| if w { 0.0 } else { 1.0 }).collect();
+    let cortex_nodes: Vec<f64> = near.index.iter().map(|&i| cortex[i as usize]).collect();
+    let dst = bids::derivative_dir(
+        &args.bids,
+        args.output_dir.as_deref(),
+        gyroxide_io::PIPELINE,
+        &args.participant,
+        session,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    std::fs::create_dir_all(&dst.anat)?;
+    let out = dst
+        .anat
+        .join(format!("{}_hemi-{h}_desc-{}_tet.vtu", dst.prefix, args.desc));
+    vtu::write(
+        &out,
+        &mesh,
+        &[
+            vtu::PointField {
+                name: "gray_matter".into(),
+                values: gray.clone(),
+            },
+            vtu::PointField {
+                name: "cortex".into(),
+                values: cortex_nodes,
+            },
+        ],
+    )?;
+    gyroxide_io::ecrire_dataset_description(
+        &dst.pipeline,
+        &gyroxide_io::Generator {
+            name: "gyroxide mesh".into(),
+            version: env!("CARGO_PKG_VERSION").into(),
+            commit: option_env!("GYROXIDE_COMMIT").map(str::to_string),
+            command_line: Some(std::env::args().collect::<Vec<_>>().join(" ")),
+        },
+    )?;
+    let vmin = (0..mesh.tets.len())
+        .map(|i| mesh.tet_volume(i))
+        .fold(f64::INFINITY, f64::min);
+    let (dlo, dhi) = mesh.dihedral_range_deg();
+    let n_wm = white_matter.iter().filter(|&&w| w).count();
+    println!(
+        "{}: {} nodes ({nv} pial), {} tets, {} white-matter nodes ({:.1} %) | min volume {vmin:.3e} mm3, dihedral {dlo:.1}-{dhi:.1} deg | {:.1}s",
+        out.display(),
+        mesh.n_nodes(),
+        mesh.tets.len(),
+        n_wm,
+        100.0 * n_wm as f64 / mesh.n_nodes() as f64,
+        t0.elapsed().as_secs_f64()
+    );
+    Ok(())
 }
 
 fn load_params(args: &RunArgs) -> Result<Params> {
@@ -243,7 +388,18 @@ fn load_mesh(args: &RunArgs, params: &mut Params) -> Result<(TetMesh, String, no
     }
     match &args.mesh {
         Some(path) => {
-            let mut m = netgen::read(path).with_context(|| format!("reading {}", path.display()))?;
+            let is_vtu = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("vtu"));
+            let mut m = if is_vtu {
+                let (m, _) = vtu::read(path).with_context(|| format!("reading {}", path.display()))?;
+                if params.normalization == MeshNormalization::None {
+                    // A .vtu session mesh is in mm: it is always normalised for the computation.
+                    params.normalization = MeshNormalization::BrainGrowthWhole;
+                    println!("  {}: mesh in mm, normalization = brain_growth_whole", path.display());
+                }
+                m
+            } else {
+                netgen::read(path).with_context(|| format!("reading {}", path.display()))?
+            };
             let mode = match params.normalization {
                 MeshNormalization::None => normalize::Normalization::None,
                 MeshNormalization::BrainGrowthWhole => normalize::Normalization::BrainGrowthWhole,
@@ -251,6 +407,15 @@ fn load_mesh(args: &RunArgs, params: &mut Params) -> Result<(TetMesh, String, no
             };
             // Kept so that the surfaces are written back in image space (identity for "none").
             let transform = normalize::apply(&mut m, mode);
+            if is_vtu && args.mesh_spacing.is_none() {
+                // Session meshes vary and hold short surface edges: the spacing a (explicit time step,
+                // contact skins) is the shortest surface edge, for stability.
+                params.dynamics.mesh_spacing = m.surface_edge_stats().0;
+                println!(
+                    "  mesh spacing a = {:.5} (shortest surface edge, normalised)",
+                    params.dynamics.mesh_spacing
+                );
+            }
             Ok((m, path.display().to_string(), transform))
         }
         None => {
@@ -272,6 +437,31 @@ fn load_mesh(args: &RunArgs, params: &mut Params) -> Result<(TetMesh, String, no
 }
 
 fn run(mut args: RunArgs) -> Result<()> {
+    if let (Some(root), None) = (&args.bids, &args.mesh) {
+        // BIDS mode: the session mesh written by `gyroxide mesh` is the default initial state.
+        let participant = args.participant.as_deref().context("--bids needs --participant")?;
+        let d = surfoxide_io::bids::derivative_dir(
+            root,
+            args.output_dir.as_deref(),
+            gyroxide_io::PIPELINE,
+            participant,
+            args.session.as_deref(),
+        )
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let path = d.anat.join(format!(
+            "{}_hemi-{}_desc-{}_tet.vtu",
+            d.prefix,
+            args.hemi.letter(),
+            args.mesh_desc
+        ));
+        if !path.is_file() {
+            bail!(
+                "session mesh {} not found: run `gyroxide mesh --bids …` first, or give --mesh",
+                path.display()
+            );
+        }
+        args.mesh = Some(path);
+    }
     let mut params = load_params(&args)?;
     let (mesh, mesh_name, transform) = load_mesh(&args, &mut params)?;
     params.validate()?;
@@ -409,7 +599,7 @@ impl BidsRun {
         Ok(Self {
             dir,
             prefix: d.prefix,
-            hemi: if args.hemi == Hemi::L { 'L' } else { 'R' },
+            hemi: args.hemi.letter(),
             status_path,
             status,
             sequence,
@@ -488,6 +678,10 @@ impl TraceSink for Outputs<'_> {
         let g = &s.diagnostics;
         let every = |n: usize| n > 0 && g.step.is_multiple_of(n);
         if !g.elastic.is_finite() || s.x.iter().flatten().any(|v| !v.is_finite()) {
+            if let Some(b) = &mut self.bids {
+                // keep the step reached in status.json (marked failed by the caller)
+                let _ = b.update_status(State::Running, g.step);
+            }
             return Err(std::io::Error::other(format!("non-finite state at step {}", g.step)));
         }
         if every(self.args.print_every) {

@@ -36,11 +36,31 @@ de l'atlas `w21_left_610k`), il n'y a pas de transformée à inverser : les coor
 écrites sont celles du maillage, en unités normalisées, **pas en mm**. Les surfaces VTK de
 `--vtk-every` restent dans le repère normalisé du calcul.
 
+## Maillage tétraédrique d'une session
+
+```sh
+gyroxide mesh --bids <racine BIDS> --participant X [--session Y] [--hemi L|R] [--tetgen <exécutable>]
+```
+
+lit les sorties de `surfx run --bids` (`…_hemi-H_white.surf.gii`, `…_pial.surf.gii`,
+`…_cortex.shape.gii`) et écrit `derivatives/gyroxide/sub-X[/ses-Y]/anat/
+sub-X[_ses-Y]_hemi-H_desc-tetgen_tet.vtu` : VTK XML `UnstructuredGrid` de tétraèdres, en mm dans le
+repère de l'image, avec par nœud `gray_matter` (1 substance grise, 0 substance blanche : nœud
+intérieur à la surface blanche) et `cortex` (masque du cortex du sommet de piale le plus proche).
+TetGen est appelé comme **programme externe** (licence AGPL : jamais lié à gyroxide) ; avec les
+options par défaut (`pq1.5/10YQ`) il garde exactement les triangles de la piale, ses sommets en tête.
+Prévu ensuite : isosurface stuffing (Labelle et Shewchuk 2007) en Rust dans `gyroxide-mesh`.
+
+`run --mesh` accepte ce `.vtu` (lu par `gyroxide-mesh`) ; c'est l'entrée par défaut de
+`run --bids` (`--mesh-desc` pour en choisir un autre). Un `.vtu` est en mm : il est toujours
+normalisé pour le calcul (`brain_growth_whole`), et l'espacement `a` (pas de temps explicite, peaux
+de contact) vaut par défaut la plus courte arête de surface, pour la stabilité.
+
 ## Un run = un dossier BIDS
 
 ```sh
 gyroxide run --bids <racine BIDS> --participant X [--session Y] [--output-dir D] \
-    --label <run> [--hemi L|R] --mesh <état initial> [--config params.toml] [--steps N]
+    --label <run> [--hemi L|R] [--mesh <état initial>] [--config params.toml] [--steps N]
 ```
 
 écrit dans `<étude>/derivatives/gyroxide/sub-X[/ses-Y]/anat/run-<label>/`, `<étude>` étant
