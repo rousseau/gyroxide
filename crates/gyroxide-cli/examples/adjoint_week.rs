@@ -139,6 +139,11 @@ struct Problem {
     geo: Option<Geo>,
     /// Weight of the vertex-distance loss (--w-vertex).
     w_vertex: f64,
+    /// Extra fitted fields per surface vertex after the growth a (--fit-fields c,k): correction of the
+    /// thickening c and isotropic correction delta I of the core growth U; `na` = number of a values.
+    fit_c: bool,
+    fit_k: bool,
+    na: usize,
     /// K products by finite differences of the total force (old path, --fd-k), and the
     /// growth / thickness tensors of the autodiff path.
     fd_k: bool,
@@ -383,7 +388,33 @@ impl Problem {
     /// Equilibrium of theta from positions `x0`: `steps` damped steps, then matrix-free
     /// Newton-Krylov on F(x) = 0 (K delta = F by CG, backtracking on |F|, contact lists
     /// refreshed at each trial point). Returns x*.
+    /// Offsets of the extra field blocks in theta (c, then k).
+    fn field_offsets(&self) -> (Option<usize>, Option<usize>) {
+        let oc = self.fit_c.then_some(self.na);
+        let ok = self.fit_k.then_some(self.na * (1 + usize::from(self.fit_c)));
+        (oc, ok)
+    }
+
+    /// Sets the thickening / core corrections of theta's extra blocks in both simulations.
+    fn apply_fields(&mut self, theta: &[f64]) {
+        let per_tet = |d: &[f64]| -> Vec<f64> {
+            self.tets.iter().map(|t| 0.25 * t.iter().map(|&n| d[self.owner[n as usize]]).sum::<f64>()).collect()
+        };
+        let (oc, ok) = self.field_offsets();
+        if let Some(o) = oc {
+            let d = per_tet(&theta[o..o + self.na]);
+            self.sim.set_radial_delta(Some(&d));
+            self.ad.set_radial_delta(Some(&d));
+        }
+        if let Some(o) = ok {
+            let d = per_tet(&theta[o..o + self.na]);
+            self.sim.set_core_delta(Some(&d));
+            self.ad.set_core_delta(Some(&d));
+        }
+    }
+
     fn equilibrium(&mut self, theta: &[f64], x0: &[[f64; 3]], steps: usize) -> Vec<[f64; 3]> {
+        self.apply_fields(theta);
         let s = self.growth(theta);
         self.sim.set_state(x0, &self.v0, &s);
         self.sim.set_fixed_growth(Some(&s));
@@ -542,12 +573,19 @@ impl Problem {
     }
 
     fn reg(&self, theta: &[f64]) -> f64 {
+        let (oc, ok) = self.field_offsets();
+        let fields: f64 = [oc, ok]
+            .into_iter()
+            .flatten()
+            .map(|o| self.edges.iter().map(|[i, j]| (theta[o + *i] - theta[o + *j]).powi(2)).sum::<f64>())
+            .sum();
         0.5 * self.beta
-            * self
+            * (self
                 .edges
                 .iter()
                 .map(|[i, j]| (theta[*i] - self.theta0[*i] - theta[*j] + self.theta0[*j]).powi(2))
                 .sum::<f64>()
+                + fields)
     }
 
     /// S^k of the surface vertices (k = self.lp).
@@ -1159,11 +1197,30 @@ impl Problem {
         cg: usize,
     ) -> (Vec<f64>, usize, f64) {
         let (lam, it, res) = self.adjoint(x, gx, sigma, cg);
-        let gs = self.vjp_growth(x, &self.growth(theta), &lam);
+        let (oc, ok) = self.field_offsets();
+        let (gs, gc, gk) = if oc.is_some() || ok.is_some() {
+            self.vjp_fields(x, &self.growth(theta), &lam, oc.is_some(), ok.is_some())
+        } else {
+            (self.vjp_growth(x, &self.growth(theta), &lam), Vec::new(), Vec::new())
+        };
         let mut g = vec![0.0; theta.len()];
         for ((t, gm), gse) in self.tets.iter().zip(&self.gm).zip(&gs) {
             for &n in t {
                 g[self.owner[n as usize]] += gse * gm * 0.25;
+            }
+        }
+        for (o, gf) in [(oc, &gc), (ok, &gk)] {
+            if let Some(o) = o {
+                for (t, ge) in self.tets.iter().zip(gf.iter()) {
+                    for &n in t {
+                        g[o + self.owner[n as usize]] += ge * 0.25;
+                    }
+                }
+                for [i, j] in &self.edges {
+                    let d = self.beta * (theta[o + *i] - theta[o + *j]);
+                    g[o + *i] += d;
+                    g[o + *j] -= d;
+                }
             }
         }
         for [i, j] in &self.edges {
@@ -1183,6 +1240,7 @@ impl Problem {
     /// Number of inverted elements at positions x with the growth of theta (one recorded
     /// step under fixed growth; the simulation state is reset to x afterwards).
     fn n_inverted(&mut self, x: &[[f64; 3]], theta: &[f64]) -> usize {
+        self.apply_fields(theta);
         let s = self.growth(theta);
         self.sim.set_state(x, &self.v0, &s);
         self.sim.set_fixed_growth(Some(&s));
@@ -1386,10 +1444,25 @@ fn main() {
         fixed: dirichlet_mask.clone(),
         geo: None,
         w_vertex: flag("--w-vertex", 1.0),
+        fit_c: opt("--fit-fields").is_some_and(|f| f.to_string_lossy().contains('c')),
+        fit_k: opt("--fit-fields").is_some_and(|f| f.to_string_lossy().contains('k')),
+        na: 0,
         fd_k: args.iter().any(|a| a == "--fd-k"),
         force_tol: flag("--force-tol", 1e-5),
     };
     println!("{} colours for the block-Jacobi preconditioner", p.colours.len());
+    p.na = theta.len();
+    let n_fields = usize::from(p.fit_c) + usize::from(p.fit_k);
+    if n_fields > 0 {
+        theta.extend(std::iter::repeat_n(0.0, n_fields * p.na));
+        println!(
+            "fitted fields: a{}{} ({} values per field), field band +-{}",
+            if p.fit_c { ", c (thickening correction)" } else { "" },
+            if p.fit_k { ", k (core growth correction)" } else { "" },
+            p.na,
+            flag("--field-band", 0.3)
+        );
+    }
     let ns = target.len();
     let mut nbr = vec![Vec::new(); ns];
     for [i, j] in &p.edges {
@@ -1451,6 +1524,7 @@ fn main() {
     let min_growth = args.iter().position(|a| a == "--min-growth").map(|i| args[i + 1].parse::<f64>().unwrap());
     let carry = args.iter().any(|a| a == "--carry");
     let growth_band = flag("--growth-band", 0.0);
+    let field_band = flag("--field-band", 0.3);
     let max_step = flag("--max-step", 0.05);
     let ftol = flag("--ftol", 0.0);
     let mut hist_f: Vec<f64> = Vec::new();
@@ -2100,9 +2174,12 @@ fn main() {
         for _ in 0..6 {
             tn = theta.iter().zip(&dir).map(|(a, d)| a + step * d).collect();
             if let Some(lo) = min_growth {
-                for v in tn.iter_mut() {
+                for v in tn[..p.na].iter_mut() {
                     *v = v.max(lo);
                 }
+            }
+            for v in tn[p.na..].iter_mut() {
+                *v = v.clamp(-field_band, field_band);
             }
             if growth_band > 0.0 {
                 // Growth kept within +-band x the measured value (theta0).
