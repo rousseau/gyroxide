@@ -30,6 +30,10 @@ pub enum Schedule {
         mu_gray: Option<Vec<f64>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mu_white: Option<Vec<f64>>,
+        /// Optional gestational age (weeks) at each knot, same length as `t`: the
+        /// outputs report the age by linear interpolation (`n/a` without it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ga_weeks: Option<Vec<f64>>,
     },
     /// Per-node a_t and H, tabulated at knots `t` and interpolated linearly
     /// in time (held constant outside the knots). `a` and `h` are NPY files
@@ -55,6 +59,10 @@ pub enum Schedule {
         /// I + g_m a_t (I - n n^T), and `a` then only serves the diagnostics.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tensor: Option<String>,
+        /// Optional gestational age (weeks) at each knot, same length as `t`: the
+        /// outputs report the age by linear interpolation (`n/a` without it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ga_weeks: Option<Vec<f64>>,
     },
 }
 
@@ -80,6 +88,17 @@ impl Schedule {
             Schedule::Nodal { .. } => f64::NAN,
         }
     }
+    /// Gestational age (weeks) at model time t, interpolated from `ga_weeks`;
+    /// `None` when the schedule does not define the correspondence.
+    pub fn ga_weeks(&self, t: f64) -> Option<f64> {
+        match self {
+            Schedule::Linear { .. } => None,
+            Schedule::Tabulated { t: ts, ga_weeks, .. } | Schedule::Nodal { t: ts, ga_weeks, .. } => {
+                ga_weeks.as_ref().map(|g| interpolate(ts, g, t))
+            }
+        }
+    }
+
     /// True when a_t and H are per node (the simulator needs a [`NodalTable`]).
     pub fn is_nodal(&self) -> bool {
         matches!(self, Schedule::Nodal { .. })
@@ -110,6 +129,31 @@ impl Schedule {
     /// Checks the knots of a tabulated law (the linear law is not checked,
     /// to keep the reference presets untouched).
     pub fn validate(&self) -> Result<(), String> {
+        if let Schedule::Tabulated {
+            t, ga_weeks: Some(g), ..
+        }
+        | Schedule::Nodal {
+            t, ga_weeks: Some(g), ..
+        } = self
+        {
+            if g.len() != t.len() {
+                return Err(format!(
+                    "schedule: ga_weeks has {} values for {} knots",
+                    g.len(),
+                    t.len()
+                ));
+            }
+            if let Some(x) = g.iter().find(|x| !x.is_finite()) {
+                return Err(format!("schedule: ga_weeks contains {x}"));
+            }
+            if let Some(i) = (1..g.len()).find(|&i| g[i] <= g[i - 1]) {
+                return Err(format!(
+                    "schedule: ga_weeks must be strictly increasing (ga_weeks[{i}] = {} <= {})",
+                    g[i],
+                    g[i - 1]
+                ));
+            }
+        }
         if let Schedule::Nodal {
             t,
             a_scale,
@@ -146,6 +190,7 @@ impl Schedule {
             h,
             mu_gray,
             mu_white,
+            ..
         } = self
         else {
             return Ok(());
@@ -374,6 +419,7 @@ mod tests {
             h: h.to_vec(),
             mu_gray: None,
             mu_white: None,
+            ga_weeks: None,
         }
     }
 
@@ -422,6 +468,7 @@ mod tests {
             h: vec![0.04, 0.04],
             mu_gray: Some(vec![1.0, 3.0]),
             mu_white: None,
+            ga_weeks: None,
         };
         assert_eq!(s.shear_moduli(0.5), (Some(2.0), None));
         assert_eq!(s.shear_moduli(4.0), (Some(3.0), None));
@@ -444,6 +491,7 @@ mod tests {
             h: vec![0.04, 0.04],
             mu_gray: Some(vec![1.0]),
             mu_white: Some(vec![1.0, -1.0]),
+            ga_weeks: None,
         };
         assert!(err(mu).contains("mu_gray has 1 values"));
     }
@@ -459,6 +507,7 @@ mod tests {
             mu_gray: None,
             mu_white: None,
             tensor: None,
+            ga_weeks: None,
         };
         assert!(s.validate().is_ok() && s.is_nodal() && s.expansion(0.3).is_nan());
         // 2 knots x 3 nodes, row-major.
@@ -482,6 +531,7 @@ mod tests {
             mu_gray: None,
             mu_white: None,
             tensor: None,
+            ga_weeks: None,
         };
         assert!(bad.validate().unwrap_err().contains("strictly increasing"));
         let mu = Schedule::Nodal {
@@ -493,6 +543,7 @@ mod tests {
             mu_gray: None,
             mu_white: Some(vec![0.5, 0.25]),
             tensor: None,
+            ga_weeks: None,
         };
         assert!(mu.validate().is_ok());
         assert_eq!(mu.shear_moduli(0.5), (None, Some(0.375)));
@@ -505,6 +556,7 @@ mod tests {
             mu_gray: None,
             mu_white: Some(vec![0.5, 0.0]),
             tensor: None,
+            ga_weeks: None,
         };
         assert!(bad_mu.validate().unwrap_err().contains("mu_white[1] must be > 0"));
         let src = "law = \"nodal\"\nt = [0.0, 1.0]\na = \"a.npy\"\nh = \"h.npy\"\n";
@@ -519,5 +571,36 @@ mod tests {
         assert_eq!(s.shear_moduli(1.0), (Some(1.2), None));
         let back: Schedule = toml::from_str(&toml::to_string(&s).unwrap()).unwrap();
         assert_eq!(s, back);
+    }
+
+    #[test]
+    fn gestational_age_is_interpolated_and_checked() {
+        let t: Vec<f64> = (0..16).map(|k| k as f64 / 15.0).collect();
+        let ga: Vec<f64> = (21..=36).map(f64::from).collect();
+        let with = |g: Vec<f64>| Schedule::Tabulated {
+            t: t.clone(),
+            a: vec![1.0; 16],
+            h: vec![1.0; 16],
+            mu_gray: None,
+            mu_white: None,
+            ga_weeks: Some(g),
+        };
+        let s = with(ga.clone());
+        s.validate().unwrap();
+        assert_eq!(s.ga_weeks(0.0), Some(21.0));
+        assert!((s.ga_weeks(0.5).unwrap() - 28.5).abs() < 1e-12);
+        assert_eq!(s.ga_weeks(2.0), Some(36.0), "held constant after the last knot");
+        let linear = Schedule::Linear {
+            a0: 0.0,
+            a1: 1.0,
+            h0: 1.0,
+            h1: 0.0,
+        };
+        assert_eq!(linear.ga_weeks(0.5), None);
+        let err = with(ga[..15].to_vec()).validate().unwrap_err();
+        assert!(err.contains("ga_weeks has 15 values for 16 knots"), "{err}");
+        let mut back = ga.clone();
+        back[3] = 20.0;
+        assert!(with(back).validate().unwrap_err().contains("strictly increasing"));
     }
 }
