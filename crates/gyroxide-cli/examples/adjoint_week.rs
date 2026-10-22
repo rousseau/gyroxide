@@ -135,6 +135,10 @@ struct Problem {
     deflate: Vec<Vec<[f64; 3]>>,
     /// Dirichlet nodes (sub-mesh cut): no loss gradient and no adjoint there.
     fixed: Vec<bool>,
+    /// Geometric loss terms (face normals, Laplacian coordinates, face areas), if any.
+    geo: Option<Geo>,
+    /// Weight of the vertex-distance loss (--w-vertex).
+    w_vertex: f64,
     /// K products by finite differences of the total force (old path, --fd-k), and the
     /// growth / thickness tensors of the autodiff path.
     fd_k: bool,
@@ -254,6 +258,96 @@ fn normalise(x: &[[f64; 3]], idx: &[usize]) -> (Vec<[f64; 3]>, [f64; 3], f64) {
         c,
         r,
     )
+}
+
+/// Geometric loss terms on the faces / vertices of the loss region, each divided by its value
+/// at the start: w_n mean_f A*_f (1 - u_f . nu_f) / mean A*, w_l mean_i |d(x)_i - d(y)_i|^2 / 2
+/// (d: umbrella Laplacian coordinates x_i - mean of the neighbours), w_a mean_f log(A_f / A*_f)^2 / 2.
+struct Geo {
+    faces: Vec<[usize; 3]>,
+    nu: Vec<[f64; 3]>,
+    area_t: Vec<f64>,
+    lap_t: Vec<[f64; 3]>,
+    lap_idx: Vec<usize>,
+    w: [f64; 3],
+    scale: [f64; 3],
+}
+
+fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+impl Geo {
+    fn new(faces_all: &[[usize; 3]], in_loss: &[bool], nbr: &[Vec<usize>], y: &[[f64; 3]], w: [f64; 3]) -> Self {
+        let faces: Vec<[usize; 3]> = faces_all.iter().copied().filter(|f| f.iter().all(|&i| in_loss[i])).collect();
+        let (mut nu, mut area_t) = (Vec::new(), Vec::new());
+        for f in &faces {
+            let n = cross3(sub3(y[f[1]], y[f[0]]), sub3(y[f[2]], y[f[0]]));
+            let l = dot3(n, n).sqrt();
+            nu.push(n.map(|c| c / l));
+            area_t.push(0.5 * l);
+        }
+        let lap_idx: Vec<usize> = (0..nbr.len()).filter(|&i| in_loss[i]).collect();
+        let lap_t = lap_idx.iter().map(|&i| Self::umbrella(nbr, y, i)).collect();
+        Self { faces, nu, area_t, lap_t, lap_idx, w, scale: [1.0; 3] }
+    }
+
+    fn umbrella(nbr: &[Vec<usize>], x: &[[f64; 3]], i: usize) -> [f64; 3] {
+        let k = nbr[i].len() as f64;
+        [0, 1, 2].map(|d| x[i][d] - nbr[i].iter().map(|&j| x[j][d]).sum::<f64>() / k)
+    }
+
+    /// Raw terms [normal, laplacian, area] and the gradient of sum_t w_t / scale_t * term_t.
+    fn eval(&self, nbr: &[Vec<usize>], x: &[[f64; 3]], n_nodes: usize) -> ([f64; 3], Vec<[f64; 3]>) {
+        let mut g = vec![[0.0; 3]; n_nodes];
+        let mut add = |i: usize, v: [f64; 3], c: f64| (0..3).for_each(|d| g[i][d] += c * v[d]);
+        let nf = self.faces.len() as f64;
+        let a_mean = self.area_t.iter().sum::<f64>() / nf;
+        let (mut ln, mut la) = (0.0, 0.0);
+        let (cn, ca) = (self.w[0] / self.scale[0], self.w[2] / self.scale[2]);
+        for (k, f) in self.faces.iter().enumerate() {
+            let (e1, e2) = (sub3(x[f[1]], x[f[0]]), sub3(x[f[2]], x[f[0]]));
+            let n = cross3(e1, e2);
+            let l = dot3(n, n).sqrt();
+            let u = n.map(|c| c / l);
+            let un = dot3(u, self.nu[k]);
+            ln += self.area_t[k] * (1.0 - un) / (nf * a_mean);
+            let lr = (0.5 * l / self.area_t[k]).ln();
+            la += 0.5 * lr * lr / nf;
+            // dL/dn for both terms, then n = e1 x e2: grad_b = e2 x w, grad_c = w x e1, grad_a = -(both).
+            let wn = (0..3).map(|d| -cn * self.area_t[k] / (nf * a_mean) * (self.nu[k][d] - un * u[d]) / l);
+            let wa = (0..3).map(|d| ca * lr / nf * u[d] / l);
+            let w: Vec<f64> = wn.zip(wa).map(|(p, q)| p + q).collect();
+            let w = [w[0], w[1], w[2]];
+            let (gb, gc) = (cross3(e2, w), cross3(w, e1));
+            add(f[1], gb, 1.0);
+            add(f[2], gc, 1.0);
+            add(f[0], gb, -1.0);
+            add(f[0], gc, -1.0);
+        }
+        // Laplacian coordinates: d = M x, gradient M^T r on the loss vertices.
+        let cl = self.w[1] / self.scale[1];
+        let nl = self.lap_idx.len() as f64;
+        let mut ll = 0.0;
+        for (k, &i) in self.lap_idx.iter().enumerate() {
+            let r = sub3(Self::umbrella(nbr, x, i), self.lap_t[k]);
+            ll += 0.5 * dot3(r, r) / nl;
+            let kk = nbr[i].len() as f64;
+            add(i, r, cl / nl);
+            for &j in &nbr[i] {
+                add(j, r, -cl / nl / kk);
+            }
+        }
+        ([ln, ll, la], g)
+    }
 }
 
 impl Problem {
@@ -674,6 +768,17 @@ impl Problem {
     /// Fit loss with the optional folding-index and measured-growth terms.
     fn loss(&self, x: &[[f64; 3]], theta: &[f64]) -> (f64, f64, Vec<[f64; 3]>) {
         let (mut ls, mut lr, mut g) = self.loss_base(x, theta);
+        if self.w_vertex != 1.0 {
+            ls *= self.w_vertex;
+            g.iter_mut().for_each(|r| r.iter_mut().for_each(|v| *v *= self.w_vertex));
+        }
+        if let Some(geo) = &self.geo {
+            let (t, gg) = geo.eval(&self.nbr, x, x.len());
+            ls += (0..3).map(|k| geo.w[k] * t[k] / geo.scale[k]).sum::<f64>();
+            for (a, b) in g.iter_mut().zip(&gg) {
+                (0..3).for_each(|d| a[d] += b[d]);
+            }
+        }
         if self.fi_weight > 0.0 {
             let (fi, gfi) = self.fi_grad(x);
             let e = (fi - self.fi_target) / self.fi_target;
@@ -1250,6 +1355,8 @@ fn main() {
         pre_inv: Vec::new(),
         deflate: Vec::new(),
         fixed: dirichlet_mask.clone(),
+        geo: None,
+        w_vertex: flag("--w-vertex", 1.0),
         fd_k: args.iter().any(|a| a == "--fd-k"),
         force_tol: flag("--force-tol", 1e-5),
     };
@@ -1261,6 +1368,20 @@ fn main() {
         nbr[*j].push(*i);
     }
     p.nbr = nbr;
+    let wgeo = [flag("--w-normal", 0.0), flag("--w-lap", 0.0), flag("--w-area", 0.0)];
+    if wgeo.iter().any(|w| *w > 0.0) {
+        let faces: Vec<[usize; 3]> = read(&prep.join("faces.npy")).chunks_exact(3).map(|c| [c[0] as usize, c[1] as usize, c[2] as usize]).collect();
+        let mut in_loss = vec![false; ns];
+        p.cortex.iter().for_each(|&i| in_loss[i] = true);
+        let mut geo = Geo::new(&faces, &in_loss, &p.nbr, &target, wgeo);
+        let (t0, _) = geo.eval(&p.nbr, &xs, xs.len());
+        geo.scale = t0.map(|v| v.max(1e-30));
+        println!(
+            "geometric loss: weights normal {} laplacian {} area {}, start values {:.4e} {:.4e} {:.4e} ({} faces, vertex weight {})",
+            wgeo[0], wgeo[1], wgeo[2], t0[0], t0[1], t0[2], geo.faces.len(), p.w_vertex
+        );
+        p.geo = Some(geo);
+    }
     if p.fi_weight > 0.0 {
         p.fi_target = p.fi_grad(&target).0;
         println!("folding-index penalty: weight {}, atlas FI {:.4}, start FI {:.4}", p.fi_weight, p.fi_target, p.fi_grad(&xs).0);
