@@ -14,6 +14,9 @@ gyroxide-mesh.workspace = true
 gyroxide-model.workspace = true
 gyroxide-sim.workspace = true
 gyroxide-validate.workspace = true
+gyroxide-io.workspace = true
+surfoxide-core.workspace = true
+surfoxide-io.workspace = true
 burn = { workspace = true, features = ["ndarray"] }
 anyhow.workspace = true
 clap.workspace = true

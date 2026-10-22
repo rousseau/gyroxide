@@ -1,5 +1,7 @@
 //! `gyroxide` command-line driver.
 
+mod surface;
+
 use anyhow::{bail, Context, Result};
 use burn::tensor::backend::Backend;
 use clap::{Parser, Subcommand, ValueEnum};
@@ -9,6 +11,7 @@ use gyroxide_sim::{Simulation, Snapshot, TraceSink};
 use gyroxide_validate::{compare_dirs, list_steps, NpyTraceWriter, TraceLayout, TraceMeta};
 use std::path::PathBuf;
 use std::time::Instant;
+use surface::SurfaceOut;
 
 #[derive(Parser)]
 #[command(
@@ -27,6 +30,12 @@ enum BackendKind {
     Wgpu,
     /// CPU reference, f64.
     Ndarray,
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
+enum Hemi {
+    L,
+    R,
 }
 
 #[derive(Subcommand)]
@@ -97,7 +106,15 @@ struct RunArgs {
     /// First step written to the NPY traces.
     #[arg(long, default_value_t = 0)]
     trace_from: usize,
-    /// Write a VTK surface every N steps (0 = never).
+    /// Write the surface (GIfTI, image space in mm: inverse of the mesh normalisation) every N
+    /// steps (0 = only the final surface).
+    #[arg(long, default_value_t = 0)]
+    surface_every: usize,
+    /// Hemisphere of the surface (GIfTI AnatomicalStructurePrimary, BIDS hemi- entity).
+    #[arg(long, value_enum, default_value_t = Hemi::L)]
+    hemi: Hemi,
+    /// Debugging: also write a VTK legacy surface every N steps, in the normalised frame of the
+    /// computation (0 = never).
     #[arg(long, default_value_t = 0)]
     vtk_every: usize,
     /// Use the restoring sign for the midplane force (the reference codes push
@@ -189,12 +206,16 @@ fn load_params(args: &RunArgs) -> Result<Params> {
     Ok(p)
 }
 
-fn load_mesh(args: &RunArgs, params: &mut Params) -> Result<(TetMesh, String)> {
+fn load_mesh(args: &RunArgs, params: &mut Params) -> Result<(TetMesh, String, normalize::Transform)> {
     if let Some(dir) = &args.ref_static {
         let m = gyroxide_validate::load_static_mesh(dir)?;
         m.validate()?;
         params.normalization = MeshNormalization::None;
-        return Ok((m, format!("{} (static)", dir.display())));
+        return Ok((
+            m,
+            format!("{} (static)", dir.display()),
+            normalize::Transform::identity(),
+        ));
     }
     match &args.mesh {
         Some(path) => {
@@ -204,8 +225,9 @@ fn load_mesh(args: &RunArgs, params: &mut Params) -> Result<(TetMesh, String)> {
                 MeshNormalization::BrainGrowthWhole => normalize::Normalization::BrainGrowthWhole,
                 MeshNormalization::BrainGrowthHalf => normalize::Normalization::BrainGrowthHalf,
             };
-            normalize::apply(&mut m, mode);
-            Ok((m, path.display().to_string()))
+            // Kept so that the surfaces are written back in image space (identity for "none").
+            let transform = normalize::apply(&mut m, mode);
+            Ok((m, path.display().to_string(), transform))
         }
         None => {
             let m = generate::voxel_ball(args.ball, 1.0);
@@ -216,34 +238,47 @@ fn load_mesh(args: &RunArgs, params: &mut Params) -> Result<(TetMesh, String)> {
                 // Use the real spacing so that dt and the skins match the mesh.
                 params.dynamics.mesh_spacing = m.surface_edge_stats().1;
             }
-            Ok((m, format!("voxel_ball(n={})", args.ball)))
+            Ok((
+                m,
+                format!("voxel_ball(n={})", args.ball),
+                normalize::Transform::identity(),
+            ))
         }
     }
 }
 
 fn run(args: RunArgs) -> Result<()> {
     let mut params = load_params(&args)?;
-    let (mesh, mesh_name) = load_mesh(&args, &mut params)?;
+    let (mesh, mesh_name, transform) = load_mesh(&args, &mut params)?;
     params.validate()?;
     match args.backend {
         #[cfg(any(feature = "wgpu", feature = "cuda"))]
         BackendKind::Wgpu => {
             use burn::backend::wgpu::{Wgpu, WgpuDevice};
-            run_on::<Wgpu>(args, params, mesh, mesh_name, WgpuDevice::default(), "f32")
+            run_on::<Wgpu>(args, params, mesh, mesh_name, transform, WgpuDevice::default(), "f32")
         }
         #[cfg(not(any(feature = "wgpu", feature = "cuda")))]
         BackendKind::Wgpu => bail!("built without the wgpu feature"),
         BackendKind::Ndarray => {
             use burn::backend::ndarray::{NdArray, NdArrayDevice};
-            run_on::<NdArray<f64>>(args, params, mesh, mesh_name, NdArrayDevice::default(), "f64")
+            run_on::<NdArray<f64>>(
+                args,
+                params,
+                mesh,
+                mesh_name,
+                transform,
+                NdArrayDevice::default(),
+                "f64",
+            )
         }
     }
 }
 
-/// Prints diagnostics, writes VTK surfaces and forwards to the NPY writer.
+/// Prints diagnostics, writes the surfaces and forwards to the NPY writer.
 struct Outputs<'a> {
     args: &'a RunArgs,
     mesh: &'a TetMesh,
+    surface: &'a SurfaceOut,
     npy: Option<NpyTraceWriter>,
     start: Instant,
 }
@@ -251,7 +286,10 @@ struct Outputs<'a> {
 impl TraceSink for Outputs<'_> {
     fn wants(&self, step: usize) -> bool {
         let every = |n: usize| n > 0 && step.is_multiple_of(n);
-        every(self.args.print_every) || every(self.args.vtk_every) || self.npy.as_ref().is_some_and(|w| w.wants(step))
+        every(self.args.print_every)
+            || every(self.args.surface_every)
+            || every(self.args.vtk_every)
+            || self.npy.as_ref().is_some_and(|w| w.wants(step))
     }
     fn record(&mut self, s: &Snapshot) -> std::io::Result<()> {
         let g = &s.diagnostics;
@@ -270,6 +308,11 @@ impl TraceSink for Outputs<'_> {
                 g.n_inverted,
                 self.start.elapsed().as_secs_f64()
             );
+        }
+        if every(self.args.surface_every) {
+            self.surface
+                .write_gifti(&self.args.out.join(format!("surface_{:07}.surf.gii", g.step)), &s.x)
+                .map_err(std::io::Error::other)?;
         }
         if every(self.args.vtk_every) {
             vtk::write_surface(
@@ -330,6 +373,7 @@ fn run_on<B: Backend>(
     params: Params,
     mesh: TetMesh,
     mesh_name: String,
+    transform: normalize::Transform,
     device: B::Device,
     precision: &str,
 ) -> Result<()> {
@@ -408,11 +452,13 @@ fn run_on<B: Backend>(
         println!("  resumed from {} at step {step}, t = {t:.4}", dir.display());
     }
 
+    let surface = SurfaceOut::new(&mesh, transform, args.hemi == Hemi::L);
     let start = Instant::now();
     let step0 = sim.step; // > 0 after --resume
     let mut out = Outputs {
         args: &args,
         mesh: &mesh,
+        surface: &surface,
         npy,
         start,
     };
@@ -433,7 +479,10 @@ fn run_on<B: Backend>(
     }
     let x = sim.positions(); // also synchronises the device queue
     let el = start.elapsed().as_secs_f64();
-    vtk::write_surface(args.out.join("surface_final.vtk"), &mesh, &x, &[])?;
+    surface.write_gifti(&args.out.join("surface_final.surf.gii"), &x)?;
+    if args.vtk_every > 0 {
+        vtk::write_surface(args.out.join("surface_final.vtk"), &mesh, &x, &[])?;
+    }
     println!(
         "done: {} steps, t = {:.4}, {:.2}s ({:.3} ms/step), {} contact rebuilds, {} candidate pairs",
         sim.step,

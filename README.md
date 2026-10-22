@@ -14,13 +14,27 @@ l'article) et `braingrowth`.
 cargo test                                   # tests en f64 sur CPU
 cargo run --release --bin gyroxide -- run --ball 8          # petite boule sur GPU (wgpu)
 cargo run --release --bin gyroxide -- run --preset braingrowth \
-    --mesh ~/Sync/Code/BrainGrowth/data/sphere5.mesh --vtk-every 5000 --out out/s5
+    --mesh ~/Sync/Code/BrainGrowth/data/sphere5.mesh --surface-every 5000 --out out/s5
 cargo run --release --bin gyroxide -- preset tallinen2016   # paramètres en TOML
 ```
 
 Options utiles de `run` : `--backend ndarray` (CPU f64), `--steps N`,
-`--trace-every N` (traces NPY), `--vtk-every N` (surfaces ParaView),
-`--no-contact`, `--no-midplane`, `--uniform-growth`, `--config params.toml`.
+`--surface-every N` (surfaces GIfTI), `--hemi L|R`, `--trace-every N` (traces NPY),
+`--vtk-every N` (surfaces VTK de débogage, ParaView), `--no-contact`, `--no-midplane`,
+`--uniform-growth`, `--config params.toml`.
+
+## Surfaces écrites
+
+Le calcul se fait sur le maillage normalisé (demi-taille du cerveau ~ 1). Les surfaces sont
+écrites en GIfTI (`*.surf.gii`, via surfoxide-io) après la transformée inverse de la
+normalisation : coordonnées RAS en mm, dans le repère de l'image d'où vient l'état initial.
+Seuls les nœuds de surface sont écrits, faces orientées vers l'extérieur,
+`AnatomicalStructurePrimary` = `CortexLeft` ou `CortexRight` selon `--hemi`.
+
+Avec `normalization = "none"` (maillages déjà normalisés : maillages de Tallinen, maillage
+de l'atlas `w21_left_610k`), il n'y a pas de transformée à inverser : les coordonnées
+écrites sont celles du maillage, en unités normalisées, **pas en mm**. Les surfaces VTK de
+`--vtk-every` restent dans le repère normalisé du calcul.
 
 Documentation : [modèle](docs/model.md), [architecture](docs/architecture.md),
 [validation](docs/validation.md).
