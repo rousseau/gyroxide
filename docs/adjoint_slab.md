@@ -17,6 +17,8 @@ multi-échelle `10:30,0:30`, croissance bornée à ±50 % de la mesure
 |---|---|---|---|---|---|
 | départ (croissance mesurée) | — | 1,258 | 19,6° | 0,43 | 0,36 |
 | fit27_combo | a | 0,847 | 11,5° | 0,82 | 0,53 |
+| fit27_band_c | a, c | 0,844 | 10,7° | 0,79 | 0,47 |
+| fit27_band_k | a, k | 0,662 | 9,0° | 0,87 | 0,52 |
 | fit27_band_ck | a, c, k (±0,3) | **0,485** | **5,3°** | **0,87** | 0,62 |
 | fit27_band_ck_b3 | idem, β = 1e-3 | 0,497 | 5,5° | 0,86 | 0,63 |
 | fit27_band_ck015 | a, c, k (±0,15) | 0,661 | 8,7° | 0,85 | 0,52 |
@@ -39,7 +41,8 @@ Table de a reportée (`configs/mu_test/mu2_slab_cs_carry_*.toml`), état de dép
 - La croissance tangentielle seule (même à ±50 %) ne creuse pas le sillon :
   les plis de l'atlas ne sont pas des équilibres du modèle avec une croissance
   lisse. Il faut une variation locale de l'épaississement (c) et de la
-  croissance du cœur (k).
+  croissance du cœur (k). k fait l'essentiel (0,66 mm seul), c seul apporte
+  peu, mais les deux ensemble descendent à 0,49 mm.
 - Motif des champs, stable entre SG 27 et 28 et avec un lissage dix fois plus
   fort : k < 0 sous le fond du sillon et k > 0 dans une bande sous la paroi
   voisine ; c du même signe ; a plus élevé sur les crêtes. Les champs restent
