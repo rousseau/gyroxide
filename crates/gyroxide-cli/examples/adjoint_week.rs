@@ -131,6 +131,8 @@ struct Problem {
     /// 3x3 diagonal blocks of K + sigma I (block-Jacobi preconditioner).
     colours: Vec<Vec<usize>>,
     pre_inv: Vec<[[f64; 3]; 3]>,
+    /// Orthonormal vectors projected out of the CG solves (deflated unstable modes).
+    deflate: Vec<Vec<[f64; 3]>>,
     /// K products by finite differences of the total force (old path, --fd-k), and the
     /// growth / thickness tensors of the autodiff path.
     fd_k: bool,
@@ -901,8 +903,17 @@ impl Problem {
             }
         };
         let mut lam = vec![[0.0; 3]; b.len()];
+        // Deflation: CG on P (K + sigma) P with P = I - D D^T (D: self.deflate).
+        let project = |v: &mut [[f64; 3]]| {
+            for d in &self.deflate {
+                let c = dot(d, v);
+                axpy(v, -c, d);
+            }
+        };
         let mut r = b.to_vec();
+        project(&mut r);
         let mut z = self.precondition(&r);
+        project(&mut z);
         let mut p = z.clone();
         let mut rz = dot(&r, &z);
         let b2 = dot(&r, &r);
@@ -912,6 +923,7 @@ impl Problem {
         while it < iters && rr > 1e-8 * b2 {
             let mut kp = if exact { self.k_mul(x, &p) } else { self.k_mul_fd(x, &p) };
             axpy(&mut kp, sigma, &p);
+            project(&mut kp);
             let pkp = dot(&p, &kp);
             if pkp <= 0.0 {
                 if std::env::var_os("CG_DEBUG").is_some() {
@@ -934,6 +946,7 @@ impl Problem {
                 best.clone_from(&lam);
             }
             z = self.precondition(&r);
+            project(&mut z);
             let rz2 = dot(&r, &z);
             let beta = rz2 / rz;
             rz = rz2;
@@ -1220,6 +1233,7 @@ fn main() {
         last_residual: (0.0, 0.0),
         colours: colour_nodes(mesh.n_nodes(), &mesh.tets),
         pre_inv: Vec::new(),
+        deflate: Vec::new(),
         fd_k: args.iter().any(|a| a == "--fd-k"),
         force_tol: flag("--force-tol", 1e-5),
     };
@@ -1310,6 +1324,8 @@ fn main() {
         // Continuation: the spring anchors move from x to the target in `stages` Newton solves
         // (no damped steps: explicit dynamics is unstable with stiff springs).
         let stages = flag("--pull-stages", 10.0) as usize;
+        // Per-node weight of the springs (0: target not imposed there), e.g. around crushed elements.
+        let pull_mask: Option<Vec<f64>> = opt("--pull-mask").map(|m| read(&m));
         if let Some(np_) = opt("--pull-normals") {
             // Springs along the target normals only: no vertex correspondence imposed tangentially.
             let nr = npy::read(&np_).unwrap().rows3().unwrap();
@@ -1321,7 +1337,10 @@ fn main() {
             let f = s as f64 / stages as f64;
             let anchors: Vec<[f64; 3]> =
                 tgt.iter().zip(&x_start).map(|(t, a)| [0, 1, 2].map(|d| a[d] + f * (t[d] - a[d]))).collect();
-            p.sim.set_pull(Some((&anchors, k)));
+            match &pull_mask {
+                Some(m) => p.sim.set_pull_weighted(&anchors, &m.iter().map(|w| w * k).collect::<Vec<_>>()),
+                None => p.sim.set_pull(Some((&anchors, k))),
+            }
             let xs_ = p.equilibrium(&theta, &x, 0);
             let inv = p.n_inverted(&xs_, &theta);
             println!("pull stage {s}/{stages}: |F| {:.3e} -> {:.3e}, inverted {inv}", p.last_residual.0, p.last_residual.1);
@@ -1435,6 +1454,21 @@ fn main() {
             p.sim.set_fixed_growth(Some(&s_));
             p.build_preconditioner(&xg);
         }
+        if let Some(list) = opt("--deflate") {
+            // Unstable modes (e.g. Ritz vectors of negative eigenvalues), Gram-Schmidt orthonormalised.
+            let dot = |a: &[[f64; 3]], b: &[[f64; 3]]| a.iter().zip(b).map(|(p, q)| p[0] * q[0] + p[1] * q[1] + p[2] * q[2]).sum::<f64>();
+            for path in list.to_string_lossy().split(',') {
+                let mut v = npy::read(path).unwrap().rows3().unwrap();
+                for d in &p.deflate {
+                    let c = dot(d, &v);
+                    v.iter_mut().zip(d).for_each(|(a, b)| (0..3).for_each(|k| a[k] -= c * b[k]));
+                }
+                let nv = dot(&v, &v).sqrt();
+                v.iter_mut().for_each(|a| a.iter_mut().for_each(|c| *c /= nv));
+                p.deflate.push(v);
+            }
+            println!("CG deflation: {} modes", p.deflate.len());
+        }
         let u_mm = |p: &Problem, u: &[[f64; 3]]| p.mm * (u[..ns].iter().flatten().map(|v| v * v).sum::<f64>() / ns as f64).sqrt();
         let (mut r, mut f) = residual(&mut p, &theta);
         let (r_start, f_start) = (r, f.clone());
@@ -1519,7 +1553,7 @@ fn main() {
                 }
             }
             (theta, r, f, g) = (tn, rn, fnew, gn);
-            if it % 10 == 0 || it == 1 {
+            if it % 10 == 0 || it == 1 || energy {
                 let range = |v: &[f64]| v.iter().fold((f64::MAX, f64::MIN), |(l, h), &x| (l.min(x), h.max(x)));
                 let (lo, hi) = range(&theta[..na]);
                 let mut c = String::new();
@@ -1547,6 +1581,98 @@ fn main() {
         save_rows(out.join("force_end.npy"), &f);
         npy::write_f64(out.join("theta_inv.npy"), &[theta.len()], &theta).unwrap();
         let th = theta[..na].to_vec();
+        if let Some(nl) = args.iter().position(|a| a == "--lanczos").map(|i| args[i + 1].parse::<usize>().unwrap()) {
+            // Extreme eigenpairs of K at x_g with the fitted fields: Lanczos with full
+            // reorthogonalisation, Ritz values from the tridiagonal matrix (cyclic Jacobi).
+            let s_ = p.growth(&th);
+            p.sim.set_state(&xg, &v0, &s_);
+            p.sim.set_fixed_growth(Some(&s_));
+            p.sim.refresh_contact();
+            let dot = |a: &[[f64; 3]], b: &[[f64; 3]]| a.iter().zip(b).map(|(p, q)| p[0] * q[0] + p[1] * q[1] + p[2] * q[2]).sum::<f64>();
+            let axpy = |y: &mut [[f64; 3]], a: f64, z: &[[f64; 3]]| y.iter_mut().zip(z).for_each(|(p, q)| (0..3).for_each(|d| p[d] += a * q[d]));
+            let mut q: Vec<[f64; 3]> = (0..xg.len()).map(|i| [0, 1, 2].map(|d| (((i * 7 + d * 13) % 17) as f64 / 8.0) - 1.0)).collect();
+            let nq = dot(&q, &q).sqrt();
+            q.iter_mut().for_each(|r| r.iter_mut().for_each(|v| *v /= nq));
+            let (mut basis, mut al, mut be) = (vec![q], Vec::<f64>::new(), Vec::<f64>::new());
+            for j in 0..nl {
+                let mut w = p.k_mul(&xg, &basis[j]);
+                let a = dot(&basis[j], &w);
+                al.push(a);
+                for _ in 0..2 {
+                    for b in &basis {
+                        let c = dot(b, &w);
+                        axpy(&mut w, -c, b);
+                    }
+                }
+                let b = dot(&w, &w).sqrt();
+                if j + 1 == nl || b < 1e-14 {
+                    break;
+                }
+                be.push(b);
+                w.iter_mut().for_each(|r| r.iter_mut().for_each(|v| *v /= b));
+                basis.push(w);
+            }
+            let m = al.len();
+            let mut t = vec![vec![0.0; m]; m];
+            let mut s = vec![vec![0.0; m]; m];
+            for i in 0..m {
+                t[i][i] = al[i];
+                s[i][i] = 1.0;
+                if i + 1 < m {
+                    t[i][i + 1] = be[i];
+                    t[i + 1][i] = be[i];
+                }
+            }
+            for _sweep in 0..100 {
+                let off: f64 = (0..m).flat_map(|i| (0..m).filter(move |&j| j != i).map(move |j| (i, j))).map(|(i, j)| t[i][j] * t[i][j]).sum();
+                if off < 1e-30 {
+                    break;
+                }
+                for pp in 0..m {
+                    for qq in pp + 1..m {
+                        if t[pp][qq].abs() < 1e-300 {
+                            continue;
+                        }
+                        let theta = (t[qq][qq] - t[pp][pp]) / (2.0 * t[pp][qq]);
+                        let tt = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
+                        let tt = if theta == 0.0 { 1.0 } else { tt };
+                        let (c, sn) = (1.0 / (tt * tt + 1.0).sqrt(), tt / (tt * tt + 1.0).sqrt());
+                        for k in 0..m {
+                            let (a, b) = (t[k][pp], t[k][qq]);
+                            t[k][pp] = c * a - sn * b;
+                            t[k][qq] = sn * a + c * b;
+                        }
+                        for k in 0..m {
+                            let (a, b) = (t[pp][k], t[qq][k]);
+                            t[pp][k] = c * a - sn * b;
+                            t[qq][k] = sn * a + c * b;
+                        }
+                        for k in 0..m {
+                            let (a, b) = (s[k][pp], s[k][qq]);
+                            s[k][pp] = c * a - sn * b;
+                            s[k][qq] = sn * a + c * b;
+                        }
+                    }
+                }
+            }
+            let mut order: Vec<usize> = (0..m).collect();
+            order.sort_by(|&a, &b| t[a][a].partial_cmp(&t[b][b]).unwrap());
+            let ev: Vec<f64> = order.iter().map(|&i| t[i][i]).collect();
+            println!("lanczos {m}: smallest Ritz values {:?}", ev.iter().take(6).map(|v| format!("{v:.4e}")).collect::<Vec<_>>());
+            println!("lanczos {m}: largest Ritz value {:.4e}", ev[m - 1]);
+            let n_neg = ev.iter().filter(|v| **v < 0.0).count();
+            for (r, &col) in order.iter().take(n_neg.clamp(3, 16)).enumerate() {
+                let mut y = vec![[0.0; 3]; xg.len()];
+                for (k, b) in basis.iter().enumerate() {
+                    axpy(&mut y, s[k][col], b);
+                }
+                let ky = p.k_mul(&xg, &y);
+                let lam = t[col][col];
+                let res: f64 = ky.iter().zip(&y).map(|(a, b)| (0..3).map(|d| (a[d] - lam * b[d]).powi(2)).sum::<f64>()).sum::<f64>().sqrt();
+                println!("ritz {r}: lambda {lam:.4e}, residual |Ky - lambda y| {res:.3e}");
+                save_rows(out.join(format!("ritz{r}.npy")), &y);
+            }
+        }
         if let Some(rp) = opt("--fold-ref") {
             // Curvature of the energy along the fold direction v = x_g - x_ref (x_ref: unfolded
             // equilibrium), at x_g with the fitted fields: v.Kv / v.v vs a generic direction.

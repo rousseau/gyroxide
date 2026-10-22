@@ -342,6 +342,16 @@ impl<B: Backend> Simulation<B> {
         });
     }
 
+    /// Like [`Self::set_pull`] with one stiffness per target node (0: node not pulled).
+    pub fn set_pull_weighted(&mut self, target: &[[f64; 3]], k: &[f64]) {
+        let n = self.pre.n_nodes;
+        let mut rows = vec![[0.0; 3]; n];
+        rows[..target.len()].copy_from_slice(target);
+        let mut w = vec![0.0; n];
+        w[..k.len()].copy_from_slice(k);
+        self.pull = Some((V3::from_rows(&rows, &self.device), floats(&w, &self.device)));
+    }
+
     /// Normals of the pull targets (first nodes): springs then act along them only, w n n.(t - x),
     /// so that the nodes slide freely in the tangent plane of their target. `None`: full springs.
     pub fn set_pull_normals(&mut self, normals: Option<&[[f64; 3]]>) {
