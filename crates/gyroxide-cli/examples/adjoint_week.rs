@@ -269,8 +269,11 @@ struct Geo {
     area_t: Vec<f64>,
     lap_t: Vec<[f64; 3]>,
     lap_idx: Vec<usize>,
-    w: [f64; 3],
-    scale: [f64; 3],
+    /// Point-to-plane: target positions and unit vertex normals on the loss vertices.
+    plane_y: Vec<[f64; 3]>,
+    plane_n: Vec<[f64; 3]>,
+    w: [f64; 4],
+    scale: [f64; 4],
 }
 
 fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -286,7 +289,7 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 impl Geo {
-    fn new(faces_all: &[[usize; 3]], in_loss: &[bool], nbr: &[Vec<usize>], y: &[[f64; 3]], w: [f64; 3]) -> Self {
+    fn new(faces_all: &[[usize; 3]], in_loss: &[bool], nbr: &[Vec<usize>], y: &[[f64; 3]], w: [f64; 4]) -> Self {
         let faces: Vec<[usize; 3]> = faces_all.iter().copied().filter(|f| f.iter().all(|&i| in_loss[i])).collect();
         let (mut nu, mut area_t) = (Vec::new(), Vec::new());
         for f in &faces {
@@ -297,7 +300,17 @@ impl Geo {
         }
         let lap_idx: Vec<usize> = (0..nbr.len()).filter(|&i| in_loss[i]).collect();
         let lap_t = lap_idx.iter().map(|&i| Self::umbrella(nbr, y, i)).collect();
-        Self { faces, nu, area_t, lap_t, lap_idx, w, scale: [1.0; 3] }
+        // vertex normals of the target (area weighted, all faces around the vertex)
+        let mut vn = vec![[0.0; 3]; nbr.len()];
+        for f in faces_all {
+            let n = cross3(sub3(y[f[1]], y[f[0]]), sub3(y[f[2]], y[f[0]]));
+            for &i in f {
+                (0..3).for_each(|d| vn[i][d] += n[d]);
+            }
+        }
+        let plane_y = lap_idx.iter().map(|&i| y[i]).collect();
+        let plane_n = lap_idx.iter().map(|&i| { let l = dot3(vn[i], vn[i]).sqrt(); vn[i].map(|c| c / l) }).collect();
+        Self { faces, nu, area_t, lap_t, lap_idx, plane_y, plane_n, w, scale: [1.0; 4] }
     }
 
     fn umbrella(nbr: &[Vec<usize>], x: &[[f64; 3]], i: usize) -> [f64; 3] {
@@ -305,8 +318,8 @@ impl Geo {
         [0, 1, 2].map(|d| x[i][d] - nbr[i].iter().map(|&j| x[j][d]).sum::<f64>() / k)
     }
 
-    /// Raw terms [normal, laplacian, area] and the gradient of sum_t w_t / scale_t * term_t.
-    fn eval(&self, nbr: &[Vec<usize>], x: &[[f64; 3]], n_nodes: usize) -> ([f64; 3], Vec<[f64; 3]>) {
+    /// Raw terms [normal, laplacian, area, point-to-plane] and the gradient of sum_t w_t / scale_t * term_t.
+    fn eval(&self, nbr: &[Vec<usize>], x: &[[f64; 3]], n_nodes: usize) -> ([f64; 4], Vec<[f64; 3]>) {
         let mut g = vec![[0.0; 3]; n_nodes];
         let mut add = |i: usize, v: [f64; 3], c: f64| (0..3).for_each(|d| g[i][d] += c * v[d]);
         let nf = self.faces.len() as f64;
@@ -346,7 +359,15 @@ impl Geo {
                 add(j, r, -cl / nl / kk);
             }
         }
-        ([ln, ll, la], g)
+        // Point-to-plane: mean_i ((x_i - y_i) . n_i)^2 / 2, tangential sliding free.
+        let cp = self.w[3] / self.scale[3];
+        let mut lp = 0.0;
+        for (k, &i) in self.lap_idx.iter().enumerate() {
+            let e = dot3(sub3(x[i], self.plane_y[k]), self.plane_n[k]);
+            lp += 0.5 * e * e / nl;
+            add(i, self.plane_n[k], cp * e / nl);
+        }
+        ([ln, ll, la, lp], g)
     }
 }
 
@@ -774,7 +795,7 @@ impl Problem {
         }
         if let Some(geo) = &self.geo {
             let (t, gg) = geo.eval(&self.nbr, x, x.len());
-            ls += (0..3).map(|k| geo.w[k] * t[k] / geo.scale[k]).sum::<f64>();
+            ls += (0..4).map(|k| geo.w[k] * t[k] / geo.scale[k]).sum::<f64>();
             for (a, b) in g.iter_mut().zip(&gg) {
                 (0..3).for_each(|d| a[d] += b[d]);
             }
@@ -1241,6 +1262,14 @@ fn main() {
         sim.set_nodal_table(table());
         ad.set_nodal_table(table());
     }
+    if let Some(cp) = opt("--core-override") {
+        // Remodelled core: growth tensor U per tetrahedron (tools/absorb_core.py).
+        let u = read(&cp);
+        assert_eq!(u.len(), 6 * mesh.n_tets(), "--core-override needs [n_tets, 6]");
+        sim.set_core_override(Some(&u));
+        ad.set_core_override(Some(&u));
+        println!("core growth replaced per tetrahedron ({})", cp.display());
+    }
     if let Some(fp) = opt("--dirichlet") {
         // Sub-mesh: nodes of the cut faces fixed at --dirichlet-pos (tools/make_slab.py).
         let fixed: Vec<bool> = read(&fp).iter().map(|&v| v > 0.5).collect();
@@ -1368,7 +1397,7 @@ fn main() {
         nbr[*j].push(*i);
     }
     p.nbr = nbr;
-    let wgeo = [flag("--w-normal", 0.0), flag("--w-lap", 0.0), flag("--w-area", 0.0)];
+    let wgeo = [flag("--w-normal", 0.0), flag("--w-lap", 0.0), flag("--w-area", 0.0), flag("--w-plane", 0.0)];
     if wgeo.iter().any(|w| *w > 0.0) {
         let faces: Vec<[usize; 3]> = read(&prep.join("faces.npy")).chunks_exact(3).map(|c| [c[0] as usize, c[1] as usize, c[2] as usize]).collect();
         let mut in_loss = vec![false; ns];
@@ -1377,8 +1406,8 @@ fn main() {
         let (t0, _) = geo.eval(&p.nbr, &xs, xs.len());
         geo.scale = t0.map(|v| v.max(1e-30));
         println!(
-            "geometric loss: weights normal {} laplacian {} area {}, start values {:.4e} {:.4e} {:.4e} ({} faces, vertex weight {})",
-            wgeo[0], wgeo[1], wgeo[2], t0[0], t0[1], t0[2], geo.faces.len(), p.w_vertex
+            "geometric loss: weights normal {} laplacian {} area {} plane {}, start values {:.4e} {:.4e} {:.4e} {:.4e} ({} faces, vertex weight {})",
+            wgeo[0], wgeo[1], wgeo[2], wgeo[3], t0[0], t0[1], t0[2], t0[3], geo.faces.len(), p.w_vertex
         );
         p.geo = Some(geo);
     }
@@ -1421,6 +1450,7 @@ fn main() {
     let param_smooth = flag("--param-smooth", 0.0);
     let min_growth = args.iter().position(|a| a == "--min-growth").map(|i| args[i + 1].parse::<f64>().unwrap());
     let carry = args.iter().any(|a| a == "--carry");
+    let growth_band = flag("--growth-band", 0.0);
     let max_step = flag("--max-step", 0.05);
     let ftol = flag("--ftol", 0.0);
     let mut hist_f: Vec<f64> = Vec::new();
@@ -2072,6 +2102,12 @@ fn main() {
             if let Some(lo) = min_growth {
                 for v in tn.iter_mut() {
                     *v = v.max(lo);
+                }
+            }
+            if growth_band > 0.0 {
+                // Growth kept within +-band x the measured value (theta0).
+                for (v, m) in tn.iter_mut().zip(&theta0) {
+                    *v = v.clamp(m * (1.0 - growth_band), m * (1.0 + growth_band));
                 }
             }
             xn = p.equilibrium(&tn, &x, p.relax);
