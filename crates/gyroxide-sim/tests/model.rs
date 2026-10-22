@@ -358,3 +358,46 @@ fn thickening_is_stress_free() {
     let out = elastic::forces_full(sim.precomputed(), mat, &x, &g, None, None, Some(&rad), &th, false);
     assert!(max_abs(&out.force.to_rows()) < 1e-12, "{:?}", out.force.to_rows());
 }
+
+#[test]
+fn dirichlet_nodes_stay_fixed_and_decouple() {
+    // Nodes of the lower half fixed (a sub-mesh cut): no force, no motion, identity rows of K.
+    let mesh = voxel_ball(5, 1.0);
+    let mut params = params_no_contact();
+    params.dynamics.mesh_spacing = 2.0 / 5.0;
+    let mut sim = Simulation::<B>::new(mesh, params, device()).unwrap();
+    let x0 = sim.x.to_rows();
+    let fixed: Vec<bool> = x0.iter().map(|p| p[2] < -0.3).collect();
+    let mut r = rng(3);
+    let g: Vec<f64> = (0..sim.mesh.n_tets()).map(|_| 0.2 + 0.1 * r()).collect();
+    let x: Vec<[f64; 3]> = x0.iter().map(|p| [0, 1, 2].map(|d| p[d] + 0.01 * r())).collect();
+    sim.set_dirichlet(Some((&fixed, &x)));
+    sim.set_state(&x, &vec![[0.0; 3]; x.len()], &g);
+    sim.set_fixed_growth(Some(&g));
+    for _ in 0..20 {
+        sim.step();
+    }
+    let xs = sim.positions();
+    for (i, f) in fixed.iter().enumerate() {
+        if *f {
+            assert_eq!(xs[i], x[i], "fixed node {i} moved");
+        }
+    }
+    let f = sim.total_force(&xs);
+    assert!(fixed.iter().zip(&f).all(|(&m, r)| !m || r.iter().all(|v| *v == 0.0)));
+    let v: Vec<[f64; 3]> = xs.iter().map(|_| [r(), r(), r()]).collect();
+    let kv = sim.stiffness_product(&xs, &v);
+    for (i, &m) in fixed.iter().enumerate() {
+        if m {
+            assert!((0..3).all(|d| (kv[i][d] - v[i][d]).abs() < 1e-12), "row {i} is not the identity");
+        }
+    }
+    // Free rows: K v = -(F(x + e v_free) - F(x - e v_free)) / 2e.
+    let vf: Vec<[f64; 3]> = v.iter().zip(&fixed).map(|(a, &m)| if m { [0.0; 3] } else { *a }).collect();
+    let e = 1e-6;
+    let sh = |s: f64| -> Vec<[f64; 3]> { xs.iter().zip(&vf).map(|(a, b)| [0, 1, 2].map(|d| a[d] + s * b[d])).collect() };
+    let (fp, fm) = (sim.total_force(&sh(e)), sim.total_force(&sh(-e)));
+    let fd: Vec<[f64; 3]> = fp.iter().zip(&fm).map(|(a, b)| [0, 1, 2].map(|d| -(a[d] - b[d]) / (2.0 * e))).collect();
+    let err = kv.iter().zip(&fd).zip(&fixed).filter(|(_, &m)| !m).flat_map(|((a, b), _)| (0..3).map(move |d| (a[d] - b[d]).abs())).fold(0.0f64, f64::max);
+    assert!(err < 1e-5 * max_abs(&fd), "max error {err:.3e}, max |fd| {:.3e}", max_abs(&fd));
+}

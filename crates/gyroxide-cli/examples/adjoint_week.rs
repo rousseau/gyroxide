@@ -133,6 +133,8 @@ struct Problem {
     pre_inv: Vec<[[f64; 3]; 3]>,
     /// Orthonormal vectors projected out of the CG solves (deflated unstable modes).
     deflate: Vec<Vec<[f64; 3]>>,
+    /// Dirichlet nodes (sub-mesh cut): no loss gradient and no adjoint there.
+    fixed: Vec<bool>,
     /// K products by finite differences of the total force (old path, --fd-k), and the
     /// growth / thickness tensors of the autodiff path.
     fd_k: bool,
@@ -883,6 +885,9 @@ impl Problem {
     /// a non-finite residual and returns the iterate of smallest residual (near buckling K is
     /// indefinite and the residual can grow by orders of magnitude before p.Kp turns negative).
     fn adjoint(&self, x: &[[f64; 3]], b: &[[f64; 3]], sigma: f64, iters: usize) -> (Vec<[f64; 3]>, usize, f64) {
+        // Fixed nodes: K is the identity there and the loss does not act on them.
+        let b: Vec<[f64; 3]> = b.iter().enumerate().map(|(i, r)| if self.fixed.get(i).copied().unwrap_or(false) { [0.0; 3] } else { *r }).collect();
+        let b = &b[..];
         self.solve(x, b, sigma, iters, true)
     }
 
@@ -1109,6 +1114,7 @@ fn main() {
     std::fs::create_dir_all(&out).unwrap();
 
     let params = Params::load(cfg).unwrap();
+    let mut dirichlet_mask: Vec<bool> = Vec::new();
     let Schedule::Nodal { t: knots, a: a_path, a_scale, tensor, .. } = &params.schedule else {
         panic!("adjoint_week needs the per-node growth law (law = \"nodal\")");
     };
@@ -1129,6 +1135,15 @@ fn main() {
         };
         sim.set_nodal_table(table());
         ad.set_nodal_table(table());
+    }
+    if let Some(fp) = opt("--dirichlet") {
+        // Sub-mesh: nodes of the cut faces fixed at --dirichlet-pos (tools/make_slab.py).
+        let fixed: Vec<bool> = read(&fp).iter().map(|&v| v > 0.5).collect();
+        let pos = npy::read(opt("--dirichlet-pos").expect("--dirichlet needs --dirichlet-pos")).unwrap().rows3().unwrap();
+        sim.set_dirichlet(Some((&fixed, &pos)));
+        ad.set_dirichlet(Some((&fixed, &pos)));
+        println!("Dirichlet: {} fixed nodes", fixed.iter().filter(|f| **f).count());
+        dirichlet_mask = fixed;
     }
     let xs = npy::read(ckpt.join("x.npy")).unwrap().rows3().unwrap();
     let vs = npy::read(ckpt.join("v.npy")).unwrap().rows3().unwrap();
@@ -1234,6 +1249,7 @@ fn main() {
         colours: colour_nodes(mesh.n_nodes(), &mesh.tets),
         pre_inv: Vec::new(),
         deflate: Vec::new(),
+        fixed: dirichlet_mask.clone(),
         fd_k: args.iter().any(|a| a == "--fd-k"),
         force_tol: flag("--force-tol", 1e-5),
     };

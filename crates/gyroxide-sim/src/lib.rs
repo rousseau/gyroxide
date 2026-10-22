@@ -76,6 +76,8 @@ pub struct Simulation<B: Backend> {
     pull_normals: Option<V3<B>>,
     /// Optional core growth tensor per tetrahedron replacing the scheduled one (remodelling).
     core_override: Option<[T1<B>; 6]>,
+    /// Dirichlet nodes: (free mask, 1 free / 0 fixed; prescribed positions of the fixed nodes).
+    dirichlet: Option<(T1<B>, V3<B>)>,
 }
 
 /// Expansion a_t: one value, or one per tetrahedron.
@@ -182,6 +184,7 @@ impl<B: Backend> Simulation<B> {
             core_delta: None,
             pull_normals: None,
             core_override: None,
+            dirichlet: None,
         })
     }
 
@@ -299,7 +302,31 @@ impl<B: Backend> Simulation<B> {
             thickness,
             record,
         );
-        (self.non_elastic(x).add(&el.force), el)
+        let force = self.non_elastic(x).add(&el.force);
+        let force = match &self.dirichlet {
+            Some((free, _)) => force.mul(free),
+            None => force,
+        };
+        (force, el)
+    }
+
+    /// Fixes the nodes where `fixed` is true at `positions` (Dirichlet boundary, e.g. the cut
+    /// faces of a sub-mesh): zero force and velocity there, identity rows in `stiffness_product`.
+    /// The positions are imposed now and by every `set_state`. `None` frees all nodes.
+    pub fn set_dirichlet(&mut self, fixed: Option<(&[bool], &[[f64; 3]])>) {
+        self.dirichlet = fixed.map(|(m, pos)| {
+            let free: Vec<f64> = m.iter().map(|&f| if f { 0.0 } else { 1.0 }).collect();
+            (floats(&free, &self.device), V3::from_rows(pos, &self.device))
+        });
+        self.impose_dirichlet();
+    }
+
+    fn impose_dirichlet(&mut self) {
+        if let Some((free, pos)) = &self.dirichlet {
+            let fixed = free.clone().neg().add_scalar(1.0);
+            self.x = self.x.mul(free).add(&pos.mul(&fixed));
+            self.v = self.v.mul(free);
+        }
     }
 
     /// Growth tensor U of the core per tetrahedron at the current time (`core` table).
@@ -423,7 +450,11 @@ impl<B: Backend> Simulation<B> {
             "stiffness_product: scalar growth only"
         );
         let xv = V3::from_rows(x, &self.device);
-        let vv = V3::from_rows(v, &self.device);
+        let v_in = V3::from_rows(v, &self.device);
+        let vv = match &self.dirichlet {
+            Some((free, _)) => v_in.mul(free),
+            None => v_in.clone(),
+        };
         let material = self.params.material_at(self.t);
         let thickness = self.thickness_at(self.t);
         let df = elastic::force_tangent(&self.pre, &material, &xv, &vv, &self.growth_prev, &thickness, self.core_growth().as_ref(), self.radial_growth().as_ref());
@@ -444,7 +475,11 @@ impl<B: Backend> Simulation<B> {
                 Some(n) => n.mul(&(vv.dot(n) * w.clone())),
             });
         }
-        d.neg().to_rows()
+        let kv = d.neg();
+        match &self.dirichlet {
+            Some((free, _)) => kv.mul(free).add(&v_in.mul(&free.clone().neg().add_scalar(1.0))).to_rows(),
+            None => kv.to_rows(),
+        }
     }
 
     pub fn dt(&self) -> f64 {
@@ -553,6 +588,9 @@ impl<B: Backend> Simulation<B> {
         let damped = force.sub(&self.v.mul(&(el.vn0.clone() * p.dynamics.damping)));
         let inv_m = (el.vn0 * p.dynamics.density).recip() * dt;
         self.v = self.v.add(&damped.mul(&inv_m));
+        if let Some((free, _)) = &self.dirichlet {
+            self.v = self.v.mul(free);
+        }
         self.x = self.x.add(&self.v.mul_scalar(dt));
 
         if !fixed {
@@ -633,6 +671,7 @@ impl<B: Backend> Simulation<B> {
         self.v = V3::from_rows(v, &self.device);
         self.growth_prev = floats(growth_prev, &self.device);
         self.x_surf_old = None;
+        self.impose_dirichlet();
     }
 
     /// g_m a_t of the previous step per tetrahedron (one readback), for checkpoints.
