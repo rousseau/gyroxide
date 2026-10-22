@@ -1455,6 +1455,12 @@ fn main() {
     let n_fields = usize::from(p.fit_c) + usize::from(p.fit_k);
     if n_fields > 0 {
         theta.extend(std::iter::repeat_n(0.0, n_fields * p.na));
+        if let Some(init) = opt("--fields-init") {
+            // Extra fields from a previous fit (its theta_final.npy, same fields): chaining weeks.
+            let prev = read(&init);
+            assert_eq!(prev.len(), theta.len(), "--fields-init: {} values, expected {}", prev.len(), theta.len());
+            theta[p.na..].copy_from_slice(&prev[p.na..]);
+        }
         println!(
             "fitted fields: a{}{} ({} values per field), field band +-{}",
             if p.fit_c { ", c (thickening correction)" } else { "" },
