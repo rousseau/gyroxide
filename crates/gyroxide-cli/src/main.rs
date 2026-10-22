@@ -173,19 +173,27 @@ struct RunArgs {
     /// crossing nodes further away; see docs/model.md).
     #[arg(long)]
     midplane_restoring: bool,
-    /// Overrides the mesh spacing a (sets dt and the contact skins).
+    /// Overrides the mesh spacing a (sets dt and the contact skins). For a .vtu session mesh the
+    /// default is the shortest surface edge: the TetGen meshes hold flat tetrahedra against the pial
+    /// surface and a = mean edge gives NaN within a few hundred steps (about 4x slower, until the
+    /// isosurface stuffing of gyroxide#5).
     #[arg(long)]
     mesh_spacing: Option<f64>,
-    /// Growth mask gr = 1 everywhere.
+    /// Growth mask gr = 1 everywhere. Needed for a session hemisphere: the default ellipsoid mask of
+    /// the presets is made for Tallinen's brain mesh.
     #[arg(long)]
     uniform_growth: bool,
     #[arg(long)]
     no_contact: bool,
+    /// No midplane. Needed for a session hemisphere: the midplane of the presets (y' = -0.004 in
+    /// tallinen2016) cuts a normalised hemisphere in its middle.
     #[arg(long)]
     no_midplane: bool,
     /// BIDS mode: root of the BIDS dataset (or its sourcedata/). The run is written to
     /// <study>/derivatives/gyroxide/sub-X[/ses-Y]/anat/run-<label>/ (config.toml, status.json,
-    /// sequence.tsv, one GIfTI surface per output), instead of --out.
+    /// sequence.tsv, one GIfTI surface per output), instead of --out. For a session hemisphere
+    /// (default initial state: the .vtu of `gyroxide mesh`), also give --uniform-growth and
+    /// --no-midplane; the mesh spacing defaults to the shortest surface edge (see --mesh-spacing).
     #[arg(long, requires_all = ["participant", "label"])]
     bids: Option<PathBuf>,
     /// BIDS participant (without sub-).

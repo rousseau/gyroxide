@@ -63,6 +63,20 @@ gyroxide run --bids <racine BIDS> --participant X [--session Y] [--output-dir D]
     --label <run> [--hemi L|R] [--mesh <état initial>] [--config params.toml] [--steps N]
 ```
 
+Pour un hémisphère de session (état initial par défaut : le `.vtu` de `gyroxide mesh`), ajouter
+**`--uniform-growth --no-midplane`** : le masque ellipsoïdal et le plan médian des préréglages
+sont faits pour le maillage de Tallinen (le plan médian de `tallinen2016`, y′ = −0,004, couperait
+l'hémisphère normalisé en son milieu). L'espacement `a` vaut par défaut la **plus courte arête de
+surface** : les maillages TetGen gardent des tétraèdres plats contre la piale et `a` = arête
+moyenne donne des NaN en quelques centaines de pas. C'est environ 4 fois plus lent ; l'isosurface
+stuffing (gyroxide#5) réglera ces tétraèdres. Exemple, sur la session d'essai :
+
+```sh
+gyroxide mesh --bids /tmp/surfx-e2e/sourcedata --participant 0avbc --session 02 --hemi L --tetgen <tetgen>
+gyroxide run --bids /tmp/surfx-e2e/sourcedata --participant 0avbc --session 02 --label essai \
+    --hemi L --steps 20000 --uniform-growth --no-midplane
+```
+
 écrit dans `<étude>/derivatives/gyroxide/sub-X[/ses-Y]/anat/run-<label>/`, `<étude>` étant
 `--output-dir` s'il est donné, sinon le parent de la racine BIDS si elle s'appelle `sourcedata/`,
 sinon la racine elle-même (même règle que medoxide et surfoxide) :
