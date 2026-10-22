@@ -1,0 +1,11 @@
+[package]
+name = "gyroxide-io"
+description = "Runs de gyroxide (status.json, sequence.tsv, dossiers run-<label>) et indice de gyrification, sans Burn"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+thiserror.workspace = true
+surfoxide-metrics.workspace = true
