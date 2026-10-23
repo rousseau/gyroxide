@@ -1506,6 +1506,13 @@ fn main() {
             assert_eq!(prev.len(), theta.len(), "--fields-init: {} values, expected {}", prev.len(), theta.len());
             theta[p.na..].copy_from_slice(&prev[p.na..]);
         }
+        if let Some(init) = opt("--theta-init") {
+            // Whole theta of a previous fit of the same week (a and fields or law coefficients):
+            // continuing a fit.
+            let prev = read(&init);
+            assert_eq!(prev.len(), theta.len(), "--theta-init: {} values, expected {}", prev.len(), theta.len());
+            theta.copy_from_slice(&prev);
+        }
         println!(
             "fitted fields: a{}{} ({} values per field), field band +-{}",
             if p.fit_c { ", c (thickening correction)" } else { "" },

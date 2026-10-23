@@ -166,3 +166,43 @@ Enchaînement à SG 28 (`tools/chain_week.py` : a reporté, départ = x_fit27 +
 
 Le gain se maintient au calcarin, pas au sillon central, où la profondeur de
 SG 27 renseigne mal le sillon de SG 28 (atlas : 0,64 → 0,91 mm).
+
+## Hémisphère entier (phase A, SG 27)
+
+Modèle complet (115 778 nœuds, 610 828 tétraèdres), entrées `tools/make_full.py`
+(`data/full/`, cibles ramenées par similitude, cartes de profondeur sur tout
+l'atlas), `configs/mu_test/mu2_full.toml`. Une itération L-BFGS (équilibres de
+la recherche linéaire + gradient) prend ~35 s sur la RTX 2080 Ti ; une semaine
+de 60 itérations, ~40 min.
+
+Les faces de `data/adjoint_prep_s` sont orientées vers l'intérieur : les cartes
+de profondeur de l'hémisphère sont calculées avec des normales sortantes
+(d < 0 aux fonds, comme sur les régions). Le `sulc` de l'atlas dHCP suit la
+convention HCP (positif sur les crêtes).
+
+Loi imposée seule (a mesuré), palier ×0,25 de la loi commune sans constantes :
+0,81 mm contre 0,85 ; ×0,5 : 0,90 (trop forte sans ajustement de a). Les
+constantes de la loi régionale (c ≈ −0,05) amincissent le cortex partout et
+déplacent toute la surface de −0,23 mm le long des normales : sur une région,
+les bords fixes et a les compensaient.
+
+Loi ajustée par l'adjoint sur l'hémisphère (6 coefficients + a, cartes / 100 :
+avec / 10 le gradient des coefficients, somme sur 32 000 sommets, prend le pas
+et a ne bouge pas), 60 itérations, `tools/full_eval.py` :
+
+| SG 27 | région | mm | normales | corr H | profondeur (atlas) |
+|---|---|---|---|---|---|
+| a seul | cortex | 0,749 | 10,3° | 0,79 | 0,70 (0,88) |
+| loi | cortex | 0,744 | 9,3° | 0,84 | 0,74 |
+| a seul | sillon central | 1,100 | 16,2° | 0,81 | 0,43 (0,71) |
+| loi | sillon central | 0,995 | 14,2° | 0,87 | 0,49 |
+| a seul | calcarin | 0,781 | 12,0° | 0,85 | 1,36 (1,49) |
+| loi | calcarin | 0,896 | 10,5° | 0,89 | 1,44 |
+| a seul | ailleurs | 0,621 | 8,5° | 0,77 | 0,67 (0,84) |
+| loi | ailleurs | 0,634 | 7,9° | 0,81 | 0,71 |
+
+Coefficients : c = 0,092 d30 + 0,021 d_fin, k = 0,015 d30 + 0,002 d_fin,
+constantes ≈ 0 : mêmes signes que sur les régions, amplitude ~2,7 fois plus
+faible (encore en croissance à la fin). La loi améliore la forme des plis
+partout (normales, courbure, profondeur) ; l'écart en mm, dominé par la forme
+lisse, ne bouge pas.
