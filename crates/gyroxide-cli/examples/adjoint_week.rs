@@ -143,6 +143,8 @@ struct Problem {
     /// thickening c and isotropic correction delta I of the core growth U; `na` = number of a values.
     fit_c: bool,
     fit_k: bool,
+    /// Extra fields kept at their initial values (--freeze-fields): their gradient is zeroed.
+    freeze_fields: bool,
     na: usize,
     /// K products by finite differences of the total force (old path, --fd-k), and the
     /// growth / thickness tensors of the autodiff path.
@@ -1234,6 +1236,9 @@ impl Problem {
                 *gi += self.alpha / self.mes_scale * (a - b) / n;
             }
         }
+        if self.freeze_fields {
+            g[self.na..].fill(0.0);
+        }
         (g, it, res)
     }
 
@@ -1446,6 +1451,7 @@ fn main() {
         w_vertex: flag("--w-vertex", 1.0),
         fit_c: opt("--fit-fields").is_some_and(|f| f.to_string_lossy().contains('c')),
         fit_k: opt("--fit-fields").is_some_and(|f| f.to_string_lossy().contains('k')),
+        freeze_fields: args.iter().any(|a| a == "--freeze-fields"),
         na: 0,
         fd_k: args.iter().any(|a| a == "--fd-k"),
         force_tol: flag("--force-tol", 1e-5),

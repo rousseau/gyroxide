@@ -52,3 +52,39 @@ Table de a reportée (`configs/mu_test/mu2_slab_cs_carry_*.toml`), état de dép
 - Perte : la composante point-plan et les normales tolèrent un pli décalé, le
   laplacien le pénalise fortement (`tools/loss_probe.py`) ; l'erreur restante
   sur la région est surtout lisse, hors de portée avec des bords fixés.
+
+## Deuxième région : sillon calcarin (SG 27, atlas : profondeur 1,44 mm)
+
+Fond du sillon repéré par la profondeur locale de l'atlas à SG 28, région de
+10 mm autour (`data/slab_calc/` : 11 915 nœuds dont 2 059 fixés, 2 263 sommets
+de perte), `configs/mu_test/mu2_slab_calc.toml`, mêmes options qu'au sillon
+central.
+
+| run | champs | mm | normales | corr H | profondeur |
+|---|---|---|---|---|---|
+| départ (croissance mesurée) | — | 0,920 | 14,9° | 0,55 | 1,22 |
+| fit27_combo_band | a (bande) | 0,760 | 12,3° | 0,65 | 1,29 |
+| fit27_band_ck | a, c, k | **0,306** | **3,6°** | **0,92** | **1,41** |
+
+Même motif qu'au sillon central : k < 0 sous les fonds (calcarin et branche
+pariéto-occipitale, que la croissance mesurée ne forme pas), k > 0 en anneau sous
+les crêtes ; c de même signe. Corrélation avec la profondeur locale de l'atlas
+d (`(y − S³⁰y)·n`, lissée) : k r = +0,73, c r = +0,68 (sillon central : +0,62,
++0,65). Les pentes diffèrent (k ≈ 0,17 d contre 0,45 d par mm) mais pas
+l'amplitude : pente × écart-type de d ≈ 0,07 dans les deux régions.
+
+## Loi à un paramètre par champ (sillon central, SG 27)
+
+c = 0,35 d, k = 0,45 d (régression sur fit27_band_ck_b3), champs gelés
+(`--fields-init` + `--freeze-fields`), a ajusté dans la bande ±50 %,
+`--relax0 3000` pour l'équilibre de départ.
+
+| run | champs | mm | normales | corr H | profondeur |
+|---|---|---|---|---|---|
+| fit27_combo_band | a (bande) | 1,091 | 16,7° | 0,67 | 0,37 |
+| fit27_law_s1 | a + loi c, k | 0,898 | 11,9° | 0,85 | 0,51 |
+| fit27_band_ck | a, c, k libres | 0,485 | 5,3° | 0,87 | 0,62 |
+
+La loi récupère environ un tiers de l'écart entre a seul et les champs libres.
+Doubler la loi (s = 2) imposée d'emblée fait diverger l'équilibre de départ
+(NaN) : les champs libres atteignent ces amplitudes progressivement, avec a.
