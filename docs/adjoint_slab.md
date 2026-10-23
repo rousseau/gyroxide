@@ -82,9 +82,21 @@ c = 0,35 d, k = 0,45 d (régression sur fit27_band_ck_b3), champs gelés
 | run | champs | mm | normales | corr H | profondeur |
 |---|---|---|---|---|---|
 | fit27_combo_band | a (bande) | 1,091 | 16,7° | 0,67 | 0,37 |
+| fit27_law_d26 | a + loi, d de l'atlas SG 26 | 0,945 | 13,8° | 0,72 | 0,50 |
 | fit27_law_s1 | a + loi c, k | 0,898 | 11,9° | 0,85 | 0,51 |
+| fit27_law_s15 | a + loi × 1,5 | 0,861 | 10,7° | 0,88 | 0,58 |
 | fit27_band_ck | a, c, k libres | 0,485 | 5,3° | 0,87 | 0,62 |
 
-La loi récupère environ un tiers de l'écart entre a seul et les champs libres.
+Transfert au calcarin de la loi du sillon central, normalisée par l'écart-type
+de d (c = 0,060 d/σ_d, k = 0,077 d/σ_d) : 0,656 mm, 9,9°, corr H 0,78,
+profondeur 1,41 (a seul 0,760 ; champs libres 0,306).
+
+La loi récupère un tiers environ de l'écart entre a seul et les champs libres
+(×1,5 : 40 %), avec une corrélation de courbure proche de celle des champs
+libres : elle place les plis au bon endroit, l'écart restant est surtout
+d'amplitude et de forme fine. Calculée sur la profondeur de la semaine
+précédente (SG 26, donc sans voir la cible), elle garde l'essentiel du gain
+(0,945 mm) : la position future des plis est déjà inscrite dans la géométrie
+antérieure.
 Doubler la loi (s = 2) imposée d'emblée fait diverger l'équilibre de départ
 (NaN) : les champs libres atteignent ces amplitudes progressivement, avec a.
