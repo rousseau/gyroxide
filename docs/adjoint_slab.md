@@ -139,3 +139,30 @@ temps. Loi commune ×0,75, gelée, a ajusté :
 Une seule loi à six coefficients, commune aux deux régions, donne la profondeur
 des sillons de l'atlas et récupère 45 à 50 % de l'écart entre a seul et les
 champs libres ; l'écart restant tient à la forme fine, pas à la profondeur.
+
+## Contrôles et enchaînement SG 27 → 28 de la loi
+
+Loi ajustée (6 coefficients + a) depuis des coefficients nuls, sur les cartes de
+profondeur ou sur des cartes aléatoires lisses de même longueur de corrélation
+(orthogonalisées à d30, même constante) :
+
+| SG 27 | a seul | loi, cartes aléatoires | loi, profondeur (départ nul) | champs libres |
+|---|---|---|---|---|
+| sillon central, mm | 1,091 | 1,059 | 0,778 | 0,485 |
+| calcarin, mm | 0,760 | 0,717 | 0,525 | 0,306 |
+
+Le gain vient de la profondeur de l'atlas, pas des degrés de liberté ; les
+coefficients retrouvés depuis zéro sont ceux de l'initialisation par régression
+(c ≈ 0,19–0,26 d30, k ≈ 0,04–0,09 d30).
+
+Enchaînement à SG 28 (`tools/chain_week.py` : a reporté, départ = x_fit27 +
+(complet28 − complet27)), loi commune ×0,75 gelée sur les cartes de SG 27
+(prédictive), a ajusté :
+
+| SG 28 | a seul | loi commune prédictive |
+|---|---|---|
+| sillon central, mm | 1,463 (bande) / 1,293 | 1,222 |
+| calcarin, mm | 0,920 | 0,704 |
+
+Le gain se maintient au calcarin, pas au sillon central, où la profondeur de
+SG 27 renseigne mal le sillon de SG 28 (atlas : 0,64 → 0,91 mm).
