@@ -145,6 +145,9 @@ struct Problem {
     fit_k: bool,
     /// Extra fields kept at their initial values (--freeze-fields): their gradient is zeroed.
     freeze_fields: bool,
+    /// Field law (--field-law f1.npy,f2.npy,...): the fields are c = sum_j alpha_c,j f_j and
+    /// k = sum_j alpha_k,j f_j over these per-vertex basis maps; theta holds the coefficients.
+    law: Vec<Vec<f64>>,
     na: usize,
     /// K products by finite differences of the total force (old path, --fd-k), and the
     /// growth / thickness tensors of the autodiff path.
@@ -397,8 +400,36 @@ impl Problem {
         (oc, ok)
     }
 
+    /// theta in the full layout (a, then one value per vertex for each fitted field): with a field
+    /// law, the fields are expanded from their coefficients.
+    fn full<'a>(&self, theta: &'a [f64]) -> std::borrow::Cow<'a, [f64]> {
+        if self.law.is_empty() {
+            return std::borrow::Cow::Borrowed(theta);
+        }
+        let nb = self.law.len();
+        let mut t = theta[..self.na].to_vec();
+        for alpha in theta[self.na..].chunks(nb) {
+            t.extend((0..self.na).map(|i| alpha.iter().zip(&self.law).map(|(a, f)| a * f[i]).sum::<f64>()));
+        }
+        std::borrow::Cow::Owned(t)
+    }
+
+    /// Gradient in the full layout brought back to the law coefficients (identity without a law).
+    fn reduce(&self, g: Vec<f64>) -> Vec<f64> {
+        if self.law.is_empty() {
+            return g;
+        }
+        let mut r = g[..self.na].to_vec();
+        for gf in g[self.na..].chunks(self.na) {
+            r.extend(self.law.iter().map(|f| f.iter().zip(gf).map(|(a, b)| a * b).sum::<f64>()));
+        }
+        r
+    }
+
     /// Sets the thickening / core corrections of theta's extra blocks in both simulations.
     fn apply_fields(&mut self, theta: &[f64]) {
+        let full = self.full(theta).into_owned();
+        let theta = &full[..];
         let per_tet = |d: &[f64]| -> Vec<f64> {
             self.tets.iter().map(|t| 0.25 * t.iter().map(|&n| d[self.owner[n as usize]]).sum::<f64>()).collect()
         };
@@ -575,6 +606,7 @@ impl Problem {
     }
 
     fn reg(&self, theta: &[f64]) -> f64 {
+        let theta = &self.full(theta);
         let (oc, ok) = self.field_offsets();
         let fields: f64 = [oc, ok]
             .into_iter()
@@ -1199,6 +1231,7 @@ impl Problem {
         cg: usize,
     ) -> (Vec<f64>, usize, f64) {
         let (lam, it, res) = self.adjoint(x, gx, sigma, cg);
+        let theta = &self.full(theta);
         let (oc, ok) = self.field_offsets();
         let (gs, gc, gk) = if oc.is_some() || ok.is_some() {
             self.vjp_fields(x, &self.growth(theta), &lam, oc.is_some(), ok.is_some())
@@ -1236,6 +1269,7 @@ impl Problem {
                 *gi += self.alpha / self.mes_scale * (a - b) / n;
             }
         }
+        let mut g = self.reduce(g);
         if self.freeze_fields {
             g[self.na..].fill(0.0);
         }
@@ -1452,6 +1486,9 @@ fn main() {
         fit_c: opt("--fit-fields").is_some_and(|f| f.to_string_lossy().contains('c')),
         fit_k: opt("--fit-fields").is_some_and(|f| f.to_string_lossy().contains('k')),
         freeze_fields: args.iter().any(|a| a == "--freeze-fields"),
+        law: opt("--field-law")
+            .map(|l| l.to_string_lossy().split(',').map(|f| read(Path::new(f))).collect())
+            .unwrap_or_default(),
         na: 0,
         fd_k: args.iter().any(|a| a == "--fd-k"),
         force_tol: flag("--force-tol", 1e-5),
@@ -1460,7 +1497,9 @@ fn main() {
     p.na = theta.len();
     let n_fields = usize::from(p.fit_c) + usize::from(p.fit_k);
     if n_fields > 0 {
-        theta.extend(std::iter::repeat_n(0.0, n_fields * p.na));
+        let per_field = if p.law.is_empty() { p.na } else { p.law.len() };
+        assert!(p.law.iter().all(|f| f.len() == p.na), "--field-law: maps of {} values expected", p.na);
+        theta.extend(std::iter::repeat_n(0.0, n_fields * per_field));
         if let Some(init) = opt("--fields-init") {
             // Extra fields from a previous fit (its theta_final.npy, same fields): chaining weeks.
             let prev = read(&init);
@@ -2291,6 +2330,12 @@ fn main() {
 
     // Chaining outputs: fitted theta into the a table, fitted equilibrium as a restart point.
     npy::write_f64(out.join("theta_final.npy"), &[theta.len()], &theta).unwrap();
+    if !p.law.is_empty() {
+        // Fields expanded from the law, in the layout of a free-field fit (tools/slab_fields.py).
+        let full = p.full(&theta).into_owned();
+        npy::write_f64(out.join("theta_full.npy"), &[full.len()], &full).unwrap();
+        println!("field law coefficients: {:?}", &theta[p.na..]);
+    }
     if let Some(path) = write_table {
         let mut a = npy::read(&a_path).unwrap();
         let n = a.shape[1];

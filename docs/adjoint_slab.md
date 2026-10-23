@@ -100,3 +100,42 @@ précédente (SG 26, donc sans voir la cible), elle garde l'essentiel du gain
 antérieure.
 Doubler la loi (s = 2) imposée d'emblée fait diverger l'équilibre de départ
 (NaN) : les champs libres atteignent ces amplitudes progressivement, avec a.
+
+## Loi ajustée par l'adjoint (`--field-law`)
+
+Les champs sont des combinaisons de cartes de base par sommet : c = Σ α_c,j f_j,
+k = Σ α_k,j f_j ; theta contient a et les coefficients, le gradient des champs
+est ramené aux coefficients (vérifié par différences finies : rapport 1,03).
+Bases : d30 (profondeur locale `(y − S³⁰y)·n`, lissée, centrée réduite sur les
+sommets de perte), d_fin (`(y − S³y)·n` orthogonalisée à d30, réduite), 1.
+Les cartes sont divisées par 10 : sans cela le gradient des coefficients (somme
+sur tous les sommets) prend tout le pas `--max-step` et a ne bouge pas.
+`--field-band 5` borne alors les coefficients, pas les champs.
+
+Coefficients ajustés (cartes non divisées) :
+
+| région | c : d30 | c : d_fin | c : 1 | k : d30 | k : d_fin | k : 1 |
+|---|---|---|---|---|---|---|
+| sillon central | 0,233 | 0,053 | −0,044 | 0,087 | −0,043 | 0,084 |
+| calcarin | 0,271 | 0,116 | −0,055 | 0,041 | −0,023 | 0,045 |
+| loi commune (moyenne) | 0,252 | 0,084 | −0,050 | 0,064 | −0,033 | 0,064 |
+
+Le terme dominant est un épaississement proportionnel à la profondeur : cortex
+plus épais sur les crêtes, plus mince aux fonds (c jusqu'à ±0,9), au-delà de
+l'épaisseur mesurée sur l'atlas, déjà dans le modèle.
+
+La loi commune imposée d'emblée fait diverger l'équilibre de départ ; elle est
+introduite par paliers (`tools/law_ramp.sh` : ×0,25, ×0,5, ×0,75). Le saut à
+×1 diverge encore : la loi entière n'a d'équilibre qu'avec un a ajusté en même
+temps. Loi commune ×0,75, gelée, a ajusté :
+
+| SG 27 | a seul | loi commune ×0,75 | loi ajustée sur la région | champs libres |
+|---|---|---|---|---|
+| sillon central, mm | 1,091 | 0,821 | 0,758 | 0,485 |
+| profondeur (atlas 0,64) | 0,37 | 0,61 | 0,72 | 0,62 |
+| calcarin, mm | 0,760 | 0,550 | 0,522 | 0,306 |
+| profondeur (atlas 1,44) | 1,29 | 1,46 | 1,50 | 1,41 |
+
+Une seule loi à six coefficients, commune aux deux régions, donne la profondeur
+des sillons de l'atlas et récupère 45 à 50 % de l'écart entre a seul et les
+champs libres ; l'écart restant tient à la forme fine, pas à la profondeur.
