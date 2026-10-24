@@ -66,7 +66,7 @@ def main():
     inside = np.zeros(ns, bool)
     for slab in sorted(Path("data").glob("slab_*")):
         nodes = np.load(slab / "slab_nodes.npy")
-        n = len(np.load(slab / "prep" / f"w{w}" / "cortex.npy"))
+        n = len(np.load(sorted((slab / "prep").glob("w*"))[0] / "cortex.npy"))    # surface vertices
         r = np.zeros(ns, bool)
         r[nodes[:n]] = True
         regions[slab.name.removeprefix("slab_")] = r & cortex

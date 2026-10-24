@@ -1,0 +1,53 @@
+# Growth run on the dHCP fetal atlas, week 21, left hemisphere, with per-node
+# growth and thickness measured on the atlas, plus the growth tensors of the core
+# (white matter, subplate) measured on the atlas wm surfaces (no fitted parameter).
+# Mesh: tools/atlas_to_mesh.py (data/meshes/w21_left_610k_s.mesh), already in
+# Tallinen's normalised frame (1 unit = 32.99 mm).
+name = "core + thickening, mu_g/mu_w = 2, split boundary tets, whole hemisphere fits"
+normalization = "none"
+
+[material]
+mu_gray = 1.0
+mu_white = 0.5
+bulk = 5.0
+eps = 0.1
+k_inverted = 0.5
+
+[dynamics]
+mesh_spacing = 0.0136   # mean atlas surface edge (0.45 mm)
+density = 0.0025
+damping = 0.5
+step_factor = 0.025
+t_start = 0.0
+t_end = 1.0
+
+[schedule]
+# Per-node a_t and H measured on the atlas (tools/atlas_nodal_tables.py):
+# a = sqrt(local area(SG) / local area(21)) - 1, H = pial-white distance,
+# one knot per week, t = (SG - 21)/15.
+law = "nodal"
+t = [0.000000, 0.066667, 0.133333, 0.200000, 0.266667, 0.333333, 0.400000, 0.466667, 0.533333, 0.600000, 0.666667, 0.733333, 0.800000, 0.866667, 0.933333, 1.000000]
+a = "data/full/slab.nodal_a.carry_law30.npy"
+h = "data/meshes/w21_left_610k_s.nodal_h.npy"
+a_scale = 1.0
+h_scale = 1               # cortical layer at the measured pial-white thickness
+# Cortical layer fixed by H at SG 21; it grows along the normal by c = H(t)/H(21) - 1
+# (the measured pial-white distance, which thins after SG 26).
+thickening = true
+# Growth tensors U of the core, G = I + g_m a (I - n n^T) + (1 - g_m)(U - I): stretch of the
+# harmonic extension of the lobar-scale (S^200) wm-surface displacement from SG 21
+# (tools/atlas_core_tensors.py).
+core = "data/meshes/w21_left_610k_s.nodal_core.npy"
+
+[contact]
+enabled = true
+stiffness_factor = 10.0
+repulsive_skin = 0.2
+proximity_skin = 0.6
+check_every = 1
+midplane = 0.3902       # most medial atlas point
+midplane_restoring = true
+
+[growth_mask]
+kind = "file"
+path = "data/meshes/w21_left_610k_s.gr.txt"

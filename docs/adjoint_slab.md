@@ -206,3 +206,38 @@ constantes ≈ 0 : mêmes signes que sur les régions, amplitude ~2,7 fois plus
 faible (encore en croissance à la fin). La loi améliore la forme des plis
 partout (normales, courbure, profondeur) ; l'écart en mm, dominé par la forme
 lisse, ne bouge pas.
+
+## Hémisphère entier, chaîne SG 27 → 30 (phase B)
+
+`tools/full_chain.sh` : chaque semaine part de l'état ajusté précédent déplacé
+comme la chaîne de référence, la correction de a est reportée ; avec `LAW=1` la
+loi aussi, sur les cartes de profondeur de l'atlas de la semaine précédente
+(prédictive), coefficients réajustés (« loi ») ou gelés à ceux de SG 27
+(« loi figée », `--freeze-fields`). Écart après alignement rigide, cortex :
+
+| | SG 27 | SG 28 | SG 29 | SG 30 |
+|---|---|---|---|---|
+| référence (croissance mesurée) | 0,84 | 1,18 | 1,52 | 1,87 |
+| a seul | 0,75 | 1,03 | 1,29 | 1,58 |
+| loi réajustée | 0,74 | 1,00 | 1,20 | 1,40 |
+| loi figée | 0,74 | 1,00 | 1,22 | 1,46 |
+
+`tools/full_eval.py`, cortex (profondeur de l'atlas : 1,03 / 1,19 / 1,41 mm) :
+
+| | SG 28 normales / corr H / prof. | SG 29 | SG 30 |
+|---|---|---|---|
+| a seul | 12,6° / 0,79 / 0,78 | 14,6° / 0,79 / 0,90 | 17,1° / 0,79 / 1,04 |
+| loi réajustée | 11,2° / 0,83 / 0,84 | 13,2° / 0,82 / 0,96 | 15,5° / 0,83 / 1,09 |
+| loi figée | 10,9° / 0,84 / 0,85 | 12,8° / 0,83 / 0,97 | 15,0° / 0,84 / 1,11 |
+
+Sillon central (profondeur de l'atlas 1,27 mm à SG 29, 1,58 à SG 30) : a seul
+1,69 / 1,96 mm, loi 1,52 / 1,72, loi figée 1,51 / 1,73 ; profondeur 0,85 / 1,09
+(a seul) contre 0,93 / 1,15 (loi figée). Aucun élément retourné.
+
+Les coefficients réajustés croissent chaque semaine (c sur d30 : 0,108 → 0,135
+→ 0,164 → 0,193 ; k : 0,016 → 0,014 → 0,016 → 0,019), avec des constantes qui
+grandissent aussi. La loi figée, prédictive, garde l'essentiel du gain sur les
+normales, la courbure et la profondeur ; la loi réajustée gagne en plus sur
+l'écart en mm. L'écart à l'atlas croît quand même de semaine en semaine dans
+toutes les chaînes : la profondeur reste en deçà de l'atlas (1,1 contre 1,4 mm
+à SG 30).
