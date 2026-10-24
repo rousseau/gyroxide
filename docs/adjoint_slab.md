@@ -401,3 +401,55 @@ Bilan de l'étape 4 à ce stade : ni une croissance du cœur proportionnelle à 
 ni un relâchement uniforme du cœur (α = 0,3), ni une rétroaction sur la profondeur propre du modèle
 ne remplacent la loi ajustée sur l'atlas. La rétroaction géométrique approfondit les plis existants
 (calcarin, hémisphère à SG 28) ; la position des plis qui manquent (sillon central) vient de l'atlas.
+
+## Remesure des tenseurs du cœur (étape 4a)
+
+La correction lobaire ajustée (étape 1) et sa constante (+4,8 % à SG 30) compensent-elles un défaut
+de mesure des tenseurs U ? `tools/atlas_core_tensors.py --smooth k --out` à k = 200 (reproduit la
+table en service à 2·10⁻⁵ près, médiane), 100, 50, 10 ; variantes « v » mises à l'échelle chaque
+semaine pour que det U atteigne le volume blanc de l'atlas (det U = 2,20 contre 2,40 à SG 30 pour
+S²⁰⁰, 2,28 pour S¹⁰). Chaînes d'équilibres à croissance mesurée, sans ajustement
+(`tools/remodel_chain.py --alpha 0 --core`), écart après alignement rigide sans changement d'échelle
+sur l'atlas (lobes S²⁰⁰ / plis primaires S⁵⁰ / sommets, mm) :
+
+| | SG 24 | SG 25 | SG 26 | SG 27 |
+|---|---|---|---|---|
+| référence (S²⁰⁰) | 0,131 / 0,169 / 0,213 | 0,208 / 0,276 / 0,350 | 0,325 / 0,427 / 0,532 | 0,521 / 0,682 / 0,841 |
+| S²⁰⁰ + volume | 0,123 / 0,163 / 0,208 | 0,213 / 0,280 / 0,354 | 0,358 / 0,453 / 0,554 | 0,596 / 0,743 / 0,893 |
+| S¹⁰⁰ + volume | 0,105 / 0,139 / 0,182 | 0,184 / 0,241 / 0,311 | 0,306 / 0,392 / 0,488 | 0,523 / 0,655 / 0,797 |
+| S⁵⁰ + volume | sommets 0,164 | échec (2 éléments retournés, puis NaN) | | |
+
+S¹⁰⁰ + volume, suite : SG 28 0,741 / 0,922 / 1,112, SG 29 0,967 / 1,189 / 1,428, SG 30 1,237 /
+1,496 / 1,789 (référence 0,742 / 0,962 / 1,176, 0,978 / 1,248 / 1,517, 1,202 / 1,526 / 1,865) :
+lobes inchangés, −4 à −6 % sur les plis primaires et au sommet.
+
+Corriger le volume du cœur dégrade l'écart lobaire : le volume de l'hémisphère n'est pas
+déficitaire, seul det U du cœur l'est, compensé par le cortex. Une mesure plus fine (S¹⁰⁰) améliore
+les lobes tôt (−20 % à SG 24) mais plus à SG 27 (0,523 contre 0,521), et S⁵⁰ retourne des éléments.
+La correction lobaire ajustée (−26 % à SG 28) n'est donc pas un artefact de la mesure de U : elle
+compense un écart mécanique, le corps ne suivant pas la croissance prescrite au cœur.
+
+## Prépatron et rétroaction (étape 4b)
+
+Chaînes lobaires SG 28 → 30 (`tools/full_chain.sh`, même départ `fit27_lb40`) qui ne diffèrent que
+par les cartes de la loi : atlas de la semaine précédente (`lb`, référence), atlas de SG 26 figé
+(`MAPS=prep PREP=26`, prépatron de 2 à 4 semaines), profondeur du modèle (`MAPS=self`), les deux
+(`MAPS=both`, cinq cartes par champ).
+
+| écart rigide, cortex (mm) | SG 28 | SG 29 | SG 30 |
+|---|---|---|---|
+| atlas, semaine précédente | 0,741 | 0,883 | 1,116 |
+| atlas SG 26 figé | 0,764 | 0,943 | 1,218 |
+| profondeur du modèle | 0,750 | 0,931 | (1,242, bloqué) |
+| atlas SG 26 + modèle | 0,773 | 0,947 | 1,252 |
+
+SG 30, normales / corrélation de courbure / profondeur (atlas 1,41) : semaine précédente 13,4° /
+0,85 / 1,18 ; SG 26 figé 16,2° / 0,80 / 1,14 ; SG 26 + modèle 16,9° / 0,79 / 1,12.
+
+Le prépatron se dégrade avec l'horizon : les sillons qui émergent entre SG 26 et 30 n'y sont pas.
+Avec les deux jeux de cartes, l'ajustement donne des coefficients négatifs à la profondeur du modèle
+(c : −0,3 et −1,1 ; k : −0,9 et −2,6 à SG 28) : il s'en sert pour atténuer les plis déjà profonds,
+pas pour les creuser. Ni un prépatron précoce, ni une rétroaction géométrique, ni leur combinaison ne
+remplacent l'information de position récente de l'atlas ; la correction lobaire du cœur, elle, garde
+son gain dans toutes les variantes (1,22 mm à SG 30 avec le prépatron de SG 26, contre 1,40 pour la
+loi sans correction lobaire).

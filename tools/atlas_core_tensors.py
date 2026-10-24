@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Growth tensors of the core (white matter, subplate) measured on the dHCP atlas.
 
-    python3 tools/atlas_core_tensors.py data/meshes/w21_left_610k [--smooth 200]
+    python3 tools/atlas_core_tensors.py data/meshes/w21_left_610k [--smooth 200] [--out path.npy]
 
 For each week w (knots t = (w - 21)/15): the displacement of the atlas wm surface from week 21
 (vertex correspondence; wm vertex i lies under pial vertex i = surface node i of the mesh),
@@ -28,6 +28,7 @@ ATLAS = next((p for p in [Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp
 ap = argparse.ArgumentParser()
 ap.add_argument("base")
 ap.add_argument("--smooth", type=int, default=200)
+ap.add_argument("--out", help="output table (default <base>.nodal_core.npy)")
 args = ap.parse_args()
 
 frame = json.loads(Path(args.base + ".json").read_text())
@@ -89,6 +90,6 @@ for k, w in enumerate(range(21, 37)):
     a = np.abs(np.einsum("ij,ij->i", wmw[tri[:, 0]], np.cross(wmw[tri[:, 1]], wmw[tri[:, 2]])).sum())
     V21 = V21 or a
     print(f"{w:3d}  {np.median(detu):.3f}  {(detu * vol0).sum() / vol0.sum():.3f}   {a / V21:.3f}")
-path = args.base + ".nodal_core.npy"
+path = args.out or args.base + ".nodal_core.npy"
 np.save(path, out)
 print(path, out.shape)

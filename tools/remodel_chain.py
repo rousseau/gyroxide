@@ -48,6 +48,7 @@ def main():
     ap.add_argument("--mesh", default="data/meshes/w21_left_610k_s.mesh")
     ap.add_argument("--prep", default="data/adjoint_prep_s")
     ap.add_argument("--bin", default="target/mu/adjoint_week_core")
+    ap.add_argument("--core", help="core growth table [16, n_nodes, 6] (default <mesh>.nodal_core.npy)")
     ap.add_argument("--relax", type=int, default=0, help="damped steps before Newton on release (0: Newton only)")
     ap.add_argument("--newton", type=int, default=40)
     ap.add_argument("--conv", type=float, default=1e-2, help="converged if final |F| <= conv x initial |F|")
@@ -65,7 +66,7 @@ def main():
     T = np.array(tok[2 + 3 * n:2 + 3 * n + 5 * nt], dtype=np.int64).reshape(nt, 5)[:, 1:] - 1
     edges = lambda p: np.stack([p[T[:, k]] - p[T[:, 0]] for k in (1, 2, 3)], axis=2)
     inv_ref = np.linalg.inv(edges(X))
-    core = np.load(ROOT / args.mesh.replace(".mesh", ".nodal_core.npy"), mmap_mode="r")
+    core = np.load(ROOT / (args.core or args.mesh.replace(".mesh", ".nodal_core.npy")), mmap_mode="r")
 
     D = np.zeros((nt, 3, 3))
     x = X.copy()

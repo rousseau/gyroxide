@@ -5,7 +5,10 @@
 # With LAW=1 the field law of the previous fit is carried too: its coefficients start the next
 # week (--fields-init) and its depth maps are those of the atlas one week earlier (predictive);
 # --freeze-fields among the extra options keeps the coefficients fixed. With MAPS=self the depth maps
-# of each week are those of the model's own start state (tools/self_maps.py), not the atlas ones.
+# of each week are those of the model's own start state (tools/self_maps.py), not the atlas ones;
+# with MAPS=both the law has both: the atlas maps of a fixed week PREP (prepattern, default 26) and
+# the model's own maps (feedback), five maps per field (d30, d3o of each, constant); with MAPS=prep
+# only the atlas maps of the fixed week PREP (prediction horizon of a prepattern).
 #   [LAW=1] tools/full_chain.sh <name> <first fitted run (week W0)> W0 W1 [extra adjoint_week options]
 # (extra options are split on spaces: no spaces inside an option value)
 set -e
@@ -23,6 +26,18 @@ while [ $w -lt $W1 ]; do
     if [ "${LAW:-0}" = 1 ]; then
         LAWOPT="--fit-fields c,k --field-band 50 --cg 600 --fields-init $RUN/theta_final.npy \
 --field-law $L/basis_d30_w${w}_s100.npy,$L/basis_d3o_w${w}_s100.npy,$L/basis_one_s100.npy"
+        if [ "${MAPS:-atlas}" = prep ]; then
+            P=${PREP:-26}
+            LAWOPT="--fit-fields c,k --field-band 50 --cg 600 --fields-init $RUN/theta_final.npy \
+--field-law $L/basis_d30_w${P}_s100.npy,$L/basis_d3o_w${P}_s100.npy,$L/basis_one_s100.npy"
+        fi
+        if [ "${MAPS:-atlas}" = both ]; then
+            M=$L/basis_self_${NAME}$n
+            P=${PREP:-26}
+            python3 tools/self_maps.py data/full/ckpt_w${n}_from_${NAME}$n/x.npy $n $M
+            LAWOPT="--fit-fields c,k --field-band 50 --cg 600 --fields-init $RUN/theta_final.npy \
+--field-law $L/basis_d30_w${P}_s100.npy,$L/basis_d3o_w${P}_s100.npy,${M}_d30_s100.npy,${M}_d3o_s100.npy,$L/basis_one_s100.npy"
+        fi
         if [ "${MAPS:-atlas}" = self ]; then
             M=$L/basis_self_${NAME}$n
             python3 tools/self_maps.py data/full/ckpt_w${n}_from_${NAME}$n/x.npy $n $M
