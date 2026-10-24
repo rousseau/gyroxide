@@ -148,6 +148,9 @@ struct Problem {
     /// Field law (--field-law f1.npy,f2.npy,...): the fields are c = sum_j alpha_c,j f_j and
     /// k = sum_j alpha_k,j f_j over these per-vertex basis maps; theta holds the coefficients.
     law: Vec<Vec<f64>>,
+    /// Extra basis maps of k only (--field-law-k), after the --field-law maps: smooth maps for a
+    /// lobe-scale core growth correction (tools/lobar_basis.py).
+    law_k: Vec<Vec<f64>>,
     na: usize,
     /// K products by finite differences of the total force (old path, --fd-k), and the
     /// growth / thickness tensors of the autodiff path.
@@ -272,7 +275,12 @@ fn normalise(x: &[[f64; 3]], idx: &[usize]) -> (Vec<[f64; 3]>, [f64; 3], f64) {
 
 /// Geometric loss terms on the faces / vertices of the loss region, each divided by its value
 /// at the start: w_n mean_f A*_f (1 - u_f . nu_f) / mean A*, w_l mean_i |d(x)_i - d(y)_i|^2 / 2
-/// (d: umbrella Laplacian coordinates x_i - mean of the neighbours), w_a mean_f log(A_f / A*_f)^2 / 2.
+/// (d: umbrella Laplacian coordinates x_i - mean of the neighbours), w_a mean_f log(A_f / A*_f)^2 / 2,
+/// and the unoriented varifold distance at scale sigma (--w-varifold, --varifold-sigma in mm):
+/// sum_pq exp(-|B_p - B_q|^2 / sigma^2) <D_p, D_q>, D_p = binned (model - target) orientation tensors
+/// a n n^T on grid nodes B_p of spacing sigma / 2, each face spread on its 8 nodes by trilinear
+/// weights of its centre (continuous in x). Rewards fold area and orientation, nearly phase-blind
+/// at sigma ~ the fold wavelength (tools/loss_synthetic.py).
 struct Geo {
     faces: Vec<[usize; 3]>,
     nu: Vec<[f64; 3]>,
@@ -282,8 +290,37 @@ struct Geo {
     /// Point-to-plane: target positions and unit vertex normals on the loss vertices.
     plane_y: Vec<[f64; 3]>,
     plane_n: Vec<[f64; 3]>,
-    w: [f64; 4],
-    scale: [f64; 4],
+    /// Varifold: scale and grid spacing (model units), binned target tensors (xx yy zz xy xz yz).
+    vf_sigma: f64,
+    vf_h: f64,
+    vf_target: std::collections::HashMap<[i64; 3], [f64; 6]>,
+    w: [f64; 5],
+    scale: [f64; 5],
+}
+
+/// a n n^T = m m^T / (2 |m|) of a face with m = e1 x e2, as xx yy zz xy xz yz.
+fn face_tensor(m: [f64; 3]) -> [f64; 6] {
+    let c = 0.5 / dot3(m, m).sqrt();
+    [c * m[0] * m[0], c * m[1] * m[1], c * m[2] * m[2], c * m[0] * m[1], c * m[0] * m[2], c * m[1] * m[2]]
+}
+
+/// Frobenius product of two symmetric tensors stored as xx yy zz xy xz yz.
+fn sym_dot(a: &[f64; 6], b: &[f64; 6]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + 2.0 * (a[3] * b[3] + a[4] * b[4] + a[5] * b[5])
+}
+
+/// Trilinear weights of a point on a grid of spacing h: the 8 nodes, weights and weight gradients.
+fn trilinear(c: [f64; 3], h: f64) -> [([i64; 3], f64, [f64; 3]); 8] {
+    let g = c.map(|v| v / h);
+    let i0 = g.map(|v| v.floor());
+    let t = [g[0] - i0[0], g[1] - i0[1], g[2] - i0[2]];
+    std::array::from_fn(|k| {
+        let b = [k & 1, (k >> 1) & 1, (k >> 2) & 1];
+        let f: [f64; 3] = std::array::from_fn(|d| if b[d] == 1 { t[d] } else { 1.0 - t[d] });
+        let df: [f64; 3] = std::array::from_fn(|d| if b[d] == 1 { 1.0 / h } else { -1.0 / h });
+        let idx = [i0[0] as i64 + b[0] as i64, i0[1] as i64 + b[1] as i64, i0[2] as i64 + b[2] as i64];
+        (idx, f[0] * f[1] * f[2], [df[0] * f[1] * f[2], f[0] * df[1] * f[2], f[0] * f[1] * df[2]])
+    })
 }
 
 fn sub3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -299,7 +336,7 @@ fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
 }
 
 impl Geo {
-    fn new(faces_all: &[[usize; 3]], in_loss: &[bool], nbr: &[Vec<usize>], y: &[[f64; 3]], w: [f64; 4]) -> Self {
+    fn new(faces_all: &[[usize; 3]], in_loss: &[bool], nbr: &[Vec<usize>], y: &[[f64; 3]], w: [f64; 5], vf_sigma: f64) -> Self {
         let faces: Vec<[usize; 3]> = faces_all.iter().copied().filter(|f| f.iter().all(|&i| in_loss[i])).collect();
         let (mut nu, mut area_t) = (Vec::new(), Vec::new());
         for f in &faces {
@@ -320,7 +357,95 @@ impl Geo {
         }
         let plane_y = lap_idx.iter().map(|&i| y[i]).collect();
         let plane_n = lap_idx.iter().map(|&i| { let l = dot3(vn[i], vn[i]).sqrt(); vn[i].map(|c| c / l) }).collect();
-        Self { faces, nu, area_t, lap_t, lap_idx, plane_y, plane_n, w, scale: [1.0; 4] }
+        let vf_h = 0.5 * vf_sigma;
+        let mut vf_target = std::collections::HashMap::new();
+        if w[4] > 0.0 {
+            for f in &faces {
+                let t = face_tensor(cross3(sub3(y[f[1]], y[f[0]]), sub3(y[f[2]], y[f[0]])));
+                let c = [0, 1, 2].map(|d| (y[f[0]][d] + y[f[1]][d] + y[f[2]][d]) / 3.0);
+                for (idx, wt, _) in trilinear(c, vf_h) {
+                    let e = vf_target.entry(idx).or_insert([0.0; 6]);
+                    (0..6).for_each(|k| e[k] += wt * t[k]);
+                }
+            }
+        }
+        Self { faces, nu, area_t, lap_t, lap_idx, plane_y, plane_n, vf_sigma, vf_h, vf_target, w, scale: [1.0; 5] }
+    }
+
+    /// Varifold term and its gradient (scaled by c) added to g.
+    fn varifold(&self, x: &[[f64; 3]], c: f64, g: &mut [[f64; 3]]) -> f64 {
+        use std::collections::HashMap;
+        let mut bins: HashMap<[i64; 3], [f64; 6]> = HashMap::new();
+        let mut face_data = Vec::with_capacity(self.faces.len());
+        for f in &self.faces {
+            let (e1, e2) = (sub3(x[f[1]], x[f[0]]), sub3(x[f[2]], x[f[0]]));
+            let m = cross3(e1, e2);
+            let t = face_tensor(m);
+            let cen = [0, 1, 2].map(|d| (x[f[0]][d] + x[f[1]][d] + x[f[2]][d]) / 3.0);
+            let tw = trilinear(cen, self.vf_h);
+            for (idx, wt, _) in &tw {
+                let e = bins.entry(*idx).or_insert([0.0; 6]);
+                (0..6).for_each(|k| e[k] += wt * t[k]);
+            }
+            face_data.push((e1, e2, m, t, tw));
+        }
+        // D on the union of the occupied nodes
+        let mut keys: Vec<[i64; 3]> = bins.keys().chain(self.vf_target.keys()).copied().collect();
+        keys.sort_unstable();
+        keys.dedup();
+        let slot: HashMap<[i64; 3], usize> = keys.iter().enumerate().map(|(i, k)| (*k, i)).collect();
+        let dd: Vec<[f64; 6]> = keys
+            .iter()
+            .map(|k| {
+                let a = bins.get(k).copied().unwrap_or([0.0; 6]);
+                let b = self.vf_target.get(k).copied().unwrap_or([0.0; 6]);
+                std::array::from_fn(|i| a[i] - b[i])
+            })
+            .collect();
+        // G_p = 2 sum_q k_pq D_q, L = sum_pq k_pq <D_p, D_q>; kernel cut at 4 sigma
+        let cut = (4.0 * self.vf_sigma / self.vf_h).ceil() as i64;
+        let s2 = self.vf_sigma * self.vf_sigma;
+        let mut gg = vec![[0.0; 6]; keys.len()];
+        let mut l = 0.0;
+        for (p, kp) in keys.iter().enumerate() {
+            for (q, kq) in keys.iter().enumerate() {
+                let dk = [kp[0] - kq[0], kp[1] - kq[1], kp[2] - kq[2]];
+                if dk.iter().any(|v| v.abs() > cut) {
+                    continue;
+                }
+                let r2 = dk.iter().map(|&v| (v as f64 * self.vf_h).powi(2)).sum::<f64>();
+                let k = (-r2 / s2).exp();
+                l += k * sym_dot(&dd[p], &dd[q]);
+                (0..6).for_each(|i| gg[p][i] += 2.0 * k * dd[q][i]);
+            }
+        }
+        for (f, (e1, e2, m, t, tw)) in self.faces.iter().zip(&face_data) {
+            // dL/dT_f = sum_b w_b G_b; dL/dc_f = sum_b grad w_b <G_b, T_f>
+            let mut gf = [0.0; 6];
+            let mut gc = [0.0; 3];
+            for (idx, wt, dw) in tw {
+                let gb = &gg[slot[idx]];
+                (0..6).for_each(|i| gf[i] += wt * gb[i]);
+                let v = sym_dot(gb, t);
+                (0..3).for_each(|d| gc[d] += dw[d] * v);
+            }
+            // d/dm of m^T Gf m / (2 |m|) = Gf m / |m| - (m^T Gf m) m / (2 |m|^3)
+            let gm = [
+                gf[0] * m[0] + gf[3] * m[1] + gf[4] * m[2],
+                gf[3] * m[0] + gf[1] * m[1] + gf[5] * m[2],
+                gf[4] * m[0] + gf[5] * m[1] + gf[2] * m[2],
+            ];
+            let nm = dot3(*m, *m).sqrt();
+            let q = dot3(*m, gm);
+            let wv = [0, 1, 2].map(|d| c * (gm[d] / nm - q * m[d] / (2.0 * nm * nm * nm)));
+            let (gb, gcc) = (cross3(*e2, wv), cross3(wv, *e1));
+            for d in 0..3 {
+                g[f[1]][d] += gb[d] + c * gc[d] / 3.0;
+                g[f[2]][d] += gcc[d] + c * gc[d] / 3.0;
+                g[f[0]][d] += -gb[d] - gcc[d] + c * gc[d] / 3.0;
+            }
+        }
+        l
     }
 
     fn umbrella(nbr: &[Vec<usize>], x: &[[f64; 3]], i: usize) -> [f64; 3] {
@@ -328,8 +453,9 @@ impl Geo {
         [0, 1, 2].map(|d| x[i][d] - nbr[i].iter().map(|&j| x[j][d]).sum::<f64>() / k)
     }
 
-    /// Raw terms [normal, laplacian, area, point-to-plane] and the gradient of sum_t w_t / scale_t * term_t.
-    fn eval(&self, nbr: &[Vec<usize>], x: &[[f64; 3]], n_nodes: usize) -> ([f64; 4], Vec<[f64; 3]>) {
+    /// Raw terms [normal, laplacian, area, point-to-plane, varifold] and the gradient of
+    /// sum_t w_t / scale_t * term_t.
+    fn eval(&self, nbr: &[Vec<usize>], x: &[[f64; 3]], n_nodes: usize) -> ([f64; 5], Vec<[f64; 3]>) {
         let mut g = vec![[0.0; 3]; n_nodes];
         let mut add = |i: usize, v: [f64; 3], c: f64| (0..3).for_each(|d| g[i][d] += c * v[d]);
         let nf = self.faces.len() as f64;
@@ -377,7 +503,8 @@ impl Geo {
             lp += 0.5 * e * e / nl;
             add(i, self.plane_n[k], cp * e / nl);
         }
-        ([ln, ll, la, lp], g)
+        let lv = if self.w[4] > 0.0 { self.varifold(x, self.w[4] / self.scale[4], &mut g) } else { 0.0 };
+        ([ln, ll, la, lp, lv], g)
     }
 }
 
@@ -400,16 +527,31 @@ impl Problem {
         (oc, ok)
     }
 
+    /// Basis maps of each fitted field under a field law (c, then k): the --field-law maps, and for
+    /// k the --field-law-k maps after them.
+    fn field_bases(&self) -> Vec<Vec<&Vec<f64>>> {
+        let mut b = Vec::new();
+        if self.fit_c {
+            b.push(self.law.iter().collect());
+        }
+        if self.fit_k {
+            b.push(self.law.iter().chain(&self.law_k).collect());
+        }
+        b
+    }
+
     /// theta in the full layout (a, then one value per vertex for each fitted field): with a field
     /// law, the fields are expanded from their coefficients.
     fn full<'a>(&self, theta: &'a [f64]) -> std::borrow::Cow<'a, [f64]> {
         if self.law.is_empty() {
             return std::borrow::Cow::Borrowed(theta);
         }
-        let nb = self.law.len();
         let mut t = theta[..self.na].to_vec();
-        for alpha in theta[self.na..].chunks(nb) {
-            t.extend((0..self.na).map(|i| alpha.iter().zip(&self.law).map(|(a, f)| a * f[i]).sum::<f64>()));
+        let mut o = self.na;
+        for basis in self.field_bases() {
+            let alpha = &theta[o..o + basis.len()];
+            o += basis.len();
+            t.extend((0..self.na).map(|i| alpha.iter().zip(&basis).map(|(a, f)| a * f[i]).sum::<f64>()));
         }
         std::borrow::Cow::Owned(t)
     }
@@ -420,8 +562,8 @@ impl Problem {
             return g;
         }
         let mut r = g[..self.na].to_vec();
-        for gf in g[self.na..].chunks(self.na) {
-            r.extend(self.law.iter().map(|f| f.iter().zip(gf).map(|(a, b)| a * b).sum::<f64>()));
+        for (basis, gf) in self.field_bases().into_iter().zip(g[self.na..].chunks(self.na)) {
+            r.extend(basis.iter().map(|f| f.iter().zip(gf).map(|(a, b)| a * b).sum::<f64>()));
         }
         r
     }
@@ -867,7 +1009,7 @@ impl Problem {
         }
         if let Some(geo) = &self.geo {
             let (t, gg) = geo.eval(&self.nbr, x, x.len());
-            ls += (0..4).map(|k| geo.w[k] * t[k] / geo.scale[k]).sum::<f64>();
+            ls += (0..5).map(|k| geo.w[k] * t[k] / geo.scale[k]).sum::<f64>();
             for (a, b) in g.iter_mut().zip(&gg) {
                 (0..3).for_each(|d| a[d] += b[d]);
             }
@@ -1489,6 +1631,9 @@ fn main() {
         law: opt("--field-law")
             .map(|l| l.to_string_lossy().split(',').map(|f| read(Path::new(f))).collect())
             .unwrap_or_default(),
+        law_k: opt("--field-law-k")
+            .map(|l| l.to_string_lossy().split(',').map(|f| read(Path::new(f))).collect())
+            .unwrap_or_default(),
         na: 0,
         fd_k: args.iter().any(|a| a == "--fd-k"),
         force_tol: flag("--force-tol", 1e-5),
@@ -1497,14 +1642,25 @@ fn main() {
     p.na = theta.len();
     let n_fields = usize::from(p.fit_c) + usize::from(p.fit_k);
     if n_fields > 0 {
-        let per_field = if p.law.is_empty() { p.na } else { p.law.len() };
-        assert!(p.law.iter().all(|f| f.len() == p.na), "--field-law: maps of {} values expected", p.na);
-        theta.extend(std::iter::repeat_n(0.0, n_fields * per_field));
+        assert!(p.law.iter().chain(&p.law_k).all(|f| f.len() == p.na), "--field-law: maps of {} values expected", p.na);
+        assert!(p.law_k.is_empty() || (p.fit_k && !p.law.is_empty()), "--field-law-k needs --field-law and the field k");
+        if p.law.is_empty() {
+            theta.extend(std::iter::repeat_n(0.0, n_fields * p.na));
+        } else {
+            let n: usize = p.field_bases().iter().map(|b| b.len()).sum();
+            theta.extend(std::iter::repeat_n(0.0, n));
+        }
         if let Some(init) = opt("--fields-init") {
-            // Extra fields from a previous fit (its theta_final.npy, same fields): chaining weeks.
+            // Extra fields from a previous fit (its theta_final.npy, same fields): chaining weeks. A fit
+            // without the --field-law-k maps starts their coefficients at zero.
             let prev = read(&init);
-            assert_eq!(prev.len(), theta.len(), "--fields-init: {} values, expected {}", prev.len(), theta.len());
-            theta[p.na..].copy_from_slice(&prev[p.na..]);
+            if prev.len() + p.law_k.len() == theta.len() && !p.law_k.is_empty() {
+                let k0 = theta.len() - p.law_k.len();
+                theta[p.na..k0].copy_from_slice(&prev[p.na..]);
+            } else {
+                assert_eq!(prev.len(), theta.len(), "--fields-init: {} values, expected {}", prev.len(), theta.len());
+                theta[p.na..].copy_from_slice(&prev[p.na..]);
+            }
         }
         if let Some(init) = opt("--theta-init") {
             // Whole theta of a previous fit of the same week (a and fields or law coefficients):
@@ -1528,17 +1684,17 @@ fn main() {
         nbr[*j].push(*i);
     }
     p.nbr = nbr;
-    let wgeo = [flag("--w-normal", 0.0), flag("--w-lap", 0.0), flag("--w-area", 0.0), flag("--w-plane", 0.0)];
+    let wgeo = [flag("--w-normal", 0.0), flag("--w-lap", 0.0), flag("--w-area", 0.0), flag("--w-plane", 0.0), flag("--w-varifold", 0.0)];
     if wgeo.iter().any(|w| *w > 0.0) {
         let faces: Vec<[usize; 3]> = read(&prep.join("faces.npy")).chunks_exact(3).map(|c| [c[0] as usize, c[1] as usize, c[2] as usize]).collect();
         let mut in_loss = vec![false; ns];
         p.cortex.iter().for_each(|&i| in_loss[i] = true);
-        let mut geo = Geo::new(&faces, &in_loss, &p.nbr, &target, wgeo);
+        let mut geo = Geo::new(&faces, &in_loss, &p.nbr, &target, wgeo, flag("--varifold-sigma", 10.0) / p.mm);
         let (t0, _) = geo.eval(&p.nbr, &xs, xs.len());
         geo.scale = t0.map(|v| v.max(1e-30));
         println!(
-            "geometric loss: weights normal {} laplacian {} area {} plane {}, start values {:.4e} {:.4e} {:.4e} {:.4e} ({} faces, vertex weight {})",
-            wgeo[0], wgeo[1], wgeo[2], wgeo[3], t0[0], t0[1], t0[2], t0[3], geo.faces.len(), p.w_vertex
+            "geometric loss: weights normal {} laplacian {} area {} plane {} varifold {} (sigma {} mm), start values {:.4e} {:.4e} {:.4e} {:.4e} {:.4e} ({} faces, vertex weight {})",
+            wgeo[0], wgeo[1], wgeo[2], wgeo[3], wgeo[4], flag("--varifold-sigma", 10.0), t0[0], t0[1], t0[2], t0[3], t0[4], geo.faces.len(), p.w_vertex
         );
         p.geo = Some(geo);
     }
@@ -2249,10 +2405,14 @@ fn main() {
             parts = p.loss(&xn, &tn);
             fn_ = parts.0 + parts.1;
             let finite = fn_.is_finite() && xn.iter().flatten().all(|v| v.is_finite());
-            if !finite || p.n_inverted(&xn, &tn) > 0 {
+            let n_inv = if finite { p.n_inverted(&xn, &tn) } else { 0 };
+            if !finite || n_inv > 0 {
+                println!("iter {k}: step {step:.3e} rejected ({})", if finite { format!("{n_inv} inverted elements") } else { "non-finite".into() });
                 fn_ = f64::INFINITY;
             } else if fn_ <= f0 + 1e-4 * step * slope {
                 break;
+            } else {
+                println!("iter {k}: step {step:.3e} rejected (loss {fn_:.6e} vs {f0:.6e})");
             }
             step *= 0.5;
         }

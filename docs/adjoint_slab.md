@@ -241,3 +241,163 @@ normales, la courbure et la profondeur ; la loi réajustée gagne en plus sur
 l'écart en mm. L'écart à l'atlas croît quand même de semaine en semaine dans
 toutes les chaînes : la profondeur reste en deçà de l'atlas (1,1 contre 1,4 mm
 à SG 30).
+
+## Correction du cœur à l'échelle des lobes (étape 1)
+
+Sur l'hémisphère, environ 54 % du carré de l'écart vient de l'échelle des lobes (S²⁰⁰), à SG 27
+comme à SG 30. k reçoit, en plus des cartes de la loi, 40 cartes lisses (`--field-law-k`) : les
+premières fonctions propres de Laplace–Beltrami de la surface de référence (SG 21), mode constant
+exclu, réduites sur le cortex, / 100 (`tools/lobar_basis.py`, data/full/law/lb40). Les 40 premiers
+modes portent 92 à 93 % de l'écart lobaire de SG 27 et de SG 30.
+
+SG 27 : départ de l'ajustement de la loi en plateau (`fit27_lawfit100b`, 0,737 mm après 160
+itérations), coefficients lobaires nuls, 60 itérations (`fit27_lb40`). SG 28 → 30 :
+`LAW=1 tools/full_chain.sh lb out/full/fit27_lb40 27 30 --field-law-k <cartes>`, même protocole que
+la « loi réajustée ».
+
+| écart rigide, cortex (mm) | SG 27 | SG 28 | SG 29 | SG 30 |
+|---|---|---|---|---|
+| loi réajustée | 0,736 | 0,996 | 1,201 | 1,396 |
+| loi + cœur lobaire | **0,671** | **0,741** | **0,883** | **1,116** |
+| gain | −9 % | −26 % | −26 % | −20 % |
+| lobes (S²⁰⁰), loi → + lobaire | 0,54 → 0,50 | 0,75 → 0,52 | 0,90 → 0,61 | 1,03 → 0,78 |
+| profondeur des plis, + lobaire (atlas) | 0,77 (0,88) | 0,91 (1,03) | 1,04 (1,19) | 1,18 (1,41) |
+| bande 4–8 mm, loi → + lobaire | 0,80 → 0,83 | 0,73 → 0,83 | 0,67 → 0,77 | 0,62 → 0,71 |
+| k lobaire, écart-type | 0,019 | 0,051 | 0,063 | 0,069 |
+
+Le gain porte sur toutes les échelles et toutes les régions (SG 30 : sillon central 1,72 → 1,41,
+calcarin 1,54 → 1,16, ailleurs 1,27 → 1,02 mm) ; aucun élément retourné. La liberté lobaire débloque
+aussi la loi, en plateau sans elle : ses coefficients repartent (c sur d30 : 10,8 → 11,7 à SG 27,
+18,6 à SG 30 ; k sur d30 : 1,6 → 7,1). La constante de k atteint +4,8 % à SG 30 : déficit global de
+croissance du cœur par rapport aux tenseurs mesurés. L'écart croît toujours (0,07, 0,14, 0,23 mm
+par semaine) et les corrections aussi (k lobaire ±11 % au 95e centile à SG 30) : la loi n'est pas
+stationnaire.
+
+## Contrôles de la loi (étape 2)
+
+Loi à 6 coefficients + a ajustée depuis des coefficients nuls, comme `fit27_lawzero`, en ne
+changeant que les cartes de profondeur (`tools/law_controls.py`, `tools/law_controls.sh`) :
+profondeur de l'atlas d'une semaine antérieure (calculée sur l'hémisphère, restreinte à la région),
+carte de SG 27 tournée sur la sphère de l'atlas (*spin test*, deux rotations, |r| < 0,2 avec la
+carte d'origine), profondeur de la surface du modèle lui-même (état de départ de SG 27, aucune
+information de l'atlas). r : corrélation de la carte d30 avec celle de l'atlas à SG 27 ; part du
+gain : (a seul − run) / (a seul − loi SG 27).
+
+| SG 27 | a seul | aléatoire | rotation 1 | rotation 2 | modèle | atlas SG 24 | atlas SG 26 | atlas SG 27 |
+|---|---|---|---|---|---|---|---|---|
+| sillon central, mm | 1,091 | 1,059 | 1,068 | 1,029 | 1,038 | 1,043 | 0,890 | 0,778 |
+| r | | | 0,00 | 0,03 | 0,61 | 0,56 | 0,91 | 1 |
+| part du gain | | 10 % | 7 % | 20 % | 17 % | 15 % | 64 % | 100 % |
+| calcarin, mm | 0,760 | 0,717 | 0,742 | 0,760 | 0,627 | 0,640 | 0,605 | 0,525 |
+| r | | | −0,08 | 0,04 | 0,91 | 0,92 | 0,98 | 1 |
+| part du gain | | 18 % | 8 % | 0 % | 57 % | 51 % | 66 % | 100 % |
+
+- La position compte : une carte tournée, qui garde la distribution et la longueur de corrélation de
+  la profondeur, ne fait pas mieux que des cartes aléatoires.
+- Le gain suit la ressemblance de la carte avec la profondeur de SG 27 : la carte de SG 26
+  (r = 0,91 et 0,98) en garde les deux tiers, celle de SG 24 seulement là où le sillon existe déjà
+  (calcarin, r = 0,92). La « prédiction » d'une semaine tient donc à ce que l'atlas change peu en
+  une semaine : c'est un a priori de position, pas encore une prédiction mécanique.
+- La profondeur du modèle lui-même remplace celle de l'atlas là où le modèle a déjà le sillon au bon
+  endroit (calcarin : 57 % du gain), pas là où il ne l'a pas (sillon central : 17 %). Une rétroaction
+  géométrique peut approfondir un pli existant, pas créer celui qui manque.
+
+Identifiabilité (`tools/law_identifiability.py`, sur `fit27_lawzero`) : jacobienne de l'équilibre
+par rapport aux 6 coefficients par différences centrées (h = 0,2, a fixé), sur les sommets de perte.
+
+| | valeurs singulières (mm par unité) | conditionnement | cos(c:d30, k:d30) | cos(c:1, k:1) |
+|---|---|---|---|---|
+| sillon central | 0,88 0,47 0,30 0,10 0,09 0,04 | 22 | +0,80 | +0,94 |
+| calcarin | 1,01 0,59 0,41 0,08 0,04 0,04 | 29 | +0,74 | +0,86 |
+
+Trois combinaisons sont bien déterminées, trois mal : à la même carte, épaississement et croissance
+du cœur déplacent la surface presque de la même façon. Les données contraignent la combinaison
+« épaississement + cœur » le long de la profondeur, pas chacun des deux séparément ; k déplace la
+surface 3 à 6 fois plus que c par unité de coefficient.
+
+Contrainte du cœur : à l'état de départ de SG 27, la dilatation élastique du cœur (ln det(F U⁻¹)) et
+son étirement radial, ramenés aux sommets, sont peu corrélés au champ k ajusté librement (sillon
+central +0,10 et +0,05, calcarin +0,37 et +0,22) : une croissance du cœur proportionnelle à la
+contrainte locale n'est pas soutenue par ces cartes.
+
+Remodelage partiel du cœur (`tools/remodel_chain.py --alpha 0.3`, out/remodel_a03) : de SG 22 à 26,
+légèrement moins bon que le cœur élastique (0,544 contre 0,532 mm à SG 26) ; à SG 27, Newton cale
+avec 7 éléments retournés et la relaxation amortie de secours diverge. Un relâchement uniforme du
+cœur, même partiel, ne creuse pas les plis.
+
+## Métriques standard et choix de la perte (étape 3)
+
+`tools/fold_standard.py` : indice de gyrification A / A(enveloppe convexe), puissance de la courbure
+moyenne par bandes d'échelle dyadiques (différence de deux diffusions de la chaleur, analogue des
+bandes SpAnGy), similarité des distributions d'indice de forme (intersection d'histogrammes),
+rapportés à l'atlas (out/fold_standard.json).
+
+| SG 30, rapport à l'atlas | IG | 1–2 mm | 2–4 mm | 4–8 mm | 8–16 mm | 16–32 mm | indice de forme |
+|---|---|---|---|---|---|---|---|
+| croissance mesurée | 0,884 | 0,18 | 0,26 | 0,42 | 0,66 | 0,66 | 0,938 |
+| a seul | 0,911 | 0,54 | 0,56 | 0,60 | 0,74 | 0,74 | 0,953 |
+| loi réajustée | 0,921 | 0,65 | 0,60 | 0,62 | 0,75 | 0,76 | 0,942 |
+| loi figée | 0,924 | 0,71 | 0,64 | 0,65 | 0,77 | 0,78 | 0,947 |
+
+Le modèle manque de courbure à toutes les échelles, et de plus en plus avec les semaines (bande
+4–8 mm de la loi : 0,80 à SG 27, 0,62 à SG 30). La similarité des indices de forme (0,94 à 0,96
+partout) ne discrimine pas les modèles : le critère « > 0,8 » de la littérature est trop lâche.
+
+`tools/loss_synthetic.py` : pli z = h sin(2πx/λ), λ = 5, 10, 15 mm, h = 1, 2, 3 mm ; une perte passe
+si L(en phase) < L(décalé de λ/2) < L(plat) et L(en phase) < L(demi-amplitude) < L(plat).
+
+| perte | passe | décalé de λ/2, rapporté au plat |
+|---|---|---|
+| sommets (L2), point-plan | 0/9 | 4,00 |
+| varifold non orienté, σ = λ/4 | 1/9 | 1,9 à 3,5 |
+| varifold non orienté, σ = λ/2 | 6/9 | 0,4 à 2,6 |
+| varifold non orienté, σ = λ | 9/9 | 0,01 à 0,13 |
+| puissance par bandes (log) | 3/9 | 0 (aveugle à la phase) |
+
+Seul le varifold à σ ≈ λ (≈ 10 mm à ces âges) ordonne correctement tous les cas ; il est presque
+aveugle à la position (décalé ≈ en phase) : c'est un terme d'amplitude, à combiner avec la
+correspondance (positions) ou un σ plus fin une fois les plis amorcés.
+
+Terme varifold dans l'adjoint (`--w-varifold w --varifold-sigma 10`, dans `Geo`) : tenseurs
+d'orientation a n nᵀ des faces répartis par poids trilinéaires sur une grille de pas σ/2,
+L = Σ_pq exp(−|B_p − B_q|²/σ²) ⟨D_p, D_q⟩, normalisé par sa valeur de départ ; gradient vérifié par
+différences finies (`--diag`, rapport 1,0001).
+
+| | sans varifold | avec varifold (w = 1, σ = 10 mm) |
+|---|---|---|
+| sillon central SG 27 (loi depuis zéro), mm / profondeur | 0,778 / 0,68 | 0,783 / 0,68 |
+| calcarin SG 27, mm / profondeur | 0,525 / 1,49 | 0,525 / 1,49 |
+| hémisphère SG 30 (chaîne lobaire), mm / profondeur (atlas 1,41) | 1,116 / 1,18 | 1,135 / 1,20 |
+| hémisphère SG 30, IG / bande 4–8 mm | 0,941 / 0,71 | 0,945 / 0,73 |
+
+Un terme qui récompense l'amplitude des plis indépendamment de leur phase ne fait presque pas
+creuser le modèle : le manque de profondeur après SG 28 n'est pas un défaut de la perte. La perte
+composite actuelle est retenue jusqu'à SG 30 ; le varifold reste disponible pour des plis mal placés
+(sujets individuels, au-delà de SG 30).
+
+## Rétroaction géométrique sur l'hémisphère (étape 4, premier test)
+
+Chaîne lobaire SG 28 → 30 refaite avec la loi calculée chaque semaine sur la profondeur de la surface
+du modèle lui-même (état de départ de la semaine, `MAPS=self tools/full_chain.sh`,
+`tools/self_maps.py`) au lieu de l'atlas de la semaine précédente : aucune information de position
+de l'atlas dans c et k.
+
+| | SG 28 | SG 29 | SG 30 |
+|---|---|---|---|
+| r(profondeur du modèle, profondeur de l'atlas) | 0,89 | 0,85 | 0,84 |
+| cartes de l'atlas : mm / normales / corr. H / profondeur | 0,741 / 9,3° / 0,86 / 0,91 | 0,883 / 11,0° / 0,85 / 1,04 | 1,116 / 13,4° / 0,85 / 1,18 |
+| cartes du modèle | 0,750 / 10,6° / 0,81 / 0,91 | 0,931 / 12,9° / 0,80 / 1,02 | (1,242, non ajusté) |
+| bande 1–2 mm, atlas → modèle | 0,64 → 0,58 | 0,75 → 0,61 | |
+
+La profondeur propre du modèle rend l'amplitude (même profondeur des plis, même écart en mm à SG 28)
+mais place moins bien les plis (normales, courbure), et l'écart se creuse avec les semaines. À
+SG 30, l'ajustement est bloqué : tout pas, même 1/8 du pas initial, augmente la perte (3,3373 à
+3,3414 contre 3,3367 au départ) alors que la référence est reproductible (dérive 7·10⁻⁸) :
+l'équilibre saute de branche dès que θ bouge (claquage ou contact), aucun élément retourné. Les
+rejets de la recherche linéaire sont maintenant imprimés avec leur cause (éléments retournés,
+valeurs non finies, perte).
+
+Bilan de l'étape 4 à ce stade : ni une croissance du cœur proportionnelle à la contrainte locale,
+ni un relâchement uniforme du cœur (α = 0,3), ni une rétroaction sur la profondeur propre du modèle
+ne remplacent la loi ajustée sur l'atlas. La rétroaction géométrique approfondit les plis existants
+(calcarin, hémisphère à SG 28) ; la position des plis qui manquent (sillon central) vient de l'atlas.
