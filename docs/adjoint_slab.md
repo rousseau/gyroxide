@@ -640,3 +640,25 @@ profondeur opposé à celui de la région frontale) ; la loi régressée, impos�
 (équilibre relaxé). Les plis secondaires sont atteignables avec une croissance libre, mais aucune loi
 simple sur la profondeur de l'atlas ne décrit cette croissance à l'échelle de l'hémisphère ; sur la
 région frontale seule, une loi en capture 61 à 76 %.
+
+## Ajustabilité aux semaines tardives
+
+Diagnostic à SG 33 (hémisphère, `adjoint_week --probe s1,s2,...` : perte le long de la première
+direction de descente, résidu de Newton, paires de contact) :
+
+1. Les pas de Newton résolvaient K δ = F par un gradient conjugué plafonné à 100 itérations : à
+   SG 33, des équilibres d'essai légèrement faux (la perte s'écarte de la prédiction linéaire dès le
+   pas 1/4). Avec `--newton-cg 600`, elle la suit exactement jusqu'au pas 1/4.
+2. Le contact n'y est pour rien : sans contact, mêmes pertes aux pas 1/2 et 1 (3,526082, 3,529201).
+3. Défaut de code : la boucle de Newton testait la convergence après le pas ; tout équilibre faisait
+   au moins un pas, même depuis un état convergé, et ce pas sur un résidu d'arrondi déplaçait les
+   modes mous (0,004 mm, +1·10⁻³ sur la perte à chaque référence). Corrigé : convergence testée
+   avant chaque pas (dérive des références 10⁻⁸ au lieu de 10⁻³).
+4. Reste un plancher : au-delà d'une dizaine d'itérations, l'état ajusté devient métastable et tout
+   essai résolu par Newton seul bascule vers un équilibre voisin plus haut d'environ 0,01. Une
+   relaxation amortie avant Newton à chaque essai (`--relax 300`), une tolérance de force au-dessus
+   du bruit d'arrondi (`--force-tol 5e-5`) et une recherche linéaire tolérante (`--ls-tol 3e-3`,
+   nouvelle option) laissent l'ajustement aller au bout.
+
+SG 35 de la chaîne lobaire (0 itération auparavant) : 60 itérations, 2,091 → 2,061 mm (2,053 au mieux).
+Réglages pour les semaines tardives : `--newton-cg 600 --relax 300 --force-tol 5e-5 --ls-tol 3e-3`.

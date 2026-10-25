@@ -127,6 +127,10 @@ struct Problem {
     newton: usize,
     sigma: f64,
     last_residual: (f64, f64),
+    /// CG iterations of each Newton step of the equilibrium (--newton-cg, default 100) and the
+    /// Newton iterations done by the last equilibrium.
+    newton_cg: usize,
+    last_newton: usize,
     /// Node colouring (no two nodes of a colour share a tetrahedron) and the inverted
     /// 3x3 diagonal blocks of K + sigma I (block-Jacobi preconditioner).
     colours: Vec<Vec<usize>>,
@@ -620,8 +624,15 @@ impl Problem {
         let mut f = self.sim.total_force(&x);
         let r0 = norm(&f);
         let mut rn = r0;
+        self.last_newton = 0;
         for _ in 0..self.newton {
-            let (delta, _, _) = self.solve(&x, &f, self.sigma, 100, !self.fd_k);
+            // Already converged (e.g. the reference of a line search, from the accepted state): a
+            // Newton step on a residual at round-off level only moves the soft modes.
+            if rn < self.force_tol {
+                break;
+            }
+            self.last_newton += 1;
+            let (delta, _, _) = self.solve(&x, &f, self.sigma, self.newton_cg, !self.fd_k);
             let mut accepted = false;
             for alpha in [1.0, 0.5, 0.25] {
                 let xt: Vec<[f64; 3]> = x
@@ -1650,6 +1661,8 @@ fn main() {
         newton: flag("--newton", 20.0) as usize,
         sigma: 0.0,
         last_residual: (0.0, 0.0),
+        newton_cg: flag("--newton-cg", 100.0) as usize,
+        last_newton: 0,
         colours: colour_nodes(mesh.n_nodes(), &mesh.tets),
         pre_inv: Vec::new(),
         deflate: Vec::new(),
@@ -1781,6 +1794,10 @@ fn main() {
     // Inverted elements tolerated at accepted trial points (--max-inverted, default none): tells a
     // limit of the mesh at deepening fundi from a limit of the model.
     let max_inverted = flag("--max-inverted", 0.0) as usize;
+    // Noise-tolerant line search (--ls-tol, absolute on the loss, default 0): at late weeks the
+    // trial equilibria carry a round-off offset of the soft modes (~2e-3 at SG 33, independent of
+    // the step) comparable to the expected decreases; a trial within that tolerance is accepted.
+    let ls_tol = flag("--ls-tol", 0.0);
     let max_step = flag("--max-step", 0.05);
     let ftol = flag("--ftol", 0.0);
     let mut hist_f: Vec<f64> = Vec::new();
@@ -2425,6 +2442,21 @@ fn main() {
             f0 - (ls + lr),
             -slope
         );
+        if let Some(list) = opt("--probe") {
+            // Loss along the first descent direction at the given steps, with the state of each
+            // trial equilibrium (Newton residual, iterations, contact pairs), then stop.
+            for st in list.to_string_lossy().split(',').map(|v| v.parse::<f64>().unwrap()) {
+                let tp: Vec<f64> = theta.iter().zip(&dir).map(|(a, d)| a + st * d).collect();
+                let xp = p.equilibrium(&tp, &x, p.relax);
+                let (a, b, _) = p.loss(&xp, &tp);
+                let dx = xp.iter().zip(&x).map(|(u, v)| (0..3).map(|d| (u[d] - v[d]).powi(2)).sum::<f64>()).fold(0.0f64, f64::max).sqrt();
+                println!(
+                    "probe step {st:.3e}: loss {:.6e} (linear {:.6e}), |F| {:.2e} -> {:.2e} in {} Newton, {} contact pairs, max |x - x0| {:.2e} mm",
+                    a + b, f0 + st * slope, p.last_residual.0, p.last_residual.1, p.last_newton, p.sim.n_contact_pairs(), dx * p.mm
+                );
+            }
+            return;
+        }
         let mut step = 1.0;
         let (mut tn, mut xn, mut fn_, mut parts) = (theta.clone(), x.clone(), f0, (ls, lr, gx.clone()));
         for _ in 0..6 {
@@ -2451,14 +2483,14 @@ fn main() {
             if !finite || n_inv > max_inverted {
                 println!("iter {k}: step {step:.3e} rejected ({})", if finite { format!("{n_inv} inverted elements") } else { "non-finite".into() });
                 fn_ = f64::INFINITY;
-            } else if fn_ <= f0 + 1e-4 * step * slope {
+            } else if fn_ <= f0 + 1e-4 * step * slope + ls_tol {
                 break;
             } else {
                 println!("iter {k}: step {step:.3e} rejected (loss {fn_:.6e} vs {f0:.6e})");
             }
             step *= 0.5;
         }
-        if !(fn_ <= f0) {
+        if !(fn_ <= f0 + ls_tol) {
             println!("iter {k}: no decrease, stopping");
             break;
         }
