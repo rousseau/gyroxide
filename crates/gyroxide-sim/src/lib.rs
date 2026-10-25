@@ -68,8 +68,10 @@ pub struct Simulation<B: Backend> {
     growth_fixed: Option<T1<B>>,
     /// Optional spring w (target - x) on the first nodes (target positions, per-node weight).
     pull: Option<(V3<B>, T1<B>)>,
-    /// Optional correction added to the cortical thickening c per tetrahedron (inverse studies).
+    /// Optional correction of the cortical thickening c per tetrahedron (inverse studies), added
+    /// to c or, with `radial_mult`, multiplicative: 1 + c = (1 + c_scheduled) exp(delta) > 0.
     radial_delta: Option<T1<B>>,
+    radial_mult: bool,
     /// Optional isotropic correction delta I added to the core growth tensor U per tetrahedron.
     core_delta: Option<T1<B>>,
     /// Unit normals of the pull targets: if set, springs act along them only (tangential sliding).
@@ -181,6 +183,7 @@ impl<B: Backend> Simulation<B> {
             growth_fixed: None,
             pull: None,
             radial_delta: None,
+            radial_mult: false,
             core_delta: None,
             pull_normals: None,
             core_override: None,
@@ -362,11 +365,19 @@ impl<B: Backend> Simulation<B> {
     /// Thickening c of the cortex per tetrahedron at the current time (`thickening`).
     pub fn radial_growth(&self) -> Option<T1<B>> {
         let base = self.nodal.as_ref().and_then(|nd| nd.radial_at(self.t));
-        match (base, &self.radial_delta) {
-            (Some(c), Some(d)) => Some(c + d.clone()),
-            (None, Some(d)) => Some(d.clone()),
-            (c, None) => c,
+        match (base, &self.radial_delta, self.radial_mult) {
+            (Some(c), Some(d), false) => Some(c + d.clone()),
+            (Some(c), Some(d), true) => Some((c + 1.0) * d.clone().exp() - 1.0),
+            (None, Some(d), false) => Some(d.clone()),
+            (None, Some(d), true) => Some(d.clone().exp() - 1.0),
+            (c, None, _) => c,
         }
+    }
+
+    /// Multiplicative thickening correction (see `radial_delta`): the normal growth stays
+    /// positive whatever the correction, where an added one can turn it negative.
+    pub fn set_radial_mult(&mut self, mult: bool) {
+        self.radial_mult = mult;
     }
 
     /// Correction added to the thickening c per tetrahedron; `None` removes it.

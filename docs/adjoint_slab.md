@@ -453,3 +453,52 @@ pas pour les creuser. Ni un prépatron précoce, ni une rétroaction géométriq
 remplacent l'information de position récente de l'atlas ; la correction lobaire du cœur, elle, garde
 son gain dans toutes les variantes (1,22 mm à SG 30 avec le prépatron de SG 26, contre 1,40 pour la
 loi sans correction lobaire).
+
+## Vers SG 36 (étape 5)
+
+Chaîne de référence (croissance mesurée, sans ajustement, `tools/remodel_chain.py --alpha 0
+--resume 31 --w1 36`) : 2,149 / 2,356 / 2,542 / 2,661 / 2,741 / 2,806 mm de SG 31 à 36, aucun
+élément retourné (Newton cale presque chaque semaine, la relaxation amortie de secours suffit).
+Entrées de l'hémisphère pour SG 31–36 : `tools/make_full.py --weeks 31 ... 36`.
+
+Qualité des tétraèdres (rapport moyen 12 (3V)^{2/3} / Σ l², 1 = régulier) : 1er centile 0,43 à SG 21,
+0,41 sur la chaîne de référence à SG 30, 0,37 sur l'ajustement lobaire à SG 30 ; une centaine de
+tétraèdres sous 0,1 sur 610 828, aucun sous 0,02. Le maillage n'impose pas de remaillage à SG 30.
+
+La chaîne lobaire échoue à SG 31 : l'équilibre de départ (état ajusté de SG 30 déplacé comme la
+référence) diverge en NaN par relaxation amortie, même à pas de temps divisé par deux, et Newton seul
+ne réduit pas la force (0,43, ou 0,09 pour un quart de semaine par continuation en temps,
+`tools/time_ramp.sh`). Cause : la correction d'épaississement de la loi (jusqu'à −1,12) s'ajoute à
+l'amincissement mesuré du cortex (−0,40 à SG 30, −0,48 à SG 31) et rend la croissance normale
+1 + c négative sur 5 nœuds à SG 30, 15 à SG 31 (moins de 0,2 sur plus de 100) : tenseur de
+croissance inversé. Les sauts de branche de la chaîne sur la profondeur propre à SG 30 en relèvent
+probablement aussi.
+
+Remède : correction multiplicative (`--thick-mult`), 1 + c = (1 + c_mesuré) exp(δ) > 0 par
+construction, ≈ additive pour δ petit (facteur 1 + c_mesuré) ; dc/dδ = 1 + c dans le gradient
+(vérifié par différences finies : rapport 1,000 à h = 0,5, 1, 2). `adjoint_week` accepte aussi un
+temps de point de reprise entre deux nœuds (nœud suivant, a interpolé), pour la continuation en
+temps.
+
+Chaîne lobaire avec correction multiplicative (`LAW=1 tools/full_chain.sh lbm out/full/fit27_lb40 27
+36 --field-law-k <cartes> --thick-mult`) : SG 28–30 identiques à la chaîne additive (0,751 / 0,894 /
+1,121 contre 0,741 / 0,883 / 1,116 mm), puis la chaîne passe SG 31 et va jusqu'à SG 36 sans échec ni
+élément retourné.
+
+| | SG 30 | SG 31 | SG 32 | SG 33 | SG 34 | SG 35 | SG 36 |
+|---|---|---|---|---|---|---|---|
+| référence (croissance mesurée), mm | 1,865 | 2,146 | 2,349 | 2,532 | 2,648 | 2,724 | 2,785 |
+| loi + cœur lobaire, mm | **1,121** | **1,377** | **1,616** | **1,837** | **1,994** | **2,091** | **2,159** |
+| normales, référence → lobaire | 25,7° → 13,7° | 29,8° → 15,7° | 32,7° → 18,2° | 35,4° → 21,1° | 37,6° → 22,9° | 39,2° → 23,8° | 40,2° → 22,7° |
+| corr. H, référence → lobaire | 0,46 → 0,86 | 0,41 → 0,86 | 0,37 → 0,84 | 0,33 → 0,81 | 0,30 → 0,79 | 0,28 → 0,79 | 0,28 → 0,82 |
+
+Profondeur des plis (cortex ; atlas 1,41 / 2,02 / 2,36 mm à SG 30 / 33 / 36) : référence 0,83 / 0,99 /
+1,08, lobaire 1,17 / 1,45 / 1,64. Rapport à l'atlas (`tools/fold_standard.py`) à SG 30 / 33 / 36 :
+IG 0,884 / 0,810 / 0,774 (référence) contre 0,938 / 0,879 / 0,848 ; bande 4–8 mm 0,42 / 0,34 / 0,32
+contre 0,71 / 0,60 / 0,56. Corrections : k lobaire, écart-type 0,070 / 0,073 / 0,074 ; coefficient
+de c sur d30 18,9 / 21,9 / 24,8 ; δc entre −0,46 et +0,83 (1er et 99e centiles) à SG 36.
+
+L'ajustement garde la position des plis jusqu'à SG 36 (corrélation de courbure 0,79 à 0,86, contre
+0,28 pour la référence) et réduit l'écart d'un quart à un tiers, mais la profondeur et la puissance
+de courbure restent en deçà de l'atlas (70 % de la profondeur, 56 % de la bande 4–8 mm à SG 36) :
+les plis secondaires de SG 31–36 manquent au modèle.

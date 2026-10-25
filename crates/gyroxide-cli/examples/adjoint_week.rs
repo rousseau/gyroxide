@@ -145,6 +145,8 @@ struct Problem {
     fit_k: bool,
     /// Extra fields kept at their initial values (--freeze-fields): their gradient is zeroed.
     freeze_fields: bool,
+    /// Multiplicative thickening correction (--thick-mult): 1 + c = (1 + c_measured) exp(delta).
+    thick_mult: bool,
     /// Field law (--field-law f1.npy,f2.npy,...): the fields are c = sum_j alpha_c,j f_j and
     /// k = sum_j alpha_k,j f_j over these per-vertex basis maps; theta holds the coefficients.
     law: Vec<Vec<f64>>,
@@ -1358,7 +1360,12 @@ impl Problem {
         let f = forces_regular(self.ad.precomputed(), &mat, &xv, &st, &Thickness::PerTet(h), core.as_ref(), ct.as_ref());
         let l = (f.x * lv.x).sum() + (f.y * lv.y).sum() + (f.z * lv.z).sum();
         let grads = l.backward();
-        let gc = if want_c { to_f64(ct.as_ref().expect("field c needs thickening = true").grad(&grads).expect("gradient w.r.t. c")) } else { Vec::new() };
+        let mut gc = if want_c { to_f64(ct.as_ref().expect("field c needs thickening = true").grad(&grads).expect("gradient w.r.t. c")) } else { Vec::new() };
+        if want_c && self.thick_mult {
+            // multiplicative correction: d c / d delta = 1 + c
+            let c = to_f64(self.ad.radial_growth().expect("thickening"));
+            gc.iter_mut().zip(&c).for_each(|(g, c)| *g *= 1.0 + c);
+        }
         let gk = if want_k { to_f64(kt.grad(&grads).expect("field k needs a core growth table")) } else { Vec::new() };
         (to_f64(st.grad(&grads).expect("gradient w.r.t. growth")), gc, gk)
     }
@@ -1552,11 +1559,13 @@ fn main() {
     let e = read(&prep.join("edges.npy"));
     let edges: Vec<[usize; 2]> = e.chunks_exact(2).map(|c| [c[0] as usize, c[1] as usize]).collect();
     let owner: Vec<usize> = read(&prep.join("owner.npy")).iter().map(|&v| v as usize).collect();
-    // Knot of the checkpoint time: the row of the a table that theta replaces.
+    // Knot of the checkpoint time: the row of the a table that theta replaces. Between two knots
+    // (time continuation, tools/time_ramp.sh) the next knot: a is interpolated towards it.
     let knot = knots
         .iter()
         .position(|&k| (k - t).abs() < 1e-3)
-        .unwrap_or_else(|| panic!("checkpoint t = {t} is not a knot of the a table"));
+        .or_else(|| knots.iter().position(|&k| k > t))
+        .unwrap_or_else(|| panic!("checkpoint t = {t} is after the last knot of the a table"));
     let mut theta = if theta0_table {
         let a = npy::read(&a_path).unwrap();
         let n = a.shape[1];
@@ -1628,6 +1637,7 @@ fn main() {
         fit_c: opt("--fit-fields").is_some_and(|f| f.to_string_lossy().contains('c')),
         fit_k: opt("--fit-fields").is_some_and(|f| f.to_string_lossy().contains('k')),
         freeze_fields: args.iter().any(|a| a == "--freeze-fields"),
+        thick_mult: args.iter().any(|a| a == "--thick-mult"),
         law: opt("--field-law")
             .map(|l| l.to_string_lossy().split(',').map(|f| read(Path::new(f))).collect())
             .unwrap_or_default(),
@@ -1639,6 +1649,11 @@ fn main() {
         force_tol: flag("--force-tol", 1e-5),
     };
     println!("{} colours for the block-Jacobi preconditioner", p.colours.len());
+    if p.thick_mult {
+        p.sim.set_radial_mult(true);
+        p.ad.set_radial_mult(true);
+        println!("thickening correction multiplicative: 1 + c = (1 + c_measured) exp(delta)");
+    }
     p.na = theta.len();
     let n_fields = usize::from(p.fit_c) + usize::from(p.fit_k);
     if n_fields > 0 {
