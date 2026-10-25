@@ -482,8 +482,10 @@ temps.
 
 Chaîne lobaire avec correction multiplicative (`LAW=1 tools/full_chain.sh lbm out/full/fit27_lb40 27
 36 --field-law-k <cartes> --thick-mult`) : SG 28–30 identiques à la chaîne additive (0,751 / 0,894 /
-1,121 contre 0,741 / 0,883 / 1,116 mm), puis la chaîne passe SG 31 et va jusqu'à SG 36 sans échec ni
-élément retourné.
+1,121 contre 0,741 / 0,883 / 1,116 mm), puis la chaîne passe SG 31 et va jusqu'à SG 36 sans NaN ni
+élément retourné. Mais les ajustements de SG 32, 33 et 34 se sont arrêtés après 10, 10 et 15
+itérations, et SG 35 n'a fait aucun pas (état de départ non ajusté) ; SG 28–31 et 36 ont fait leurs
+60 itérations. Les valeurs de SG 32–35 sont donc celles d'ajustements incomplets.
 
 | | SG 30 | SG 31 | SG 32 | SG 33 | SG 34 | SG 35 | SG 36 |
 |---|---|---|---|---|---|---|---|
@@ -502,3 +504,44 @@ L'ajustement garde la position des plis jusqu'à SG 36 (corrélation de courbure
 0,28 pour la référence) et réduit l'écart d'un quart à un tiers, mais la profondeur et la puissance
 de courbure restent en deçà de l'atlas (70 % de la profondeur, 56 % de la bande 4–8 mm à SG 36) :
 les plis secondaires de SG 31–36 manquent au modèle.
+
+Arrêts prématurés de SG 32–35 : à SG 35, tout pas de la recherche linéaire est refusé, la perte
+augmentant d'autant plus que le pas est petit (3,2879 au pas 1, 3,2942 au pas 1/4, contre 3,2809) :
+depuis l'équilibre de départ, Newton seul bascule dans un autre bassin au moindre changement de θ.
+Avec 300 pas de relaxation amortie avant chaque Newton (`--relax 300`), les pas sont acceptés mais la
+référence recalculée au même θ dérive de +2·10⁻³ à +8·10⁻³ d'une itération à l'autre et l'écart
+reste à 2,09 mm : aux semaines tardives, l'état qui colle à l'atlas n'est pas un équilibre stable du
+modèle, et l'ajustement bute sur un plancher de bruit de la perte de l'ordre de 10⁻².
+
+## Plis secondaires (SG 33)
+
+Régions où l'atlas creuse un sillon entre SG 30 et 33 que la chaîne lobaire ne forme pas : score
+= déficit de profondeur du modèle × approfondissement de l'atlas entre SG 30 et 33, lissé ; pics hors
+des régions déjà étudiées : frontale supérieure (sommet 5707) et inférieure centrale (26574, région
+sylvienne). Sous-maillages de 10 mm de rayon (`tools/make_slab.py --full out/full/lbm_x/w{w}.npy`,
+data/slab_front, data/slab_tinf), table de a reportée et champs c, k initialisés par sommet à l'état
+ajusté de la chaîne lobaire à SG 33 ; puis a, c, k libres par sommet (`--field-band 1.5
+--thick-mult`).
+
+| SG 33 | départ (chaîne lobaire) | champs libres | atlas |
+|---|---|---|---|
+| frontale : mm / normales / corr. H / profondeur | 1,861 / 27,0° / 0,63 / 1,61 | 0,821 / 8,2° / 0,88 / 2,25 | 2,56 |
+| inférieure : mm / normales / corr. H / profondeur | 2,207 / 42,7° / 0,33 / 1,45 | 1,760 / 35,1° / 0,51 / 1,43 | 2,34 |
+| inférieure + varifold σ = 5 mm | | 1,842 / 34,6° / 0,38 / 1,54 | |
+
+Frontale : plis au bon endroit mais trop peu profonds ; des champs libres les creusent (88 % de la
+profondeur de l'atlas). Les corrections sont surtout fines (80 % de la variance sous S²⁰) et ne
+suivent pas la profondeur de l'atlas (|r| ≤ 0,14 à toutes les échelles) : pas de loi de profondeur
+pour ces plis. Inférieure : plis mal placés dès le départ ; l'ajustement bute sur un palier, avec ou
+sans varifold.
+
+Hémisphère entier, c et k libres par sommet depuis la chaîne lobaire (`out/full/fit33_free`, 52
+itérations) : 1,837 → 1,553 mm (lobes 1,27 → 1,19) ; normales 21,1° → 11,9° ; corrélation de
+courbure 0,81 → 0,93 ; profondeur 1,45 → 1,63 mm (atlas 2,02) ; puissance de courbure 1–2 / 2–4 /
+4–8 / 8–16 mm : 0,70 / 0,65 / 0,60 / 0,71 → 0,97 / 0,83 / 0,70 / 0,75 ; corrections d'écart-type
+0,07 à 0,09. Région sylvienne : corrélation 0,39 → 0,65, normales 39° → 29°.
+
+Lecture : avec une croissance hétérogène quelconque, le modèle retrouve la forme fine des plis
+secondaires là où ils sont amorcés, mais leur amplitude plafonne (81 % de la profondeur, 70 % de la
+bande 4–8 mm) ; la région sylvienne, mal placée depuis les semaines antérieures, ne se rattrape pas
+localement ; l'écart en mm reste dominé par la forme lobaire (1,19 sur 1,55 mm).
