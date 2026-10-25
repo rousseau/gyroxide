@@ -585,3 +585,24 @@ la déformation sous les fonds et l'ajustement bute plus tôt sur un tétraèdre
 Le verrou commun est la dégénérescence d'éléments du cœur, 2 à 3,5 mm sous les fonds qui se
 creusent, dans un maillage construit à SG 21 : prochaine étape, raffiner localement le cœur sous ces
 fonds (scission d'arêtes intérieures seulement, surface et correspondance avec l'atlas inchangées).
+
+Raffinement local et profondeur du découpage. Raffiner le cœur sous les fonds (`tools/refine_slab.py`,
+bissection de la plus longue arête intérieure des tétraèdres dégradés et de leurs voisins, une
+passe : 2 915 arêtes, 11 791 → 26 628 tétraèdres) n'aide pas : 2,21 mm de profondeur, arrêt à
+l'itération 23 sur un gradient faux (la bissection crée des éléments effilés). Le vrai verrou était
+le découpage : la région de 5 mm de profondeur a son fond fixé, et le cœur se trouve écrasé entre ce
+fond et le sillon qui se creuse (tétraèdres écrasés à 2–3,5 mm sous la surface). Même région découpée
+sur 10 mm (`make_slab.py --depth 10`, data/slab_front10, β = 10⁻³) :
+
+| frontale, SG 33 | 5 mm de profondeur | 10 mm de profondeur | atlas |
+|---|---|---|---|
+| mm / rigide | 0,816 / 0,59 | **0,531 / 0,477** | |
+| normales / corr. H | 8,3° / 0,89 | **6,1° / 0,89** | |
+| profondeur des plis | 2,25 (88 %) | **2,45 (96 %)** | 2,56 |
+| arrêt | perte plate, it. 55 | aucun (90 itérations, encore en baisse) | |
+| tétraèdres de qualité < 0,05 | 14 | 4 | |
+
+Avec une croissance libre, le modèle atteint 96 % de la profondeur de ce pli secondaire : le
+« plafond » des essais précédents (raideur, lissage, cœur anisotrope, raffinement) venait du fond
+fixé à 5 mm, pas du modèle. Les régions de 5 mm restent valables pour les sillons peu profonds
+(SG 26–28) ; au-delà, découper sur 10 mm au moins.
