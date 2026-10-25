@@ -1754,6 +1754,9 @@ fn main() {
     let carry = args.iter().any(|a| a == "--carry");
     let growth_band = flag("--growth-band", 0.0);
     let field_band = flag("--field-band", 0.3);
+    // Inverted elements tolerated at accepted trial points (--max-inverted, default none): tells a
+    // limit of the mesh at deepening fundi from a limit of the model.
+    let max_inverted = flag("--max-inverted", 0.0) as usize;
     let max_step = flag("--max-step", 0.05);
     let ftol = flag("--ftol", 0.0);
     let mut hist_f: Vec<f64> = Vec::new();
@@ -2421,7 +2424,7 @@ fn main() {
             fn_ = parts.0 + parts.1;
             let finite = fn_.is_finite() && xn.iter().flatten().all(|v| v.is_finite());
             let n_inv = if finite { p.n_inverted(&xn, &tn) } else { 0 };
-            if !finite || n_inv > 0 {
+            if !finite || n_inv > max_inverted {
                 println!("iter {k}: step {step:.3e} rejected ({})", if finite { format!("{n_inv} inverted elements") } else { "non-finite".into() });
                 fn_ = f64::INFINITY;
             } else if fn_ <= f0 + 1e-4 * step * slope {

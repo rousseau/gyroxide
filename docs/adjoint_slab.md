@@ -542,6 +542,27 @@ courbure 0,81 → 0,93 ; profondeur 1,45 → 1,63 mm (atlas 2,02) ; puissance de
 0,07 à 0,09. Région sylvienne : corrélation 0,39 → 0,65, normales 39° → 29°.
 
 Lecture : avec une croissance hétérogène quelconque, le modèle retrouve la forme fine des plis
-secondaires là où ils sont amorcés, mais leur amplitude plafonne (81 % de la profondeur, 70 % de la
-bande 4–8 mm) ; la région sylvienne, mal placée depuis les semaines antérieures, ne se rattrape pas
+secondaires là où ils sont amorcés ; leur amplitude s'arrête à 81 % de la profondeur (88 % sur la
+région frontale) et 70 % de la bande 4–8 mm, l'ajustement s'arrêtant sur un palier (limite du
+modèle ou de l'optimisation, non tranché) ; la région sylvienne, mal placée depuis les semaines antérieures, ne se rattrape pas
 localement ; l'écart en mm reste dominé par la forme lobaire (1,19 sur 1,55 mm).
+
+Profondeur des plis secondaires, région frontale (SG 33, a, c, k libres) :
+
+| variante | itérations | mm | corr. H | profondeur (atlas 2,56) | arrêt |
+|---|---|---|---|---|---|
+| μ_g/μ_w = 2, β = 10⁻⁴ | 36 | 0,821 | 0,88 | 2,25 | éléments retournés |
+| μ_g/μ_w = 3 | 35 | 0,795 | 0,90 | 2,27 | éléments retournés |
+| μ_g/μ_w = 5 | 26 | 0,875 | 0,91 | 2,26 | perte plate |
+| 20 éléments retournés tolérés (`--max-inverted 20`) | 37 | 0,821 | 0,88 | 2,25 | gradient faux (perte ∝ pas) |
+| β = 10⁻³ | 55 | 0,816 | 0,89 | 2,25 | perte plate |
+| β = 10⁻² | 45 | 0,851 | 0,88 | 2,19 | perte plate |
+
+Ni la raideur relative, ni le lissage des champs, ni la tolérance aux éléments retournés ne changent
+la profondeur ; avec un lissage plus fort l'ajustement converge (perte plate) au même état : ce
+n'est pas un arrêt de l'optimiseur. Les bornes ne sont pas atteintes (1 % des sommets à la borne de
+a, aucun à celle de c, k). À cet optimum, des tétraèdres du cœur, à 2–3,5 mm sous la surface, sous
+les fonds qui se creusent, sont écrasés (qualité 0,006 à 0,02, contre 0,6–0,9 au départ) : avec les
+trois modes de croissance disponibles (tangentielle, épaississement normal, cœur isotrope), la
+meilleure forme atteint 88 % de la profondeur de l'atlas dans cette région. Piste suivante : élargir
+ces modes (croissance du cœur anisotrope, radiale et tangentielle séparées).
