@@ -606,3 +606,37 @@ Avec une croissance libre, le modèle atteint 96 % de la profondeur de ce pli se
 « plafond » des essais précédents (raideur, lissage, cœur anisotrope, raffinement) venait du fond
 fixé à 5 mm, pas du modèle. Les régions de 5 mm restent valables pour les sillons peu profonds
 (SG 26–28) ; au-delà, découper sur 10 mm au moins.
+
+## Une loi pour les plis secondaires (région frontale, 10 mm, SG 33)
+
+Corrélations des corrections libres (écarts à l'état de la chaîne lobaire) avec des cartes candidates :
+Δc ne suit rien (|r| ≤ 0,12) ; Δk est anticorrélé à la profondeur de l'atlas (r = −0,24 à −0,32
+selon l'échelle) et à celle du modèle (−0,37) : le cœur pousse davantage sous les fonds secondaires,
+à l'inverse des sillons primaires. Loi à 7 cartes par champ (c et k de la chaîne lobaire comme cartes,
+profondeur de l'atlas à S³⁰, S¹⁰, S³, approfondissement entre deux semaines, constante), a libre,
+coefficients partis de l'état de la chaîne lobaire (`out/slab_front10/law`) :
+
+| SG 33, région frontale 10 mm | mm | normales | corr. H | profondeur (atlas 2,56) |
+|---|---|---|---|---|
+| a seul (c, k figés) | 1,563 | 20,2° | 0,80 | 1,95 |
+| loi, cartes de SG 32 (prédictive) | 0,931 | 12,2° | 0,77 | 2,18 |
+| loi, cartes de SG 33 | 0,778 | 11,7° | 0,80 | 2,28 |
+| champs libres | 0,531 | 6,1° | 0,89 | 2,45 |
+
+La loi récupère 76 % du gain des champs libres en mm (61 % en prédictif, cartes de SG 32 corrélées à
+0,95 avec celles de SG 33). Coefficients de même signe dans les deux versions : épaississement
+augmenté avec l'approfondissement de l'atlas (cortex aminci sous les sillons qui se creusent),
+croissance du cœur plus forte sous les fonds (S³⁰ et S¹⁰) ; constantes c ≈ +0,2 et k ≈ −0,3,
+probablement une correction régionale (bords fixés).
+
+Hémisphère entier, SG 33. Ajuster la loi enrichie des cartes prédictives de SG 32 (profondeur S¹⁰,
+S³, approfondissement de SG 29 à 32), coefficients partis de zéro depuis la chaîne lobaire : aucun
+gain (1,837 → 1,841 mm, arrêt à l'itération 9), ni avec `--force-tol 5e-5` (1,829) ni avec
+`--max-step 0.2` (1,835) : chaque pas sur un coefficient modifie tout l'hémisphère et l'équilibre
+change de branche (pertes d'essai non monotones en fonction du pas), alors que l'ajustement libre,
+aux pas locaux, progresse (1,553 mm). Régression des corrections libres de l'hémisphère sur ces
+cartes : R² = 0,22 pour Δc (approfondissement r = +0,45), 0,13 pour Δk (signe de la relation à la
+profondeur opposé à celui de la région frontale) ; la loi régressée, imposée, donne 1,822 mm
+(équilibre relaxé). Les plis secondaires sont atteignables avec une croissance libre, mais aucune loi
+simple sur la profondeur de l'atlas ne décrit cette croissance à l'échelle de l'hémisphère ; sur la
+région frontale seule, une loi en capture 61 à 76 %.
