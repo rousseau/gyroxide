@@ -74,6 +74,9 @@ pub struct Simulation<B: Backend> {
     radial_mult: bool,
     /// Optional isotropic correction delta I added to the core growth tensor U per tetrahedron.
     core_delta: Option<T1<B>>,
+    /// Optional radial correction delta_r n n^T added to the core growth U per tetrahedron (n: the
+    /// growth normal): with `core_delta`, tangential growth delta and radial growth delta + delta_r.
+    core_delta_radial: Option<T1<B>>,
     /// Unit normals of the pull targets: if set, springs act along them only (tangential sliding).
     pull_normals: Option<V3<B>>,
     /// Optional core growth tensor per tetrahedron replacing the scheduled one (remodelling).
@@ -185,6 +188,7 @@ impl<B: Backend> Simulation<B> {
             radial_delta: None,
             radial_mult: false,
             core_delta: None,
+            core_delta_radial: None,
             pull_normals: None,
             core_override: None,
             dirichlet: None,
@@ -346,6 +350,15 @@ impl<B: Backend> Simulation<B> {
                 u.m[k][k] = u.m[k][k].clone() + d.clone();
             }
         }
+        if let (Some(u), Some(d)) = (u.as_mut(), &self.core_delta_radial) {
+            let n = &self.pre.growth_normal;
+            let c = [&n.x, &n.y, &n.z];
+            for i in 0..3 {
+                for j in 0..3 {
+                    u.m[i][j] = u.m[i][j].clone() + d.clone() * c[i].clone() * c[j].clone();
+                }
+            }
+        }
         u
     }
 
@@ -360,6 +373,12 @@ impl<B: Backend> Simulation<B> {
     /// Isotropic correction delta I added to the core growth U per tetrahedron; `None` removes it.
     pub fn set_core_delta(&mut self, delta: Option<&[f64]>) {
         self.core_delta = delta.map(|d| floats(d, &self.device));
+    }
+
+    /// Radial correction delta_r n n^T added to the core growth U per tetrahedron (anisotropic
+    /// core growth, with `set_core_delta` for the tangential part); `None` removes it.
+    pub fn set_core_delta_radial(&mut self, delta: Option<&[f64]>) {
+        self.core_delta_radial = delta.map(|d| floats(d, &self.device));
     }
 
     /// Thickening c of the cortex per tetrahedron at the current time (`thickening`).

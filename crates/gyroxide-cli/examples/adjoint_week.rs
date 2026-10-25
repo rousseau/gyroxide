@@ -143,6 +143,8 @@ struct Problem {
     /// thickening c and isotropic correction delta I of the core growth U; `na` = number of a values.
     fit_c: bool,
     fit_k: bool,
+    /// Radial core growth correction r (--fit-fields ...,r): U + k I + r n n^T, anisotropic core.
+    fit_r: bool,
     /// Extra fields kept at their initial values (--freeze-fields): their gradient is zeroed.
     freeze_fields: bool,
     /// Multiplicative thickening correction (--thick-mult): 1 + c = (1 + c_measured) exp(delta).
@@ -523,10 +525,11 @@ impl Problem {
     /// Newton-Krylov on F(x) = 0 (K delta = F by CG, backtracking on |F|, contact lists
     /// refreshed at each trial point). Returns x*.
     /// Offsets of the extra field blocks in theta (c, then k).
-    fn field_offsets(&self) -> (Option<usize>, Option<usize>) {
+    fn field_offsets(&self) -> (Option<usize>, Option<usize>, Option<usize>) {
         let oc = self.fit_c.then_some(self.na);
         let ok = self.fit_k.then_some(self.na * (1 + usize::from(self.fit_c)));
-        (oc, ok)
+        let or = self.fit_r.then_some(self.na * (1 + usize::from(self.fit_c) + usize::from(self.fit_k)));
+        (oc, ok, or)
     }
 
     /// Basis maps of each fitted field under a field law (c, then k): the --field-law maps, and for
@@ -538,6 +541,9 @@ impl Problem {
         }
         if self.fit_k {
             b.push(self.law.iter().chain(&self.law_k).collect());
+        }
+        if self.fit_r {
+            b.push(self.law.iter().collect());
         }
         b
     }
@@ -577,7 +583,7 @@ impl Problem {
         let per_tet = |d: &[f64]| -> Vec<f64> {
             self.tets.iter().map(|t| 0.25 * t.iter().map(|&n| d[self.owner[n as usize]]).sum::<f64>()).collect()
         };
-        let (oc, ok) = self.field_offsets();
+        let (oc, ok, or) = self.field_offsets();
         if let Some(o) = oc {
             let d = per_tet(&theta[o..o + self.na]);
             self.sim.set_radial_delta(Some(&d));
@@ -587,6 +593,11 @@ impl Problem {
             let d = per_tet(&theta[o..o + self.na]);
             self.sim.set_core_delta(Some(&d));
             self.ad.set_core_delta(Some(&d));
+        }
+        if let Some(o) = or {
+            let d = per_tet(&theta[o..o + self.na]);
+            self.sim.set_core_delta_radial(Some(&d));
+            self.ad.set_core_delta_radial(Some(&d));
         }
     }
 
@@ -751,8 +762,8 @@ impl Problem {
 
     fn reg(&self, theta: &[f64]) -> f64 {
         let theta = &self.full(theta);
-        let (oc, ok) = self.field_offsets();
-        let fields: f64 = [oc, ok]
+        let (oc, ok, or) = self.field_offsets();
+        let fields: f64 = [oc, ok, or]
             .into_iter()
             .flatten()
             .map(|o| self.edges.iter().map(|[i, j]| (theta[o + *i] - theta[o + *j]).powi(2)).sum::<f64>())
@@ -1333,7 +1344,7 @@ impl Problem {
 
     /// lambda . dF/ds per tetrahedron, and optionally lambda . dF/dc (thickening c) and
     /// lambda . dF/d delta (isotropic correction delta I of the core growth U) of `ad`.
-    fn vjp_fields(&self, x: &[[f64; 3]], s: &[f64], lam: &[[f64; 3]], want_c: bool, want_k: bool) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    fn vjp_fields(&self, x: &[[f64; 3]], s: &[f64], lam: &[[f64; 3]], want_c: bool, want_k: bool, want_r: bool) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
         let dev = WgpuDevice::default();
         let xv = V3::<Ad>::from_rows(x, &dev);
         let lv = V3::<Ad>::from_rows(lam, &dev);
@@ -1347,10 +1358,20 @@ impl Problem {
         });
         let nt = s.len();
         let kt = t1(&vec![0.0; nt]).require_grad();
+        let rt = t1(&vec![0.0; nt]).require_grad();
         let core = self.ad.core_growth().map(|mut u| {
             if want_k {
                 for k in 0..3 {
                     u.m[k][k] = u.m[k][k].clone() + kt.clone();
+                }
+            }
+            if want_r {
+                let n = &self.ad.precomputed().growth_normal;
+                let c = [&n.x, &n.y, &n.z];
+                for i in 0..3 {
+                    for j in 0..3 {
+                        u.m[i][j] = u.m[i][j].clone() + rt.clone() * c[i].clone() * c[j].clone();
+                    }
                 }
             }
             u
@@ -1367,7 +1388,8 @@ impl Problem {
             gc.iter_mut().zip(&c).for_each(|(g, c)| *g *= 1.0 + c);
         }
         let gk = if want_k { to_f64(kt.grad(&grads).expect("field k needs a core growth table")) } else { Vec::new() };
-        (to_f64(st.grad(&grads).expect("gradient w.r.t. growth")), gc, gk)
+        let gr = if want_r { to_f64(rt.grad(&grads).expect("field r needs a core growth table")) } else { Vec::new() };
+        (to_f64(st.grad(&grads).expect("gradient w.r.t. growth")), gc, gk, gr)
     }
 
     /// Full gradient w.r.t. theta at the equilibrium x of theta.
@@ -1381,11 +1403,11 @@ impl Problem {
     ) -> (Vec<f64>, usize, f64) {
         let (lam, it, res) = self.adjoint(x, gx, sigma, cg);
         let theta = &self.full(theta);
-        let (oc, ok) = self.field_offsets();
-        let (gs, gc, gk) = if oc.is_some() || ok.is_some() {
-            self.vjp_fields(x, &self.growth(theta), &lam, oc.is_some(), ok.is_some())
+        let (oc, ok, or) = self.field_offsets();
+        let (gs, gc, gk, gr) = if oc.is_some() || ok.is_some() || or.is_some() {
+            self.vjp_fields(x, &self.growth(theta), &lam, oc.is_some(), ok.is_some(), or.is_some())
         } else {
-            (self.vjp_growth(x, &self.growth(theta), &lam), Vec::new(), Vec::new())
+            (self.vjp_growth(x, &self.growth(theta), &lam), Vec::new(), Vec::new(), Vec::new())
         };
         let mut g = vec![0.0; theta.len()];
         for ((t, gm), gse) in self.tets.iter().zip(&self.gm).zip(&gs) {
@@ -1393,7 +1415,7 @@ impl Problem {
                 g[self.owner[n as usize]] += gse * gm * 0.25;
             }
         }
-        for (o, gf) in [(oc, &gc), (ok, &gk)] {
+        for (o, gf) in [(oc, &gc), (ok, &gk), (or, &gr)] {
             if let Some(o) = o {
                 for (t, ge) in self.tets.iter().zip(gf.iter()) {
                     for &n in t {
@@ -1636,6 +1658,7 @@ fn main() {
         w_vertex: flag("--w-vertex", 1.0),
         fit_c: opt("--fit-fields").is_some_and(|f| f.to_string_lossy().contains('c')),
         fit_k: opt("--fit-fields").is_some_and(|f| f.to_string_lossy().contains('k')),
+        fit_r: opt("--fit-fields").is_some_and(|f| f.to_string_lossy().contains('r')),
         freeze_fields: args.iter().any(|a| a == "--freeze-fields"),
         thick_mult: args.iter().any(|a| a == "--thick-mult"),
         law: opt("--field-law")
@@ -1655,7 +1678,7 @@ fn main() {
         println!("thickening correction multiplicative: 1 + c = (1 + c_measured) exp(delta)");
     }
     p.na = theta.len();
-    let n_fields = usize::from(p.fit_c) + usize::from(p.fit_k);
+    let n_fields = usize::from(p.fit_c) + usize::from(p.fit_k) + usize::from(p.fit_r);
     if n_fields > 0 {
         assert!(p.law.iter().chain(&p.law_k).all(|f| f.len() == p.na), "--field-law: maps of {} values expected", p.na);
         assert!(p.law_k.is_empty() || (p.fit_k && !p.law.is_empty()), "--field-law-k needs --field-law and the field k");
@@ -1685,9 +1708,10 @@ fn main() {
             theta.copy_from_slice(&prev);
         }
         println!(
-            "fitted fields: a{}{} ({} values per field), field band +-{}",
+            "fitted fields: a{}{}{} ({} values per field), field band +-{}",
             if p.fit_c { ", c (thickening correction)" } else { "" },
             if p.fit_k { ", k (core growth correction)" } else { "" },
+            if p.fit_r { ", r (radial core growth correction)" } else { "" },
             p.na,
             flag("--field-band", 0.3)
         );
@@ -1892,7 +1916,7 @@ fn main() {
         };
         let grad = |p: &Problem, z: &[f64], f: &[[f64; 3]]| -> Vec<f64> {
             let th = &z[..na];
-            let (gs, gc, gk) = p.vjp_fields(&xg, &p.growth(th), f, with_c, with_k);
+            let (gs, gc, gk, _) = p.vjp_fields(&xg, &p.growth(th), f, with_c, with_k, false);
             let mut g = vec![0.0; z.len()];
             for ((t, gm), gse) in p.tets.iter().zip(&p.gm).zip(&gs) {
                 for &n in t {

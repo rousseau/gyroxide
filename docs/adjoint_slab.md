@@ -566,3 +566,22 @@ les fonds qui se creusent, sont écrasés (qualité 0,006 à 0,02, contre 0,6–
 trois modes de croissance disponibles (tangentielle, épaississement normal, cœur isotrope), la
 meilleure forme atteint 88 % de la profondeur de l'atlas dans cette région. Piste suivante : élargir
 ces modes (croissance du cœur anisotrope, radiale et tangentielle séparées).
+
+Croissance du cœur anisotrope (`--fit-fields c,k,r`) : r ajoute r n nᵀ au tenseur du cœur (n :
+normale de croissance du tétraèdre), soit une croissance tangentielle k et radiale k + r
+(`Simulation::set_core_delta_radial`, gradient par autodifférentiation ; neutre à r = 0 : même
+équilibre de départ ; contrôle par différences finies, rapport 1,000 à h = 0,5 et 1).
+
+| SG 33, champs libres | mm | normales | corr. H | profondeur | arrêt |
+|---|---|---|---|---|---|
+| frontale, isotrope (β = 10⁻³) | 0,816 | 8,3° | 0,89 | 2,25 (atlas 2,56) | perte plate, it. 55 |
+| frontale, anisotrope | 0,925 | 9,4° | 0,89 | 2,18 | élément retourné, it. 30 |
+| frontale, anisotrope, β = 10⁻³ | 0,934 | 9,5° | 0,89 | 2,17 | élément retourné, it. 28 |
+| sylvienne, isotrope | 1,760 | 35,1° | 0,51 | 1,43 (atlas 2,34) | perte plate |
+| sylvienne, anisotrope | 1,687 | 32,4° | 0,59 | 1,56 | perte plate |
+
+La composante radiale aide un peu dans la région sylvienne ; dans la région frontale, elle accélère
+la déformation sous les fonds et l'ajustement bute plus tôt sur un tétraèdre du cœur retourné.
+Le verrou commun est la dégénérescence d'éléments du cœur, 2 à 3,5 mm sous les fonds qui se
+creusent, dans un maillage construit à SG 21 : prochaine étape, raffiner localement le cœur sous ces
+fonds (scission d'arêtes intérieures seulement, surface et correspondance avec l'atlas inchangées).
