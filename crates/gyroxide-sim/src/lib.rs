@@ -704,6 +704,16 @@ impl<B: Backend> Simulation<B> {
         self.impose_dirichlet();
     }
 
+    /// Cauchy stress (regular neo-Hookean branch, row-major 3x3), J = det F and the cortical
+    /// indicator g_m per tetrahedron at the current positions and growth.
+    pub fn stress(&self) -> (Vec<[f64; 9]>, Vec<f64>, Vec<f64>) {
+        let (_, el) = self.compute_force(&self.x, &self.thickness_at(self.t), true);
+        let (sigma, j) = el.stress.expect("stress is computed with the energy");
+        let comps: Vec<Vec<f64>> = sigma.m.iter().flatten().map(|c| to_f64(c.clone())).collect();
+        let s = (0..comps[0].len()).map(|t| std::array::from_fn(|k| comps[k][t])).collect();
+        (s, to_f64(j), to_f64(el.gm))
+    }
+
     /// g_m a_t of the previous step per tetrahedron (one readback), for checkpoints.
     pub fn growth_state(&self) -> Vec<f64> {
         to_f64(self.growth_prev.clone())

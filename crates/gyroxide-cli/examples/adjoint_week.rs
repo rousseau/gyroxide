@@ -1820,6 +1820,23 @@ fn main() {
     let sigma = flag("--shift", 1e-3) * ray.abs();
     p.sigma = sigma;
     let mut x = p.equilibrium(&theta, &xs, flag("--relax0", relax as f64) as usize);
+    if args.iter().any(|a| a == "--stress") {
+        // Stress at the equilibrium (with --theta-init theta_final.npy and the fitted state as
+        // checkpoint: the fitted model), per tetrahedron: Cauchy stress (row-major, model units),
+        // J = det F, cortical indicator g_m; then stop.
+        p.apply_fields(&theta);
+        let s_ = p.growth(&theta);
+        p.sim.set_state(&x, &p.v0.clone(), &s_);
+        p.sim.set_fixed_growth(Some(&s_));
+        let (sig, j, gm) = p.sim.stress();
+        let flat: Vec<f64> = sig.iter().flatten().copied().collect();
+        npy::write_f64(out.join("stress.npy"), &[sig.len(), 9], &flat).unwrap();
+        npy::write_f64(out.join("stress_j.npy"), &[j.len()], &j).unwrap();
+        npy::write_f64(out.join("stress_gm.npy"), &[gm.len()], &gm).unwrap();
+        save_rows(out.join("x_stress.npy"), &x);
+        println!("stress written: {} tetrahedra, |F| {:.3e} -> {:.3e}", sig.len(), p.last_residual.0, p.last_residual.1);
+        return;
+    }
     // Cumulative loss: weights w_s / L_s(start) for every level, first level active.
     let mut norm_levels: Vec<(usize, f64, Vec<[f64; 3]>)> = Vec::new();
     if cumulative {

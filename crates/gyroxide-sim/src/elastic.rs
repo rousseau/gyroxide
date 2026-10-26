@@ -20,6 +20,8 @@ pub struct ElasticOutput<B: Backend> {
     pub gm: T1<B>,
     /// Elastic energy and number of inverted elements, when requested.
     pub energy: Option<(T1<B>, T1<B>)>,
+    /// Cauchy stress of the regular branch and J = det F per tetrahedron, with the energy.
+    pub stress: Option<(M3<B>, T1<B>)>,
 }
 
 /// Sums per-vertex tetrahedral contributions into nodes through the ELL
@@ -313,6 +315,7 @@ fn forces_impl<B: Backend>(
             vn,
             gm,
             energy: None,
+            stress: None,
         };
     }
 
@@ -349,6 +352,7 @@ fn forces_impl<B: Backend>(
         vn0,
         vn,
         gm,
+        stress: energy.as_ref().map(|_| (sigma, j)),
         energy,
     }
 }
