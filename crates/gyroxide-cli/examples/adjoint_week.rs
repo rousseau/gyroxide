@@ -1350,7 +1350,7 @@ impl Problem {
         let f = forces_regular(self.ad.precomputed(), &mat, &xv, &st, &Thickness::PerTet(h), self.ad.core_growth().as_ref(), self.ad.radial_growth().as_ref());
         let l = (f.x * lv.x).sum() + (f.y * lv.y).sum() + (f.z * lv.z).sum();
         let grads = l.backward();
-        to_f64(st.grad(&grads).expect("gradient w.r.t. growth"))
+        finite0(to_f64(st.grad(&grads).expect("gradient w.r.t. growth")))
     }
 
     /// lambda . dF/ds per tetrahedron, and optionally lambda . dF/dc (thickening c) and
@@ -1400,7 +1400,7 @@ impl Problem {
         }
         let gk = if want_k { to_f64(kt.grad(&grads).expect("field k needs a core growth table")) } else { Vec::new() };
         let gr = if want_r { to_f64(rt.grad(&grads).expect("field r needs a core growth table")) } else { Vec::new() };
-        (to_f64(st.grad(&grads).expect("gradient w.r.t. growth")), gc, gk, gr)
+        (finite0(to_f64(st.grad(&grads).expect("gradient w.r.t. growth"))), finite0(gc), finite0(gk), finite0(gr))
     }
 
     /// Full gradient w.r.t. theta at the equilibrium x of theta.
@@ -1484,6 +1484,13 @@ impl Problem {
         let den: f64 = v.iter().map(|a| a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sum();
         num / den
     }
+}
+
+/// Per-tetrahedron VJP entries with non-finite values set to zero: the regular-branch force is
+/// not finite for inverted elements (J^(2/3) of J < 0), whose force comes from the inverted branch.
+fn finite0(mut v: Vec<f64>) -> Vec<f64> {
+    v.iter_mut().filter(|a| !a.is_finite()).for_each(|a| *a = 0.0);
+    v
 }
 
 fn save_rows(p: PathBuf, x: &[[f64; 3]]) {
@@ -1793,7 +1800,7 @@ fn main() {
     let field_band = flag("--field-band", 0.3);
     // Inverted elements tolerated at accepted trial points (--max-inverted, default none): tells a
     // limit of the mesh at deepening fundi from a limit of the model.
-    let max_inverted = flag("--max-inverted", 0.0) as usize;
+    let mut max_inverted = flag("--max-inverted", 0.0) as usize;
     // Noise-tolerant line search (--ls-tol, absolute on the loss, default 0): at late weeks the
     // trial equilibria carry a round-off offset of the soft modes (~2e-3 at SG 33, independent of
     // the step) comparable to the expected decreases; a trial within that tolerance is accepted.
@@ -1824,13 +1831,25 @@ fn main() {
         }
         p.active = norm_levels[..1].to_vec();
     }
-    p.report_mm("start", &x, &mm_levels);
+    let dev0 = p.report_mm("start", &x, &mm_levels);
+    // --keep-best: the fit returns the iterate of lowest rigid rms deviation at the finest mm
+    // level, not the last one; at late weeks the equilibrium noise (~1e-2 on the
+    // loss) exceeds the expected decrease and the accepted steps can drift upwards.
+    let keep_best = args.iter().any(|a| a == "--keep-best");
+    let crit_of = |d: &(usize, [f64; 4], [f64; 4], [f64; 4]), rigid: bool| if rigid { d.2[0] } else { d.1[0] };
+    let mut best = (dev0.last().unwrap().2[0], theta.clone(), x.clone(), 0usize);
     let (mut ls, mut lr, mut gx) = p.loss(&x, &theta);
     println!(
         "start: shape loss {ls:.6e}, reg {lr:.3e}; K Rayleigh {ray:.3e}, shift {sigma:.3e}; |F| {:.3e} -> {:.3e}",
         p.last_residual.0, p.last_residual.1
     );
     save_rows(out.join("x_0.npy"), &x);
+    // Elements already inverted in the start state (late weeks) do not block the line search.
+    let n_inv0 = p.n_inverted(&x, &theta);
+    if n_inv0 > max_inverted {
+        println!("inverted elements in the start state: {n_inv0} (tolerated)");
+        max_inverted = n_inv0;
+    }
     if let Some(path) = opt("--pull-target") {
         // Branch test: equilibrium pulled onto the target (surface springs), then released.
         let tgt = npy::read(&path).unwrap().rows3().unwrap();
@@ -2472,7 +2491,9 @@ fn main() {
             if growth_band > 0.0 {
                 // Growth kept within +-band x the measured value (theta0).
                 for (v, m) in tn.iter_mut().zip(&theta0) {
-                    *v = v.clamp(m * (1.0 - growth_band), m * (1.0 + growth_band));
+                    // (bounds ordered: the carried table can be slightly negative late)
+                    let (lo, hi) = (m * (1.0 - growth_band), m * (1.0 + growth_band));
+                    *v = v.clamp(lo.min(hi), lo.max(hi));
                 }
             }
             xn = p.equilibrium(&tn, &x, p.relax);
@@ -2527,7 +2548,10 @@ fn main() {
         npy::write_f64(out.join(format!("theta_{k}.npy")), &[theta.len()], &theta).unwrap();
         let dev = p.report_mm(&format!("iter {k}"), &x, &mm_levels);
         let last = dev.last().unwrap();
-        let crit = if p.rigid { last.2[0] } else { last.1[0] };
+        let crit = crit_of(last, p.rigid);
+        if last.2[0] < best.0 {
+            best = (last.2[0], theta.clone(), x.clone(), k);
+        }
         if tol_mm > 0.0 && crit < tol_mm {
             println!("iter {k}: {} rms deviation below {tol_mm} mm, done", if p.rigid { "rigid" } else { "absolute" });
             break 'levels;
@@ -2553,6 +2577,13 @@ fn main() {
         println!("final loss per level: {}", report.join(", "));
     }
 
+    if keep_best && best.3 != k {
+        println!("keep-best: iterate {} restored (rigid rms {:.3} mm), saved as iterate {}", best.3, best.0, k + 1);
+        theta = best.1;
+        x = best.2;
+        save_rows(out.join(format!("x_{}.npy", k + 1)), &x);
+        npy::write_f64(out.join(format!("theta_{}.npy", k + 1)), &[theta.len()], &theta).unwrap();
+    }
     let dev = p.report_mm("final", &x, &mm_levels);
     // Admissibility of the fit: inverted elements at the fitted equilibrium, growth range.
     let s_fit = p.growth(&theta);

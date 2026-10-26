@@ -662,3 +662,27 @@ direction de descente, résidu de Newton, paires de contact) :
 
 SG 35 de la chaîne lobaire (0 itération auparavant) : 60 itérations, 2,091 → 2,061 mm (2,053 au mieux).
 Réglages pour les semaines tardives : `--newton-cg 600 --relax 300 --force-tol 5e-5 --ls-tol 3e-3`.
+
+## Chaîne lobaire SG 32–36 reprise (26 octobre)
+
+Reprise de la chaîne lbm (loi + cœur lobaire, épaississement multiplicatif) avec les corrections des
+semaines tardives : équilibres à `--relax 300 --newton-cg 600 --force-tol 5e-5`, recherche linéaire
+tolérante au bruit (`--ls-tol 3e-3`), tangente et VJP masquées sur les éléments retournés,
+élément retourné de l'état de départ toléré, bornes de `--growth-band` ordonnées (croissance
+reportée légèrement négative sur 6 sommets à SG 34), et `--keep-best` (l'ajustement rend l'itéré
+de plus faible écart rigide, l'état de départ compris). Chaîne `out/full/fit3{2..6}_lbmf`.
+
+| SG | lbmf (mm) | lbm, 1re chaîne | croissance mesurée | profondeur lbmf / atlas | corr. H |
+|---|---|---|---|---|---|
+| 32 | 1,563 | 1,616 | 2,32 | 1,44 / 1,85 | 0,86 |
+| 33 | 1,757 | 1,837 | 2,53 | 1,51 / 2,02 | 0,83 |
+| 34 | 1,908 | 1,994 | 2,65 | 1,56 / 2,16 | 0,80 |
+| 35 | 2,014 | 2,091 | 2,72 | 1,60 / 2,27 | 0,80 |
+| 36 | 2,096 | 2,159 | 2,79 | 1,68 / 2,36 | 0,82 |
+
+De SG 33 à 36, aucun itéré ne bat l'état de départ (loi de la semaine précédente reportée) :
+la décroissance attendue au premier pas (2 à 9·10⁻³ sur la perte) est du même ordre que le bruit
+de reproductibilité des équilibres (~10⁻²), et les pas acceptés par la tolérance dérivent vers le
+haut (SG 33 : 1,757 → 1,79 mm). Le gain sur la première chaîne vient donc des équilibres plus
+précis, pas d'un réajustement. Au total −25 % sur la croissance mesurée à SG 36, 71 % de la
+profondeur des plis de l'atlas.

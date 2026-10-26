@@ -9,6 +9,8 @@
 # with MAPS=both the law has both: the atlas maps of a fixed week PREP (prepattern, default 26) and
 # the model's own maps (feedback), five maps per field (d30, d3o of each, constant); with MAPS=prep
 # only the atlas maps of the fixed week PREP (prediction horizon of a prepattern).
+# RELAX=n: damped steps before Newton at every trial equilibrium (late weeks: RELAX=300 with
+# --newton-cg 600 --force-tol 5e-5 --ls-tol 3e-3 among the extra options).
 #   [LAW=1] tools/full_chain.sh <name> <first fitted run (week W0)> W0 W1 [extra adjoint_week options]
 # (extra options are split on spaces: no spaces inside an option value)
 set -e
@@ -16,7 +18,7 @@ NAME=$1; RUN=$2; W0=$3; W1=$4; shift 4
 EXTRA="$*"
 BIN=${BIN:-target/mu/adjoint_week_law2}
 L=data/full/law
-PREV=""
+PREV=${PREV0:-}  # PREV0: carry name of the first run when resuming a chain
 w=$W0
 while [ $w -lt $W1 ]; do
     n=$((w + 1))
@@ -48,9 +50,9 @@ while [ $w -lt $W1 ]; do
     # shellcheck disable=SC2086
     $BIN configs/mu_test/mu2_full_carry_${NAME}$n.toml data/meshes/w21_left_610k_s.mesh \
         data/full/ckpt_w${n}_from_${NAME}$n data/full/prep/w$n $OUT \
-        --absolute --multiscale 10:30,0:30 --cumulative --theta0-table --relax 0 --relax0 3000 \
+        --absolute --multiscale 10:30,0:30 --cumulative --theta0-table --relax ${RELAX:-0} --relax0 3000 \
         --newton 40 --min-growth 0 --max-step 0.05 --w-vertex 1 --w-normal 1 --w-lap 1 --w-area 0.5 \
-        --growth-band 0.5 $LAWOPT $EXTRA 2>&1 | grep -E "^start mm k=  0|^final mm k=  0|panicked|inverted|coefficients"
+        --growth-band 0.5 $LAWOPT $EXTRA 2>&1 | tee $OUT.log | grep -E "^start mm k=  0|^final mm k=  0|panicked|inverted|coefficients"
     RUN=$OUT; PREV=${NAME}$n; w=$n
 done
 echo "chain done"

@@ -221,8 +221,13 @@ pub fn force_tangent<B: Backend>(
     let dsigma = dev_b.mul_s(&dcoef).add(&ddev_b.mul_s(&coef)).add(&eye.mul_s(&dkja));
     // d adj(F) = adj(F) tr(F^-1 dF) - F^-1 dF adj(F), F^-1 = adj(F) / J.
     let finv = adjf.mul_s(&j.clone().recip());
-    let dadj = adjf.mul_s(&(dj / j)).sub(&finv.matmul(&df).matmul(&adjf));
+    let dadj = adjf.mul_s(&(dj / j.clone())).sub(&finv.matmul(&df).matmul(&adjf));
     let dp = dsigma.matmul(&adjf.transpose()).add(&sigma.matmul(&dadj.transpose()));
+    // Inverted or collapsed elements (J <= 0): J^(2/3) and 1/J are not finite there; their tangent
+    // is dropped (their force uses the inverted branch) so that NaN does not reach the Newton and
+    // adjoint solves.
+    let bad = j.lower_equal_elem(1e-6);
+    let dp = M3 { m: dp.m.map(|row| row.map(|e| e.mask_fill(bad.clone(), 0.0))) };
     nodal_forces(pre, &ar, &dp)
 }
 
