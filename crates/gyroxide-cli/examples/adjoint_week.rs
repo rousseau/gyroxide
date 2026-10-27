@@ -163,6 +163,8 @@ struct Problem {
     /// K products by finite differences of the total force (old path, --fd-k), and the
     /// growth / thickness tensors of the autodiff path.
     fd_k: bool,
+    /// Levenberg-Marquardt fallback of the equilibrium Newton (--lm).
+    lm: bool,
     /// Absolute tolerance on |F| of the Newton iterations of the equilibrium.
     force_tol: f64,
 }
@@ -625,6 +627,11 @@ impl Problem {
         let r0 = norm(&f);
         let mut rn = r0;
         self.last_newton = 0;
+        // Levenberg-Marquardt fallback: when no step of the line search lowers |F| (negative
+        // curvature cut the CG short, e.g. after a change of material), the shift is raised tenfold
+        // and the step retried; it eases back after each accepted step.
+        let mut sigma = self.sigma;
+        let mut raised = 0;
         for _ in 0..self.newton {
             // Already converged (e.g. the reference of a line search, from the accepted state): a
             // Newton step on a residual at round-off level only moves the soft modes.
@@ -632,9 +639,12 @@ impl Problem {
                 break;
             }
             self.last_newton += 1;
-            let (delta, _, _) = self.solve(&x, &f, self.sigma, self.newton_cg, !self.fd_k);
+            let (delta, cg_it, cg_res) = self.solve(&x, &f, sigma, self.newton_cg, !self.fd_k);
+            if std::env::var_os("NEWTON_DEBUG").is_some() {
+                println!("newton {}: |F| {rn:.4e}, shift {sigma:.2e}, cg {cg_it} iterations, residual {cg_res:.3e}", self.last_newton);
+            }
             let mut accepted = false;
-            for alpha in [1.0, 0.5, 0.25] {
+            for alpha in [1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125] {
                 let xt: Vec<[f64; 3]> = x
                     .iter()
                     .zip(&delta)
@@ -649,6 +659,14 @@ impl Problem {
                     accepted = true;
                     break;
                 }
+            }
+            if !accepted && self.lm && raised < 6 {
+                sigma = (10.0 * sigma).max(self.sigma);
+                raised += 1;
+                continue;
+            }
+            if accepted && sigma > self.sigma {
+                sigma = (sigma / 3.0).max(self.sigma);
             }
             if !accepted || rn < (1e-3 * r0).max(self.force_tol) {
                 break;
@@ -1689,6 +1707,7 @@ fn main() {
             .unwrap_or_default(),
         na: 0,
         fd_k: args.iter().any(|a| a == "--fd-k"),
+        lm: args.iter().any(|a| a == "--lm"),
         force_tol: flag("--force-tol", 1e-5),
     };
     println!("{} colours for the block-Jacobi preconditioner", p.colours.len());
@@ -1834,6 +1853,25 @@ fn main() {
         npy::write_f64(out.join("stress_j.npy"), &[j.len()], &j).unwrap();
         npy::write_f64(out.join("stress_gm.npy"), &[gm.len()], &gm).unwrap();
         save_rows(out.join("x_stress.npy"), &x);
+        save_rows(out.join("f_stress.npy"), &p.sim.total_force(&x));
+        if std::env::var_os("TANGENT_CHECK").is_some() {
+            // F(x + e d) - F(x) against -e K d, d = the Newton direction (K d = F)
+            let f0 = p.sim.total_force(&x);
+            let (d, _, _) = p.solve(&x, &f0, p.sigma, p.newton_cg, true);
+            let kd = p.k_mul(&x, &d);
+            let nrm = |v: &[[f64; 3]]| v.iter().map(|r| r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sum::<f64>().sqrt();
+            for e in [1e-1, 3e-2, 1e-2, 3e-3, 1e-3] {
+                let xe: Vec<[f64; 3]> = x.iter().zip(&d).map(|(a, b)| [0, 1, 2].map(|k| a[k] + e * b[k])).collect();
+                p.sim.set_state(&xe, &p.v0.clone(), &s_);
+                p.sim.refresh_contact();
+                let fe = p.sim.total_force(&xe);
+                let err: Vec<[f64; 3]> = fe.iter().zip(&f0).zip(&kd).map(|((a, b), c)| [0, 1, 2].map(|k| a[k] - b[k] + e * c[k])).collect();
+                println!("tangent check e {e:.0e}: |F(x+ed)| {:.4e}, |F(x+ed) - F + e K d| / |e K d| {:.3e}", nrm(&fe), nrm(&err) / (e * nrm(&kd)));
+            }
+            p.sim.set_state(&x, &p.v0.clone(), &s_);
+            p.sim.refresh_contact();
+        }
+        p.report_mm("stress", &x, &mm_levels);
         println!("stress written: {} tetrahedra, |F| {:.3e} -> {:.3e}", sig.len(), p.last_residual.0, p.last_residual.1);
         return;
     }

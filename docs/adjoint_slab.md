@@ -686,3 +686,52 @@ de reproductibilité des équilibres (~10⁻²), et les pas acceptés par la tol
 haut (SG 33 : 1,757 → 1,79 mm). Le gain sur la première chaîne vient donc des équilibres plus
 précis, pas d'un réajustement. Au total −25 % sur la croissance mesurée à SG 36, 71 % de la
 profondeur des plis de l'atlas.
+
+## Matériau réaliste : μ_w = μ_g, K = 50 μ_g (27 octobre)
+
+Le matériau de la chaîne (μ_g/μ_w = 2, K = 5 μ_g, ν ≈ 0,41) laisse le cortex perdre 5 à 9 % de
+volume (J élastique médian 0,95 à SG 30, 0,91 à SG 36 ; 7 % des tétraèdres corticaux sous 0,7 aux
+fonds à SG 36). Test : les modèles ajustés de l'étape 5 rééquilibrés, sans réajustement, avec
+μ_w = μ_g (le code de Tallinen a μ_w = 1,167 μ_g) et K jusqu'à 50 μ_g (ν ≈ 0,49).
+
+Équilibres : en partant directement de l'état ajusté, Newton échoue au-delà de K ≈ 20 (la recherche
+linéaire à trois pas, α ≥ 0,25, ne trouve aucun pas ; le CG rencontre une courbure négative après
+20 à 30 itérations). La tangente est cohérente avec les forces (test `TANGENT_CHECK`, erreur 4·10⁻³
+à ε = 10⁻² hors du plancher f32) : c'est un problème de globalisation. Remède : recherche linéaire
+jusqu'à α = 1/32, repli de Levenberg–Marquardt (`--lm` : décalage de la tangente × 10 quand aucun pas
+n'est accepté, ÷ 3 après chaque pas accepté), et continuation en K (5, 10, 14, 20, 28, 40, 50, chaque
+équilibre partant du précédent ; `tools/material_chain.sh`). Résidu final 1 à 5·10⁻⁵ (SG 32–34 :
+3–4·10⁻⁴). L'équilibre dépend du chemin : à μ_w = 0,5, K = 20 donne 1,132 mm en partant de l'état
+ajusté et 1,169 mm par continuation.
+
+SG 30, croissance ajustée inchangée, écart rigide (mm) :
+
+| | K = 5 | K = 10 | K = 20 | K = 50 |
+|---|---|---|---|---|
+| μ_g/μ_w = 2 | 1,121 | 1,134 | 1,169 | 1,194 |
+| μ_g/μ_w = 1 | 1,057 | 1,035 | 1,032 | 1,035 |
+
+Le gain vient des raideurs égales ; à μ_g/μ_w = 2, l'incompressibilité seule dégrade l'écart
+(plis un peu plus profonds, 1,17 → 1,21 mm). Réajustement à SG 30 avec μ_w = μ_g, K = 50
+(`tools/material_fit.sh`, même protocole, `--keep-best`) : 1,035 → 1,030 mm (itéré 9), puis dérive
+vers le haut ; champ a modifié de 0,9 % en rms (corrélation 0,9998), coefficients de la loi de 2 %.
+La croissance inférée ne dépend pas du matériau.
+
+Chaîne complète rééquilibrée (μ_w = μ_g, K = 50 μ_g), `tools/material_eval.py` :
+
+| SG | 2 / K 5 (mm) | 1 / K 50 (mm) | profondeur, avant / après / atlas | corr. H | J cortex p50 | J < 0,7 |
+|---|---|---|---|---|---|---|
+| 28 | 0,751 | 0,689 | 0,90 / 0,89 / 1,03 | 0,901 → 0,904 | 0,995 | 0,0 % |
+| 29 | 0,894 | 0,824 | 1,03 / 1,01 / 1,19 | 0,899 → 0,902 | 0,994 | 0,1 % |
+| 30 | 1,121 | 1,035 | 1,17 / 1,15 / 1,41 | 0,901 → 0,905 | 0,992 | 0,2 % |
+| 31 | 1,377 | 1,268 | 1,31 / 1,28 / 1,65 | 0,906 → 0,911 | 0,990 | 0,3 % |
+| 32 | 1,563 | 1,522 | 1,44 / 1,43 / 1,85 | 0,908 → 0,912 | 0,989 | 0,5 % |
+| 33 | 1,757 | 1,719 | 1,51 / 1,49 / 2,02 | 0,876 → 0,883 | 0,988 | 0,6 % |
+| 34 | 1,908 | 1,875 | 1,56 / 1,54 / 2,16 | 0,857 → 0,864 | 0,987 | 0,7 % |
+| 35 | 2,014 | 1,966 | 1,60 / 1,57 / 2,27 | 0,857 → 0,865 | 0,986 | 0,8 % |
+| 36 | 2,096 | 2,041 | 1,68 / 1,66 / 2,36 | 0,874 → 0,882 | 0,985 | 0,9 % |
+
+Contraintes (× μ_g, médianes, SG 30 / SG 36) : cortex aux crêtes −0,19 / −0,41, aux fonds
+−1,38 / −2,24 ; cœur (< 3 mm) sous les fonds +0,59 / +0,92, sous les crêtes −0,05 / −0,10. Mêmes
+signes qu'avec K = 5, compressions plus fortes : le cortex ne peut plus perdre de volume
+(`out/gallery/stress_sg30_real.png`, `stress_sg36_real.png`).

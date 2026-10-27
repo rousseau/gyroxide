@@ -2,7 +2,7 @@
 stress (along the cortex, in the section plane) and radial stress (along the growth normal), with
 the atlas pial contour overlaid; plus statistics of the stress at gyral crowns and sulcal fundi.
 
-    python3 tools/stress_section.py out/stress/lbm30 30 out/gallery/stress_sg30.png
+    python3 tools/stress_section.py out/stress/lbm30 30 out/gallery/stress_sg30.png ["material label"]
 Stress in units of the grey-matter shear modulus mu_g (Cauchy, tension > 0).
 """
 import json
@@ -57,6 +57,7 @@ def contour(v, faces, x0):
 
 def main():
     run, w, out = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+    mat = sys.argv[4] if len(sys.argv) > 4 else "μ_g/μ_w = 2, K = 5 μ_g"
     meta = json.loads(Path("data/meshes/w21_left_610k_s.json").read_text())
     ns, mm = meta["n_surface"], meta["maxd_mm"]
     _, tets, _, _, _ = read_mesh("data/meshes/w21_left_610k_s.mesh")
@@ -120,7 +121,7 @@ def main():
             if j == 2:
                 cb = fig.colorbar(pc, ax=ax, fraction=0.04, pad=0.02)
                 cb.set_label("× μ_g (traction > 0, compression < 0)", fontsize=11, color=INK2)
-    fig.text(0.01, 0.99, f"SG {w} · modèle enrichi (étape 5), coupes coronales à l’équilibre ; trait noir : surface piale de l’atlas",
+    fig.text(0.01, 0.99, f"SG {w} · modèle enrichi (étape 5), {mat}, coupes coronales à l’équilibre ; trait noir : surface piale de l’atlas",
              fontsize=15, color=INK2, va="top")
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     fig.savefig(out, facecolor=BG)
