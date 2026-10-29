@@ -55,6 +55,7 @@ def main():
     ap.add_argument("--fallback-relax", type=int, default=3000)
     ap.add_argument("--ftol", type=float, default=1e-4, help="or converged if final |F| <= ftol")
     ap.add_argument("--resume", type=int, default=0, help="first week to compute; earlier weeks are read back from <out>")
+    ap.add_argument("--extra", default="", help="more adjoint_week options, e.g. \"--lm --newton-cg 1500\"")
     args = ap.parse_args()
 
     out = ROOT / args.out
@@ -96,7 +97,7 @@ def main():
             cmd = [str(ROOT / args.bin), args.config, args.mesh, str(ck), f"{args.prep}/w{w}", str(W / "eq"),
                    "--rigid", "--multiscale", "200:0,50:0,10:0,0:0", "--cumulative", "--theta0-table",
                    "--relax0", "0", "--newton", str(args.newton), "--min-growth", "0", "--inverse-eq", str(ck / "x.npy"),
-                   "--iters", "0", "--release-relax", str(relax), "--core-override", str(W / "core_eff.npy")]
+                   "--iters", "0", "--release-relax", str(relax), "--core-override", str(W / "core_eff.npy")] + args.extra.split()
             with open(W / f"run{tag}.log", "w") as f:
                 r = subprocess.run(cmd, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
             text = (W / f"run{tag}.log").read_text().splitlines()

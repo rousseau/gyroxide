@@ -735,3 +735,28 @@ Contraintes (× μ_g, médianes, SG 30 / SG 36) : cortex aux crêtes −0,19 / �
 −1,38 / −2,24 ; cœur (< 3 mm) sous les fonds +0,59 / +0,92, sous les crêtes −0,05 / −0,10. Mêmes
 signes qu'avec K = 5, compressions plus fortes : le cortex ne peut plus perdre de volume
 (`out/gallery/stress_sg30_real.png`, `stress_sg36_real.png`).
+
+Réajustement de chaque semaine avec μ_w = μ_g, K = 50 (`tools/material_fit.sh`, depuis l'état
+rééquilibré, `--keep-best`, `out/material/fit<SG>_1_50`), écart rigide de départ → final :
+SG 28 0,689 → 0,664 ; 29 0,824 → 0,816 ; 30 1,035 → 1,030 ; 31 1,269 → 1,268 ; 32 1,522 → 1,522 ;
+33 1,719 → 1,718 ; 34 1,876 → 1,875 ; 35 1,977 → 1,977 (départ recalculé : 1,966 par la
+continuation, 0,01 mm d'écart de chemin). La croissance inférée ne dépend pas du matériau.
+
+Chaîne refaite intégralement avec ce matériau (`tools/real_chain.sh`, 28–29 octobre) :
+
+- Référence (croissance mesurée) enchaînée semaine après semaine (`tools/remodel_chain.py
+  --extra "--lm ..."`, out/real/ref_direct) : SG 22, 23 convergent, SG 24 cale (|F| 0,14 → 4,7·10⁻³,
+  un élément retourné ; la relaxation amortie de secours diverge en NaN). Défaut corrigé au passage :
+  `--lm` comptait les hausses du décalage sur toute la résolution, pas à la suite (arrêt après 21
+  itérations de Newton). Référence obtenue à la place par continuation en matériau de chaque
+  équilibre de out/remodel_a0 (`tools/material_ref.sh`, out/real/ref) : 0,203 / 0,528 / 0,845 /
+  1,182 / 1,852 / 2,757 mm à SG 24 / 26 / 27 / 28 / 30 / 36 (contre 0,213 / 0,532 / 0,842 / 1,176 /
+  1,866 / 2,806) : la référence est presque insensible au matériau.
+- SG 27 : départ de l'état de référence avec la croissance ajustée non convergé (93 éléments
+  retournés) ; depuis l'état ajusté de fit27_lb40 continué en K : 0,671 → 0,639 mm, puis réajusté
+  0,568 mm (60 itérations de plus qu'avant).
+- SG 28–36 (`tools/full_chain.sh`, DATA=data/full_real) : SG 28 0,699 mm, mais à partir de SG 29
+  l'équilibre de départ de la semaine ne converge plus (SG 30 : |F| 0,29 → 0,058 ; SG 33 : 0,40 →
+  0,21) ; l'adjoint sur ces états hors équilibre échoue (CG résidu 1) et θ ne bouge pas. Chaîne
+  arrêtée. Le saut d'une semaine de croissance dans un tissu quasi incompressible demande une
+  continuation en temps (`tools/time_ramp.sh`), non tentée.

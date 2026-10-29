@@ -665,8 +665,11 @@ impl Problem {
                 raised += 1;
                 continue;
             }
-            if accepted && sigma > self.sigma {
-                sigma = (sigma / 3.0).max(self.sigma);
+            if accepted {
+                raised = 0; // at most 6 raises in a row, not per solve
+                if sigma > self.sigma {
+                    sigma = (sigma / 3.0).max(self.sigma);
+                }
             }
             if !accepted || rn < (1e-3 * r0).max(self.force_tol) {
                 break;

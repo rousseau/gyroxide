@@ -8,7 +8,7 @@ writes <slab>/slab.nodal_a.carry_<name>.npy, <slab>/ckpt_w<w+1>_from_<name>/ and
 configs/mu_test/mu2_slab_<region>_carry_<name>.toml (region: slab directory name after "slab_").
 With [prev], the fit of week w used the carried table of an earlier link <prev> (several weeks).
 data/full (tools/make_full.py) is the whole hemisphere: its table is the mesh one and its config
-configs/mu_test/mu2_full.toml.
+configs/mu_test/mu2_full.toml (data/full_<x>: configs/mu_test/mu2_full_<x>.toml).
 """
 import shutil
 import sys
@@ -25,7 +25,7 @@ def last_x(run):
 def main():
     slab, w, run, name = Path(sys.argv[1]), int(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
     row = w - 21                                    # one knot per week from SG 21
-    full = slab.name == "full"
+    full = slab.name == "full" or slab.name.startswith("full_")
     table = Path("data/meshes/w21_left_610k_s.nodal_a.npy") if full else slab / "slab.nodal_a.npy"
     prev = sys.argv[5] if len(sys.argv) > 5 else None
     a = np.load(slab / f"slab.nodal_a.carry_{prev}.npy" if prev else table)
@@ -43,7 +43,7 @@ def main():
     x = last_x(run) + np.load(slab / f"ckpt_w{w + 1}" / "x.npy") - np.load(slab / f"ckpt_w{w}" / "x.npy")
     np.save(ck / "x.npy", np.ascontiguousarray(x))
 
-    stem = "mu2_full" if full else f"mu2_slab_{slab.name.removeprefix('slab_')}"
+    stem = f"mu2_{slab.name}" if full else f"mu2_slab_{slab.name.removeprefix('slab_')}"
     base = Path(f"configs/mu_test/{stem}.toml").read_text()
     old = f'a = "{table}"'
     assert old in base, old
