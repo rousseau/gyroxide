@@ -739,7 +739,7 @@ signes qu'avec K = 5, compressions plus fortes : le cortex ne peut plus perdre d
 Réajustement de chaque semaine avec μ_w = μ_g, K = 50 (`tools/material_fit.sh`, depuis l'état
 rééquilibré, `--keep-best`, `out/material/fit<SG>_1_50`), écart rigide de départ → final :
 SG 28 0,689 → 0,664 ; 29 0,824 → 0,816 ; 30 1,035 → 1,030 ; 31 1,269 → 1,268 ; 32 1,522 → 1,522 ;
-33 1,719 → 1,718 ; 34 1,876 → 1,875 ; 35 1,977 → 1,977 (départ recalculé : 1,966 par la
+33 1,719 → 1,718 ; 34 1,876 → 1,875 ; 35 1,977 → 1,977 ; 36 2,043 → 2,039 (départ recalculé : 1,966 par la
 continuation, 0,01 mm d'écart de chemin). La croissance inférée ne dépend pas du matériau.
 
 Chaîne refaite intégralement avec ce matériau (`tools/real_chain.sh`, 28–29 octobre) :
