@@ -174,7 +174,7 @@ T 1,43 → 1,10 mm de SG 21 à 36.
 | 5 · loi + cœur lobaire | 1,18 (27–36) | — / +0,017 / +0,015 |
 | 5 · idem, matériau réaliste | 1,23 | — / +0,029 / +0,033 |
 
-Rapports au modèle de l'atlas, A_t / A_e / T :
+Rapports à l'atlas, A_t / A_e / T :
 
 | | SG 26 | SG 30 | SG 36 |
 |---|---|---|---|
