@@ -194,3 +194,32 @@ Rapports à l'atlas, A_t / A_e / T :
   SG 36 sans ajustement, −15 % ajusté ; il s'épaissit d'autant plus que le tissu est incompressible
   (réaliste : +45 à +54 %). Cause à trancher : compression élastique tangentielle du cortex, ou
   croissance pondérée par g < 1 dans la profondeur de la couche (modèle de Tallinen).
+
+### Origine du déficit d'aire (tools/area_budget.py)
+
+Par sommet du cortex, l'aire de SG 21 multipliée par la croissance tangentielle du modèle,
+(1 + g_m a)^2 avec g_m et a ceux du tétraèdre qui porte le triangle (aire prescrite), comparée à
+l'aire de l'atlas et à l'aire réalisée (référence à croissance mesurée, out/remodel_a0 et out/real/ref).
+
+| SG | prescrite / atlas | réalisée / prescrite | idem, réaliste | p10 / p50 / p90 par sommet |
+|---|---|---|---|---|
+| 24 | 0,999 | 0,985 | 0,984 | 0,97 / 0,99 / 1,00 |
+| 26 | 0,996 | 0,957 | 0,954 | 0,92 / 0,96 / 0,98 |
+| 28 | 0,993 | 0,901 | 0,895 | 0,84 / 0,91 / 0,95 |
+| 30 | 0,989 | 0,838 | 0,828 | 0,75 / 0,85 / 0,91 |
+| 33 | 0,985 | 0,764 | 0,750 | 0,66 / 0,77 / 0,87 |
+| 36 | 0,983 | 0,731 | 0,716 | 0,62 / 0,73 / 0,84 |
+
+- La loi de croissance prescrit bien l'aire de l'atlas (−1,7 % à SG 36 : pondération g_m et moyenne
+  sur le tétraèdre) ; la seconde hypothèse est écartée.
+- Le déficit est élastique : la surface est comprimée tangentiellement, de plus en plus avec l'âge
+  (aire à 73 % de l'aire prescrite à SG 36, soit −15 % en longueur), un peu plus avec le matériau
+  réaliste. Le cortex ne plisse pas assez pour loger la surface qu'il fabrique.
+- L'épaisseur en excès en est le pendant : le produit aire × épaisseur reste proche de l'atlas
+  (0,94 ; réaliste 1,02 à SG 36), le cortex comprimé s'épaissit à volume à peu près conservé.
+- La compression est la plus forte sur les crêtes des gyri et là où la croissance est la plus rapide :
+  à SG 36, aire réalisée / atlas 0,66 à moins de 1 mm de l'enveloppe convexe, 0,73 à 0,77 plus
+  profond ; corrélation de Spearman avec a, −0,28.
+- Conséquence : la profondeur plafonnée et le déficit d'aire sont un même défaut, un plissement
+  insuffisant pour la croissance imposée. Pistes : contrainte du cœur trop forte (rigidité, croissance
+  du cœur), rapport des modules, ou relaxation (remodelage) des contraintes dans le cortex.
