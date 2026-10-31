@@ -372,6 +372,14 @@ pub enum GrowthMask {
     TallinenEllipsoid,
     /// One value per node, whitespace-separated text file.
     File { path: String },
+    /// One value per node, from a node field of the initial `.vtu` (e.g. `cortex`, 0 on the medial
+    /// wall, written by `gyroxide mesh`). Only the name is saved; the values are filled when the mesh
+    /// is read (see [`GrowthMask::fill_field`]).
+    MeshField {
+        name: String,
+        #[serde(skip)]
+        values: Vec<f64>,
+    },
 }
 
 impl GrowthMask {
@@ -394,7 +402,40 @@ impl GrowthMask {
                 }
                 Ok(v)
             }
+            GrowthMask::MeshField { name, values } => {
+                if values.len() != nodes.len() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "growth mask field '{name}': {} values for {} nodes",
+                            values.len(),
+                            nodes.len()
+                        ),
+                    ));
+                }
+                Ok(values.iter().map(|v| v.clamp(0.0, 1.0)).collect())
+            }
         }
+    }
+
+    /// For [`GrowthMask::MeshField`], takes its values among the node fields of the mesh, given as
+    /// (name, values); does nothing for the other masks.
+    pub fn fill_field<'a>(&mut self, fields: impl IntoIterator<Item = (&'a str, &'a [f64])>) -> Result<(), String> {
+        let GrowthMask::MeshField { name, values } = self else {
+            return Ok(());
+        };
+        let mut available = Vec::new();
+        for (n, v) in fields {
+            if n == name {
+                *values = v.to_vec();
+                return Ok(());
+            }
+            available.push(n.to_string());
+        }
+        Err(format!(
+            "growth mask: no node field '{name}' in the mesh (fields: {})",
+            available.join(", ")
+        ))
     }
 }
 
@@ -421,6 +462,29 @@ mod tests {
             mu_white: None,
             ga_weeks: None,
         }
+    }
+
+    #[test]
+    fn mesh_field_mask_is_filled_from_the_mesh_fields() {
+        let nodes = [[0.0; 3]; 3];
+        let mut m = GrowthMask::MeshField {
+            name: "cortex".into(),
+            values: Vec::new(),
+        };
+        assert!(m.evaluate(&nodes).is_err());
+        let gray = [1.0, 1.0, 0.0];
+        let cortex = [1.0, 0.0, 2.0];
+        assert!(m.fill_field([("gray_matter", &gray[..])]).is_err());
+        m.fill_field([("gray_matter", &gray[..]), ("cortex", &cortex[..])])
+            .unwrap();
+        assert_eq!(m.evaluate(&nodes).unwrap(), vec![1.0, 0.0, 1.0]);
+        // Only the name is saved with the parameters.
+        let text = toml::to_string(&m).unwrap();
+        assert!(!text.contains("values"), "{text}");
+        let back: GrowthMask = toml::from_str(&text).unwrap();
+        assert!(
+            matches!(back, GrowthMask::MeshField { ref name, ref values } if name == "cortex" && values.is_empty())
+        );
     }
 
     #[test]
