@@ -223,3 +223,40 @@ l'aire de l'atlas et à l'aire réalisée (référence à croissance mesurée, o
 - Conséquence : la profondeur plafonnée et le déficit d'aire sont un même défaut, un plissement
   insuffisant pour la croissance imposée. Pistes : contrainte du cœur trop forte (rigidité, croissance
   du cœur), rapport des modules, ou relaxation (remodelage) des contraintes dans le cortex.
+
+Bilan d'aire des modèles ajustés (a ajusté, theta_full.npy) : ils prescrivent 5,5 % d'aire de plus que
+l'atlas à SG 36 (1,055) et sont moins comprimés (réalisée / prescrite 0,80 contre 0,73) ; le gain
+d'aire (0,72 → 0,85 de l'atlas) vient pour moitié de chacun. La carte inférée surestime donc un
+peu la croissance tangentielle.
+
+### Leviers du plissement (tools/perturb_eq.sh, tools/lever_eq.sh, tools/fold_quick.py)
+
+Référence à croissance mesurée (μ_g/μ_w = 2, K = 5), un paramètre changé par continuation depuis son
+équilibre, à SG 30 et 36. Rapports à l'atlas : aire corticale, aire de l'enveloppe, profondeur
+moyenne à l'enveloppe ; écart rigide en mm.
+
+| SG 36 | aire | enveloppe | profondeur | écart |
+|---|---|---|---|---|
+| référence | 0,718 | 0,930 | 0,588 | 2,81 |
+| perturbée 0,3 mm, rééquilibrée | 0,718 | 0,930 | 0,588 | 2,81 |
+| μ_w = 0,25 (rapport 4) | 0,755 | 0,956 | 0,669 | 2,97 |
+| μ_w = 0,125 (rapport 8) | 0,796 | 0,985 | 0,750 | 3,23 |
+| cœur × 1,25 | 0,781 | 1,038 | 0,548 | 3,68 |
+| cœur × 0,75 / × 0,5 | 0,714 / 0,706 | 0,922 / 0,898 | 0,596 / 0,626 | non convergé |
+
+À SG 30 : rapport 8, aire 0,829 → 0,871, profondeur 0,69 → 0,80, écart 1,87 → 1,99 mm ; cœur × 1,25,
+aire 0,890 mais enveloppe 1,02 et profondeur 0,66.
+
+- Stabilité : l'équilibre de SG 36 perturbé (champ lisse aléatoire, 0,3 mm rms, longueur d'onde 6 mm)
+  revient exactement au même état. Le déficit n'est pas un artefact de suivi de branche du solveur.
+  À SG 30 le rééquilibrage n'a pas convergé (165 éléments inversés), et 1 mm casse le maillage :
+  non concluant.
+- Le rapport des raideurs est le levier de la quantité de plissement : un cœur 4 fois plus mou que le
+  cortex rend un tiers de l'aire manquante et porte la profondeur moyenne de 59 à 75 % de l'atlas.
+  Mais l'écart à l'atlas augmente (2,81 → 3,23 mm) : à croissance mesurée inchangée, les plis
+  supplémentaires ne sont pas aux bons endroits ou déforment les lobes. À tester avec un réajustement.
+- La croissance du cœur n'est pas le bon levier : plus forte, elle gonfle l'enveloppe (aire gagnée
+  par dilatation, plis moins profonds, écart 3,68 mm) ; plus faible, l'aire baisse encore
+  (équilibres non convergés, tendance seulement).
+- Les rééquilibrages loin de l'équilibre de départ sont lents (30 min à 2 h contre 2 min), d'où un
+  balayage limité à deux semaines.

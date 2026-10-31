@@ -8,6 +8,8 @@ Per cortex vertex, three areas at week w:
   realized   the vertex area of the model's outer surface.
 prescribed / atlas measures the growth law (cortical weight, mask, averaging over the tetrahedron);
 realized / prescribed the elastic tangential stretch of the surface (< 1: compression).
+Reference runs: a from the measured table; fitted runs (step 5): a = the fitted theta of the owner
+surface vertex (<run>/theta_full.npy, as in adjoint_week).
 
     python3 tools/area_budget.py [out/area_budget.json]
 """
@@ -19,11 +21,13 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from mota_law import MESHES, ROOT, tri_areas, vertex_areas  # noqa: E402
+from mota_law import MESHES, ROOT, STEPS, last_x, tri_areas, vertex_areas  # noqa: E402
 
-RUNS = {
-    "croissance mesurée (cœur)": "out/remodel_a0/w{w}/eq/x_released.npy",
-    "idem, matériau réaliste": "out/real/ref/w{w}/eq/x_released.npy",
+RUNS = {     # label -> (week -> run), fitted (a from the run) or not (a from the measured table)
+    "croissance mesurée (cœur)": (STEPS["2 · croissance mesurée (cœur)"], False),
+    "idem, matériau réaliste": (STEPS["2 · idem, matériau réaliste"], False),
+    "ajusté (loi + cœur lobaire)": (STEPS["5 · loi + cœur lobaire"], True),
+    "ajusté, matériau réaliste": (STEPS["5 · idem, matériau réaliste"], True),
 }
 
 
@@ -40,6 +44,7 @@ def main():
     A = np.load(ROOT / "data/meshes/w21_left_610k_s.nodal_a.npy")
     h21 = np.load(ROOT / "data/meshes/w21_left_610k_s.nodal_h.npy")[0]
     gr = np.loadtxt(ROOT / "data/meshes/w21_left_610k_s.gr.txt")
+    owner_v = np.load(ROOT / "data/adjoint_prep_s/w22/owner.npy").astype(np.int64)
 
     # owning tetrahedron of each surface triangle
     key = lambda t: (t[:, 0] * n + t[:, 1]) * n + t[:, 2]
@@ -60,25 +65,30 @@ def main():
     for w in range(22, 37):
         y = np.load(ROOT / f"data/adjoint_prep_s/w{w}/target.npy")[:ns]
         va_atlas = vertex_areas(y, faces, ns)
-        ta = A[w - 21][tets[owner]].mean(1)
-        presc = np.zeros(ns)
-        for k in range(3):
-            np.add.at(presc, faces[:, k], a21 * (1 + g * ta) ** 2 / 3)
+        def prescribed(a_node):
+            ta = a_node[tets[owner]].mean(1)
+            v = np.zeros(ns)
+            for k in range(3):
+                np.add.at(v, faces[:, k], a21 * (1 + g * ta) ** 2 / 3)
+            return v
+
+        presc = prescribed(A[w - 21])
         row = {"atlas": va_atlas[cortex].sum() * mm ** 2, "prescribed": presc[cortex].sum() * mm ** 2}
-        for label, run in RUNS.items():
-            p = ROOT / run.format(w=w)
-            if not p.exists():
+        for label, (runs, fitted) in RUNS.items():
+            if w not in runs or not (ROOT / runs[w]).exists():
                 continue
-            va = vertex_areas(np.load(p)[:ns], faces, ns)
-            r = va[cortex] / presc[cortex]
-            row[label] = {"realized": va[cortex].sum() * mm ** 2,
+            pr = prescribed(np.load(ROOT / runs[w] / "theta_full.npy")[:ns][owner_v]) if fitted else presc
+            va = vertex_areas(last_x(runs[w])[:ns], faces, ns)
+            r = va[cortex] / pr[cortex]
+            row[label] = {"prescribed": pr[cortex].sum() * mm ** 2, "realized": va[cortex].sum() * mm ** 2,
                           "stretch_p10_p50_p90": np.percentile(r, [10, 50, 90]).tolist()}
         res[w] = row
-        cells = [f"SG {w}: presc/atlas {row['prescribed'] / row['atlas']:.3f}"]
+        cells = [f"SG {w}"]
         for label in RUNS:
             if label in row:
                 q = row[label]
-                cells.append(f"{label[:10]} real/presc {q['realized'] / row['prescribed']:.3f} "
+                cells.append(f"{label[:12]} presc/atlas {q['prescribed'] / row['atlas']:.3f} "
+                             f"real/presc {q['realized'] / q['prescribed']:.3f} "
                              f"real/atlas {q['realized'] / row['atlas']:.3f} "
                              f"[{' '.join(f'{v:.2f}' for v in q['stretch_p10_p50_p90'])}]")
         print(" | ".join(cells))
