@@ -251,8 +251,8 @@ aire 0,890 mais enveloppe 1,02 et profondeur 0,66.
   revient exactement au même état. Le déficit n'est pas un artefact de suivi de branche du solveur.
   À SG 30 le rééquilibrage n'a pas convergé (165 éléments inversés), et 1 mm casse le maillage :
   non concluant.
-- Le rapport des raideurs est le levier de la quantité de plissement : un cœur 4 fois plus mou que le
-  cortex rend un tiers de l'aire manquante et porte la profondeur moyenne de 59 à 75 % de l'atlas.
+- Le rapport des raideurs est le levier de la quantité de plissement : un cœur 8 fois plus mou que le
+  cortex rend plus d'un quart de l'aire manquante et porte la profondeur moyenne de 59 à 75 % de l'atlas.
   Mais l'écart à l'atlas augmente (2,81 → 3,23 mm) : à croissance mesurée inchangée, les plis
   supplémentaires ne sont pas aux bons endroits ou déforment les lobes. À tester avec un réajustement.
 - La croissance du cœur n'est pas le bon levier : plus forte, elle gonfle l'enveloppe (aire gagnée
