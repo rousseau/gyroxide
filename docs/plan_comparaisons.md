@@ -260,3 +260,30 @@ aire 0,890 mais enveloppe 1,02 et profondeur 0,66.
   (équilibres non convergés, tendance seulement).
 - Les rééquilibrages loin de l'équilibre de départ sont lents (30 min à 2 h contre 2 min), d'où un
   balayage limité à deux semaines.
+
+### Cœur plus mou avec le modèle ajusté (SG 30, out/soft)
+
+Modèle ajusté de SG 30 (out/full/fit30_lbm, μ_g/μ_w = 2, K = 5) rééquilibré à croissance ajustée
+inchangée avec μ_w = 0,25 puis 0,125 (tools/stress_run.sh, continuation), puis réajusté
+(tools/material_fit.sh). Rapports à l'atlas (tools/fold_quick.py) ; la croissance prescrite est
+celle de l'ajustement, 1,054 fois l'aire de l'atlas.
+
+| SG 30 | écart rigide | aire | enveloppe | profondeur moyenne / p90 |
+|---|---|---|---|---|
+| ajusté, μ_g/μ_w = 2 | 1,121 mm | 0,928 | 0,988 | 0,90 / 0,95 |
+| ajusté réaliste réajusté, μ_g/μ_w = 1, K = 50 | 1,030 | 0,922 | 0,985 | 0,88 / 0,94 |
+| idem μ_g/μ_w = 4, non réajusté | 1,344 | 0,955 | 1,001 | 0,97 / 0,98 |
+| μ_g/μ_w = 4, réajusté, 26 itérations | 1,368 | 0,961 | 1,006 | 0,97 / 0,99 |
+| μ_g/μ_w = 8, non réajusté | 1,599 | 0,980 | 1,013 | 1,02 / 1,01 |
+
+- Avec un cœur 8 fois plus mou, le modèle ajusté plisse autant que l'atlas (aire 0,98, profondeur
+  moyenne 1,02) mais s'en écarte davantage (1,60 mm) : la quantité de plissement est réglée par le
+  rapport des raideurs, sa géométrie non.
+- Le réajustement adjoint ne rattrape pas l'écart : l'écart rigide dérive de 1,344 à 1,368 mm en
+  26 itérations (perte totale −2 %), arrêté là. Avec un cœur plus mou, K devient indéfini près de
+  l'équilibre (courbure négative dans le CG adjoint, arrêté à 73 itérations, résidu 8e-2) ; il faut
+  un décalage --shift 0.1 (σ = 0,1 × quotient de Rayleigh, 100 fois le défaut) pour que le CG
+  converge (résidu 1e-4), au prix d'un gradient approché. Le modèle est alors au bord du flambage.
+- Un réajustement local depuis la carte ajustée avec un autre matériau ne peut pas trancher (le
+  réajustement au matériau réaliste n'avait gagné que 0,005 mm) : il faudrait refaire la chaîne
+  ajustée depuis SG 27, plusieurs jours de calcul.
