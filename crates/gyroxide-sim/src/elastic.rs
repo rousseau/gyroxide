@@ -20,6 +20,8 @@ pub struct ElasticOutput<B: Backend> {
     pub gm: T1<B>,
     /// Elastic energy and number of inverted elements, when requested.
     pub energy: Option<(T1<B>, T1<B>)>,
+    /// Cauchy stress of the regular branch and J = det F per tetrahedron, with the energy.
+    pub stress: Option<(M3<B>, T1<B>)>,
 }
 
 /// Sums per-vertex tetrahedral contributions into nodes through the ELL
@@ -90,7 +92,7 @@ pub fn forces_with<B: Backend>(
     thickness: &Thickness<B>,
     with_energy: bool,
 ) -> ElasticOutput<B> {
-    forces_impl(pre, mat, x, growth_prev, None, thickness, with_energy, false)
+    forces_impl(pre, mat, x, growth_prev, None, None, None, thickness, with_energy, false)
 }
 
 /// [`forces_with`] with an anisotropic growth tensor T per tetrahedron:
@@ -104,7 +106,7 @@ pub fn forces_tensor<B: Backend>(
     thickness: &Thickness<B>,
     with_energy: bool,
 ) -> ElasticOutput<B> {
-    forces_impl(pre, mat, x, growth_prev, Some(tensor), thickness, with_energy, false)
+    forces_impl(pre, mat, x, growth_prev, Some(tensor), None, None, thickness, with_energy, false)
 }
 
 /// Nodal forces from the regular (neo-Hookean) branch only, for every
@@ -117,8 +119,118 @@ pub fn forces_regular<B: Backend>(
     x: &V3<B>,
     growth: &T1<B>,
     thickness: &Thickness<B>,
+    core: Option<&M3<B>>,
+    radial: Option<&T1<B>>,
 ) -> V3<B> {
-    forces_impl(pre, mat, x, growth, None, thickness, false, true).force
+    forces_impl(pre, mat, x, growth, None, core, radial, thickness, false, true).force
+}
+
+/// Elastic forces with every growth term: tangential growth (scalar `growth_prev` along
+/// I - n n^T, or the anisotropic `tensor`), thickening c of the cortex and the growth tensor
+/// U of the core, G = I + g_m a (I - n n^T) + g_m c n n^T + (1 - g_m)(U - I).
+#[allow(clippy::too_many_arguments)]
+pub fn forces_full<B: Backend>(
+    pre: &Precomputed<B>,
+    mat: &Material,
+    x: &V3<B>,
+    growth_prev: &T1<B>,
+    tensor: Option<&M3<B>>,
+    core: Option<&M3<B>>,
+    radial: Option<&T1<B>>,
+    thickness: &Thickness<B>,
+    with_energy: bool,
+) -> ElasticOutput<B> {
+    forces_impl(pre, mat, x, growth_prev, tensor, core, radial, thickness, with_energy, false)
+}
+
+/// Directional derivative dF_reg/dx . v of the regular-branch elastic force (forward mode,
+/// exact): K v = -force_tangent(..). Same growth and thickness conventions as
+/// [`forces_regular`]; elements outside the regular branch use its formula too.
+pub fn force_tangent<B: Backend>(
+    pre: &Precomputed<B>,
+    mat: &Material,
+    x: &V3<B>,
+    v: &V3<B>,
+    growth: &T1<B>,
+    thickness: &Thickness<B>,
+    core: Option<&M3<B>>,
+    radial: Option<&T1<B>>,
+) -> V3<B> {
+    let nt = pre.n_tets;
+    let device = x.x.device();
+    let frob = |a: &M3<B>, b: &M3<B>| -> T1<B> {
+        (0..3)
+            .flat_map(|r| (0..3).map(move |c| (r, c)))
+            .map(|(r, c)| a.get(r, c) * b.get(r, c))
+            .reduce(|s, t| s + t)
+            .unwrap()
+    };
+    let d_over_h = match thickness {
+        Thickness::Uniform(h) => pre.d_mean.clone() / *h,
+        Thickness::PerTet(h) => pre.d_mean.clone() / h.clone(),
+    };
+    let gm = pre.gr_mean.clone() / ((d_over_h - 1.0) * 10.0).exp().add_scalar(1.0);
+    let mu = (gm.clone() * (mat.mu_gray - mat.mu_white)).add_scalar(mat.mu_white);
+    let n = &pre.growth_normal;
+    let nn = M3::from_cols(&n.mul(&n.x), &n.mul(&n.y), &n.mul(&n.z));
+    let eye = M3::<B>::identity(nt, &device);
+    let mut g = eye.add(&eye.sub(&nn).mul_s(growth));
+    if mat.wm_growth != 0.0 {
+        g = g.add(&eye.mul_s(&((-gm.clone()).add_scalar(1.0) * mat.wm_growth)));
+    }
+    if let Some(u) = core {
+        g = g.add(&u.sub(&eye).mul_s(&(-gm.clone()).add_scalar(1.0)));
+    }
+    if let Some(c) = radial {
+        g = g.add(&nn.mul_s(&(gm * c.clone())));
+    }
+    let ar = g.matmul(&pre.ar0);
+
+    let xs: [V3<B>; 4] = std::array::from_fn(|k| x.select(&pre.tet_nodes[k]));
+    let vs: [V3<B>; 4] = std::array::from_fn(|k| v.select(&pre.tet_nodes[k]));
+    let a = M3::from_cols(&xs[1].sub(&xs[0]), &xs[2].sub(&xs[0]), &xs[3].sub(&xs[0]));
+    let da = M3::from_cols(&vs[1].sub(&vs[0]), &vs[2].sub(&vs[0]), &vs[3].sub(&vs[0]));
+
+    // Nodal-averaged J and its derivative (d det A = adj(A)^T : dA).
+    let q0 = ar.det() / 24.0;
+    let q = a.det() / 24.0;
+    let dq = frob(&a.adjugate().transpose(), &da) / 24.0;
+    let vn0 = gather_nodes(pre, [q0.clone(), q0.clone(), q0.clone(), q0]);
+    let vn = gather_nodes(pre, [q.clone(), q.clone(), q.clone(), q]);
+    let dvn = gather_nodes(pre, [dq.clone(), dq.clone(), dq.clone(), dq]);
+    let jn = vn / vn0.clone();
+    let djn = dvn / vn0;
+    let mean4 = |t: &T1<B>| {
+        let s: [T1<B>; 4] = std::array::from_fn(|k| t.clone().select(0, pre.tet_nodes[k].clone()));
+        (s[0].clone() + s[1].clone() + s[2].clone() + s[3].clone()) / 4.0
+    };
+    let ari = ar.inverse();
+    let f = a.matmul(&ari);
+    let df = da.matmul(&ari);
+    let j = f.det();
+    let adjf = f.adjugate();
+    let dj = frob(&adjf.transpose(), &df);
+    let beta = mat.vol_stab;
+    let kja = (mean4(&jn) - 1.0) * (mat.bulk * (1.0 - beta)) + (j.clone() - 1.0) * (mat.bulk * beta);
+    let dkja = mean4(&djn) * (mat.bulk * (1.0 - beta)) + dj.clone() * (mat.bulk * beta);
+    let b = f.matmul(&f.transpose());
+    let db = df.matmul(&f.transpose()).add(&f.matmul(&df.transpose()));
+    let coef = mu / (j.clone() * j.clone().powf_scalar(2.0 / 3.0));
+    let dcoef = coef.clone() * dj.clone() / j.clone() * (-5.0 / 3.0);
+    let dev_b = b.sub(&eye.mul_s(&(b.trace() / 3.0)));
+    let ddev_b = db.sub(&eye.mul_s(&(db.trace() / 3.0)));
+    let sigma = dev_b.mul_s(&coef).add(&eye.mul_s(&kja));
+    let dsigma = dev_b.mul_s(&dcoef).add(&ddev_b.mul_s(&coef)).add(&eye.mul_s(&dkja));
+    // d adj(F) = adj(F) tr(F^-1 dF) - F^-1 dF adj(F), F^-1 = adj(F) / J.
+    let finv = adjf.mul_s(&j.clone().recip());
+    let dadj = adjf.mul_s(&(dj / j.clone())).sub(&finv.matmul(&df).matmul(&adjf));
+    let dp = dsigma.matmul(&adjf.transpose()).add(&sigma.matmul(&dadj.transpose()));
+    // Inverted or collapsed elements (J <= 0): J^(2/3) and 1/J are not finite there; their tangent
+    // is dropped (their force uses the inverted branch) so that NaN does not reach the Newton and
+    // adjoint solves.
+    let bad = j.lower_equal_elem(1e-6);
+    let dp = M3 { m: dp.m.map(|row| row.map(|e| e.mask_fill(bad.clone(), 0.0))) };
+    nodal_forces(pre, &ar, &dp)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -128,6 +240,8 @@ fn forces_impl<B: Backend>(
     x: &V3<B>,
     growth_prev: &T1<B>,
     tensor: Option<&M3<B>>,
+    core: Option<&M3<B>>,
+    radial: Option<&T1<B>>,
     thickness: &Thickness<B>,
     with_energy: bool,
     regular_only: bool,
@@ -147,10 +261,19 @@ fn forces_impl<B: Backend>(
     let n = &pre.growth_normal;
     let nn = M3::from_cols(&n.mul(&n.x), &n.mul(&n.y), &n.mul(&n.z));
     let eye = M3::<B>::identity(nt, &device);
-    let g = match tensor {
+    let mut g = match tensor {
         None => eye.add(&eye.sub(&nn).mul_s(growth_prev)),
         Some(t) => eye.add(&t.mul_s(growth_prev)),
     };
+    if mat.wm_growth != 0.0 {
+        g = g.add(&eye.mul_s(&((-gm.clone()).add_scalar(1.0) * mat.wm_growth)));
+    }
+    if let Some(u) = core {
+        g = g.add(&u.sub(&eye).mul_s(&(-gm.clone()).add_scalar(1.0)));
+    }
+    if let Some(c) = radial {
+        g = g.add(&nn.mul_s(&(gm.clone() * c.clone())));
+    }
     let ar = g.matmul(&pre.ar0);
 
     // Current edges.
@@ -167,11 +290,12 @@ fn forces_impl<B: Backend>(
     let jn = vn.clone() / vn0.clone();
     let js: [T1<B>; 4] = std::array::from_fn(|k| jn.clone().select(0, pre.tet_nodes[k].clone()));
     let ja = (js[0].clone() + js[1].clone() + js[2].clone() + js[3].clone()) / 4.0;
-    let kja = (ja.clone() - 1.0) * mat.bulk; // K (Ja - 1)
-
     // Kinematics.
     let f = a.matmul(&ar.inverse());
     let j = f.det();
+    // K [(1 - beta)(Ja - 1) + beta (J - 1)] (beta = 0: Tallinen's nodal-averaged pressure).
+    let beta = mat.vol_stab;
+    let kja = (ja.clone() - 1.0) * (mat.bulk * (1.0 - beta)) + (j.clone() - 1.0) * (mat.bulk * beta);
     let b = f.matmul(&f.transpose());
     let c = f.transpose().matmul(&f);
     let tr_b = b.trace();
@@ -192,6 +316,7 @@ fn forces_impl<B: Backend>(
             vn,
             gm,
             energy: None,
+            stress: None,
         };
     }
 
@@ -213,7 +338,8 @@ fn forces_impl<B: Backend>(
             .map(|ji| (ji.clone() - 1.0).powf_scalar(2.0))
             .reduce(|s, v| s + v)
             .unwrap()
-            * (0.125 * mat.bulk); // 0.5 K mean((Ji - 1)^2)
+            * (0.125 * mat.bulk * (1.0 - mat.vol_stab)) // 0.5 K (1 - beta) mean((Ji - 1)^2)
+            + (j.clone() - 1.0).powf_scalar(2.0) * (0.5 * mat.bulk * mat.vol_stab);
         let w_reg = (tr_b / pow_j23 - 3.0) * mu.clone() * 0.5;
         let w = w_inv_dev.mask_where(regular.clone(), w_reg) + vol_term;
         let ok = (j.clone() * j.clone()).greater_elem(1e-50);
@@ -227,6 +353,7 @@ fn forces_impl<B: Backend>(
         vn0,
         vn,
         gm,
+        stress: energy.as_ref().map(|_| (sigma, j)),
         energy,
     }
 }

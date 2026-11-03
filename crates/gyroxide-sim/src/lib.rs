@@ -68,6 +68,23 @@ pub struct Simulation<B: Backend> {
     /// Growth g_m a_t held fixed (relaxation at constant growth, adjoint
     /// studies): when set, steps use it and do not advance t.
     growth_fixed: Option<T1<B>>,
+    /// Optional spring w (target - x) on the first nodes (target positions, per-node weight).
+    pull: Option<(V3<B>, T1<B>)>,
+    /// Optional correction of the cortical thickening c per tetrahedron (inverse studies), added
+    /// to c or, with `radial_mult`, multiplicative: 1 + c = (1 + c_scheduled) exp(delta) > 0.
+    radial_delta: Option<T1<B>>,
+    radial_mult: bool,
+    /// Optional isotropic correction delta I added to the core growth tensor U per tetrahedron.
+    core_delta: Option<T1<B>>,
+    /// Optional radial correction delta_r n n^T added to the core growth U per tetrahedron (n: the
+    /// growth normal): with `core_delta`, tangential growth delta and radial growth delta + delta_r.
+    core_delta_radial: Option<T1<B>>,
+    /// Unit normals of the pull targets: if set, springs act along them only (tangential sliding).
+    pull_normals: Option<V3<B>>,
+    /// Optional core growth tensor per tetrahedron replacing the scheduled one (remodelling).
+    core_override: Option<[T1<B>; 6]>,
+    /// Dirichlet nodes: (free mask, 1 free / 0 fixed; prescribed positions of the fixed nodes).
+    dirichlet: Option<(T1<B>, V3<B>)>,
 }
 
 /// Expansion a_t: one value, or one per tetrahedron.
@@ -84,6 +101,8 @@ struct NodalTets<B: Backend> {
     /// Per knot: the 6 components (xx, yy, zz, xy, xz, yz) of the growth tensor
     /// per tetrahedron; empty without anisotropic growth.
     tensor: Vec<[T1<B>; 6]>,
+    /// Per knot: the growth tensor U of the core per tetrahedron; empty if none.
+    core: Vec<[T1<B>; 6]>,
 }
 
 impl<B: Backend> NodalTets<B> {
@@ -99,16 +118,38 @@ impl<B: Backend> NodalTets<B> {
         (lerp(&self.a), lerp(&self.h))
     }
 
+    /// Thickness H of the cortical layer: H(t), or H at the first knot with thickening.
+    fn thickness(&self, t: f64) -> T1<B> {
+        if self.table_t.thickening {
+            self.h[0].clone()
+        } else {
+            self.at(t).1
+        }
+    }
+
+    /// Thickening c = H(t) / H(t_0) - 1 of the cortex, if enabled.
+    fn radial_at(&self, t: f64) -> Option<T1<B>> {
+        self.table_t.thickening.then(|| self.at(t).1 / self.h[0].clone() - 1.0)
+    }
+
     fn tensor_at(&self, t: f64) -> Option<M3<B>> {
-        if self.tensor.is_empty() {
+        self.sym_at(&self.tensor, t)
+    }
+
+    fn core_at(&self, t: f64) -> Option<M3<B>> {
+        self.sym_at(&self.core, t)
+    }
+
+    fn sym_at(&self, rows: &[[T1<B>; 6]], t: f64) -> Option<M3<B>> {
+        if rows.is_empty() {
             return None;
         }
         let (i0, i1, w) = self.table_t.bracket(t);
         let c: [T1<B>; 6] = std::array::from_fn(|k| {
             if i0 == i1 {
-                self.tensor[i0][k].clone()
+                rows[i0][k].clone()
             } else {
-                self.tensor[i0][k].clone() * (1.0 - w) + self.tensor[i1][k].clone() * w
+                rows[i0][k].clone() * (1.0 - w) + rows[i1][k].clone() * w
             }
         });
         let [xx, yy, zz, xy, xz, yz] = c;
@@ -143,6 +184,14 @@ impl<B: Backend> Simulation<B> {
             step: 0,
             nodal: None,
             growth_fixed: None,
+            pull: None,
+            radial_delta: None,
+            radial_mult: false,
+            core_delta: None,
+            core_delta_radial: None,
+            pull_normals: None,
+            core_override: None,
+            dirichlet: None,
         })
     }
 
@@ -165,26 +214,29 @@ impl<B: Backend> Simulation<B> {
         };
         let a = per_tet(&table.a);
         let h = per_tet(&table.h);
-        let tensor = table
-            .tensor
-            .iter()
-            .map(|row| {
-                std::array::from_fn(|k| {
-                    let v: Vec<f64> = self
-                        .mesh
-                        .tets
-                        .iter()
-                        .map(|t| 0.25 * t.iter().map(|&i| row[6 * i as usize + k]).sum::<f64>())
-                        .collect();
-                    floats(&v, &self.device)
+        let sym = |rows: &[Vec<f64>]| -> Vec<[T1<B>; 6]> {
+            rows.iter()
+                .map(|row| {
+                    std::array::from_fn(|k| {
+                        let v: Vec<f64> = self
+                            .mesh
+                            .tets
+                            .iter()
+                            .map(|t| 0.25 * t.iter().map(|&i| row[6 * i as usize + k]).sum::<f64>())
+                            .collect();
+                        floats(&v, &self.device)
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        };
+        let tensor = sym(&table.tensor);
+        let core = sym(&table.core);
         self.nodal = Some(NodalTets {
             table_t: table,
             a,
             h,
             tensor,
+            core,
         });
     }
 
@@ -232,7 +284,7 @@ impl<B: Backend> Simulation<B> {
     fn thickness_at(&self, t: f64) -> elastic::Thickness<B> {
         match &self.nodal {
             None => elastic::Thickness::Uniform(self.params.schedule.thickness(t)),
-            Some(nd) => elastic::Thickness::PerTet(nd.at(t).1),
+            Some(nd) => elastic::Thickness::PerTet(nd.thickness(t)),
         }
     }
 
@@ -243,6 +295,151 @@ impl<B: Backend> Simulation<B> {
         record: bool,
     ) -> (V3<B>, elastic::ElasticOutput<B>) {
         let tensor = self.nodal.as_ref().and_then(|nd| nd.tensor_at(self.t));
+        let material = self.params.material_at(self.t);
+        let core = self.core_growth();
+        let radial = self.radial_growth();
+        let el = elastic::forces_full(
+            &self.pre,
+            &material,
+            x,
+            &self.growth_prev,
+            tensor.as_ref(),
+            core.as_ref(),
+            radial.as_ref(),
+            thickness,
+            record,
+        );
+        let force = self.non_elastic(x).add(&el.force);
+        let force = match &self.dirichlet {
+            Some((free, _)) => force.mul(free),
+            None => force,
+        };
+        (force, el)
+    }
+
+    /// Fixes the nodes where `fixed` is true at `positions` (Dirichlet boundary, e.g. the cut
+    /// faces of a sub-mesh): zero force and velocity there, identity rows in `stiffness_product`.
+    /// The positions are imposed now and by every `set_state`. `None` frees all nodes.
+    pub fn set_dirichlet(&mut self, fixed: Option<(&[bool], &[[f64; 3]])>) {
+        self.dirichlet = fixed.map(|(m, pos)| {
+            let free: Vec<f64> = m.iter().map(|&f| if f { 0.0 } else { 1.0 }).collect();
+            (floats(&free, &self.device), V3::from_rows(pos, &self.device))
+        });
+        self.impose_dirichlet();
+    }
+
+    fn impose_dirichlet(&mut self) {
+        if let Some((free, pos)) = &self.dirichlet {
+            let fixed = free.clone().neg().add_scalar(1.0);
+            self.x = self.x.mul(free).add(&pos.mul(&fixed));
+            self.v = self.v.mul(free);
+        }
+    }
+
+    /// Growth tensor U of the core per tetrahedron at the current time (`core` table).
+    pub fn core_growth(&self) -> Option<M3<B>> {
+        let mut u = match &self.core_override {
+            Some(c) => {
+                let [xx, yy, zz, xy, xz, yz] = c.clone();
+                Some(M3 {
+                    m: [[xx, xy.clone(), xz.clone()], [xy, yy, yz.clone()], [xz, yz, zz]],
+                })
+            }
+            None => self.nodal.as_ref().and_then(|nd| nd.core_at(self.t)),
+        };
+        if let (Some(u), Some(d)) = (u.as_mut(), &self.core_delta) {
+            for k in 0..3 {
+                u.m[k][k] = u.m[k][k].clone() + d.clone();
+            }
+        }
+        if let (Some(u), Some(d)) = (u.as_mut(), &self.core_delta_radial) {
+            let n = &self.pre.growth_normal;
+            let c = [&n.x, &n.y, &n.z];
+            for i in 0..3 {
+                for j in 0..3 {
+                    u.m[i][j] = u.m[i][j].clone() + d.clone() * c[i].clone() * c[j].clone();
+                }
+            }
+        }
+        u
+    }
+
+    /// Core growth tensor U per tetrahedron, row-major [n_tets, 6] (xx, yy, zz, xy, xz, yz),
+    /// replacing the scheduled one (e.g. after absorbing the elastic deformation); `None` restores it.
+    pub fn set_core_override(&mut self, u: Option<&[f64]>) {
+        self.core_override = u.map(|u| {
+            std::array::from_fn(|k| floats(&u.iter().skip(k).step_by(6).copied().collect::<Vec<_>>(), &self.device))
+        });
+    }
+
+    /// Isotropic correction delta I added to the core growth U per tetrahedron; `None` removes it.
+    pub fn set_core_delta(&mut self, delta: Option<&[f64]>) {
+        self.core_delta = delta.map(|d| floats(d, &self.device));
+    }
+
+    /// Radial correction delta_r n n^T added to the core growth U per tetrahedron (anisotropic
+    /// core growth, with `set_core_delta` for the tangential part); `None` removes it.
+    pub fn set_core_delta_radial(&mut self, delta: Option<&[f64]>) {
+        self.core_delta_radial = delta.map(|d| floats(d, &self.device));
+    }
+
+    /// Thickening c of the cortex per tetrahedron at the current time (`thickening`).
+    pub fn radial_growth(&self) -> Option<T1<B>> {
+        let base = self.nodal.as_ref().and_then(|nd| nd.radial_at(self.t));
+        match (base, &self.radial_delta, self.radial_mult) {
+            (Some(c), Some(d), false) => Some(c + d.clone()),
+            (Some(c), Some(d), true) => Some((c + 1.0) * d.clone().exp() - 1.0),
+            (None, Some(d), false) => Some(d.clone()),
+            (None, Some(d), true) => Some(d.clone().exp() - 1.0),
+            (c, None, _) => c,
+        }
+    }
+
+    /// Multiplicative thickening correction (see `radial_delta`): the normal growth stays
+    /// positive whatever the correction, where an added one can turn it negative.
+    pub fn set_radial_mult(&mut self, mult: bool) {
+        self.radial_mult = mult;
+    }
+
+    /// Correction added to the thickening c per tetrahedron; `None` removes it.
+    pub fn set_radial_delta(&mut self, delta: Option<&[f64]>) {
+        self.radial_delta = delta.map(|d| floats(d, &self.device));
+    }
+
+    /// Springs of stiffness `k` pulling the first `target.len()` nodes (the surface nodes) to
+    /// `target`; `None` removes them. Added to every force evaluation and to `stiffness_product`.
+    pub fn set_pull(&mut self, target: Option<(&[[f64; 3]], f64)>) {
+        self.pull = target.map(|(t, k)| {
+            let n = self.pre.n_nodes;
+            let mut rows = vec![[0.0; 3]; n];
+            rows[..t.len()].copy_from_slice(t);
+            let w: Vec<f64> = (0..n).map(|i| if i < t.len() { k } else { 0.0 }).collect();
+            (V3::from_rows(&rows, &self.device), floats(&w, &self.device))
+        });
+    }
+
+    /// Like [`Self::set_pull`] with one stiffness per target node (0: node not pulled).
+    pub fn set_pull_weighted(&mut self, target: &[[f64; 3]], k: &[f64]) {
+        let n = self.pre.n_nodes;
+        let mut rows = vec![[0.0; 3]; n];
+        rows[..target.len()].copy_from_slice(target);
+        let mut w = vec![0.0; n];
+        w[..k.len()].copy_from_slice(k);
+        self.pull = Some((V3::from_rows(&rows, &self.device), floats(&w, &self.device)));
+    }
+
+    /// Normals of the pull targets (first nodes): springs then act along them only, w n n.(t - x),
+    /// so that the nodes slide freely in the tangent plane of their target. `None`: full springs.
+    pub fn set_pull_normals(&mut self, normals: Option<&[[f64; 3]]>) {
+        self.pull_normals = normals.map(|nr| {
+            let mut rows = vec![[0.0; 3]; self.pre.n_nodes];
+            rows[..nr.len()].copy_from_slice(nr);
+            V3::from_rows(&rows, &self.device)
+        });
+    }
+
+    /// Contact and mid-plane forces at `x` (current contact lists).
+    fn non_elastic(&self, x: &V3<B>) -> V3<B> {
         let p = &self.params;
         let (a, k) = (p.dynamics.mesh_spacing, p.material.bulk);
         let hc = p.repulsive_skin();
@@ -257,18 +454,84 @@ impl<B: Backend> Simulation<B> {
                 a,
             ));
         }
-        let material = p.material_at(self.t);
-        let el = match &tensor {
-            None => elastic::forces_with(&self.pre, &material, x, &self.growth_prev, thickness, record),
-            Some(tm) => elastic::forces_tensor(&self.pre, &material, x, &self.growth_prev, tm, thickness, record),
-        };
-        force = force.add(&el.force);
         if let Some(mpy) = p.contact.midplane {
             let (lo, hi) = (&self.pre.midplane_low, &self.pre.midplane_high);
             let fy = contact::midplane_force(&x.y, lo, hi, mpy, hc, k, a, p.contact.midplane_restoring);
             force.y = force.y + fy;
         }
-        (force, el)
+        if let Some((t, w)) = &self.pull {
+            force = force.add(&match &self.pull_normals {
+                None => t.sub(x).mul(w),
+                Some(n) => n.mul(&(t.sub(x).dot(n) * w.clone())),
+            });
+        }
+        force
+    }
+
+    /// Contact and mid-plane forces at `x` (host copy), without the elastic part.
+    pub fn non_elastic_force(&self, x: &[[f64; 3]]) -> Vec<[f64; 3]> {
+        self.non_elastic(&V3::from_rows(x, &self.device)).to_rows()
+    }
+
+    /// K v = -dF/dx . v at `x` with the current growth, contact lists and time: elastic part
+    /// exact (forward mode, regular branch), contact and mid-plane by their linear, symmetric
+    /// (Gauss-Newton) tangents.
+    pub fn stiffness_product(&self, x: &[[f64; 3]], v: &[[f64; 3]]) -> Vec<[f64; 3]> {
+        assert!(
+            self.nodal.as_ref().and_then(|nd| nd.tensor_at(self.t)).is_none(),
+            "stiffness_product: scalar growth only"
+        );
+        let xv = V3::from_rows(x, &self.device);
+        let v_in = V3::from_rows(v, &self.device);
+        let vv = match &self.dirichlet {
+            Some((free, _)) => v_in.mul(free),
+            None => v_in.clone(),
+        };
+        let material = self.params.material_at(self.t);
+        let thickness = self.thickness_at(self.t);
+        let df = elastic::force_tangent(
+            &self.pre,
+            &material,
+            &xv,
+            &vv,
+            &self.growth_prev,
+            &thickness,
+            self.core_growth().as_ref(),
+            self.radial_growth().as_ref(),
+        );
+        let p = &self.params;
+        let (a, k) = (p.dynamics.mesh_spacing, p.material.bulk);
+        let hc = p.repulsive_skin();
+        let mut d = df;
+        if let Some(pairs) = &self.pairs {
+            d = d.add(&contact::penalty_tangent(
+                pairs,
+                &xv,
+                &vv,
+                self.pre.n_nodes,
+                hc,
+                p.contact_stiffness(),
+                a,
+            ));
+        }
+        if let Some(mpy) = p.contact.midplane {
+            let (lo, hi) = (&self.pre.midplane_low, &self.pre.midplane_high);
+            d.y = d.y + contact::midplane_tangent(&xv.y, &vv.y, lo, hi, mpy, hc, k, a, p.contact.midplane_restoring);
+        }
+        if let Some((_, w)) = &self.pull {
+            d = d.sub(&match &self.pull_normals {
+                None => vv.mul(w),
+                Some(n) => n.mul(&(vv.dot(n) * w.clone())),
+            });
+        }
+        let kv = d.neg();
+        match &self.dirichlet {
+            Some((free, _)) => kv
+                .mul(free)
+                .add(&v_in.mul(&free.clone().neg().add_scalar(1.0)))
+                .to_rows(),
+            None => kv.to_rows(),
+        }
     }
 
     pub fn dt(&self) -> f64 {
@@ -349,10 +612,10 @@ impl<B: Backend> Simulation<B> {
                     Expansion::Uniform(p.schedule.expansion(t)),
                 )
             }
-            Some(nd) => {
-                let (a, h) = nd.at(t);
-                (elastic::Thickness::PerTet(h), Expansion::PerTet(a))
-            }
+            Some(nd) => (
+                elastic::Thickness::PerTet(nd.thickness(t)),
+                Expansion::PerTet(nd.at(t).0),
+            ),
         };
 
         self.maybe_rebuild_contact();
@@ -380,6 +643,9 @@ impl<B: Backend> Simulation<B> {
         let damped = force.sub(&self.v.mul(&(el.vn0.clone() * p.dynamics.damping)));
         let inv_m = (el.vn0 * p.dynamics.density).recip() * dt;
         self.v = self.v.add(&damped.mul(&inv_m));
+        if let Some((free, _)) = &self.dirichlet {
+            self.v = self.v.mul(free);
+        }
         self.x = self.x.add(&self.v.mul_scalar(dt));
 
         if !fixed {
@@ -472,6 +738,19 @@ impl<B: Backend> Simulation<B> {
         self.v = V3::from_rows(v, &self.device);
         self.growth_prev = floats(growth_prev, &self.device);
         self.x_surf_old = None;
+        self.impose_dirichlet();
+    }
+
+    /// Cauchy stress (regular neo-Hookean branch, row-major 3x3), J = det F and the cortical
+    /// indicator g_m per tetrahedron at the current positions and growth.
+    pub fn stress(&self) -> (Vec<[f64; 9]>, Vec<f64>, Vec<f64>) {
+        let (_, el) = self.compute_force(&self.x, &self.thickness_at(self.t), true);
+        let (sigma, j) = el.stress.expect("stress is computed with the energy");
+        let comps: Vec<Vec<f64>> = sigma.m.iter().flatten().map(|c| to_f64(c.clone())).collect();
+        let s = (0..comps[0].len())
+            .map(|t| std::array::from_fn(|k| comps[k][t]))
+            .collect();
+        (s, to_f64(j), to_f64(el.gm))
     }
 
     /// g_m a_t of the previous step per tetrahedron (one readback), for checkpoints.

@@ -63,11 +63,27 @@ pub enum Schedule {
         /// outputs report the age by linear interpolation (`n/a` without it).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ga_weeks: Option<Vec<f64>>,
+        /// Optional growth tensors U of the core: NPY [n_knots, n_nodes, 6] (xx, yy, zz, xy,
+        /// xz, yz), G = I + g_m a (I - n n^T) + (1 - g_m)(U - I) (tools/atlas_core_tensors.py).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        core: Option<String>,
+        /// Thickening of the cortex: the cortical layer (g_m) is set once by H at the first
+        /// knot, and that material grows along the normal by c = H(t) / H(t_0) - 1,
+        /// G += g_m c n n^T (instead of moving the layer boundary with H(t)).
+        #[serde(default, skip_serializing_if = "is_false")]
+        thickening: bool,
+        /// Optional isotropic growth b of the core per knot (`Material::wm_growth`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wm_growth: Option<Vec<f64>>,
     },
 }
 
 fn one() -> f64 {
     1.0
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 impl Schedule {
@@ -126,6 +142,18 @@ impl Schedule {
         }
     }
 
+    /// Isotropic growth of the core at t (`wm_growth` table of the nodal law).
+    pub fn wm_growth(&self, t: f64) -> Option<f64> {
+        match self {
+            Schedule::Nodal {
+                t: ts,
+                wm_growth: Some(b),
+                ..
+            } => Some(interpolate(ts, b, t)),
+            _ => None,
+        }
+    }
+
     /// Checks the knots of a tabulated law (the linear law is not checked,
     /// to keep the reference presets untouched).
     pub fn validate(&self) -> Result<(), String> {
@@ -160,10 +188,19 @@ impl Schedule {
             h_scale,
             mu_gray,
             mu_white,
+            wm_growth,
             ..
         } = self
         {
             check_knots(t)?;
+            if let Some(b) = wm_growth {
+                if b.len() != t.len() || b.iter().any(|v| !v.is_finite() || *v <= -1.0) {
+                    return Err(format!(
+                        "nodal schedule: wm_growth needs {} finite values > -1",
+                        t.len()
+                    ));
+                }
+            }
             for (name, v) in [("a_scale", a_scale), ("h_scale", h_scale)] {
                 if !v.is_finite() || *v <= 0.0 {
                     return Err(format!("nodal schedule: {name} must be > 0 (got {v})"));
@@ -252,6 +289,10 @@ pub struct NodalTable {
     pub h: Vec<Vec<f64>>,
     /// Anisotropic growth tensors per knot (6 values per node), empty if none.
     pub tensor: Vec<Vec<f64>>,
+    /// Growth tensors U of the core per knot (6 values per node), empty if none.
+    pub core: Vec<Vec<f64>>,
+    /// Thickening of the cortex (see [`Schedule::Nodal`]).
+    pub thickening: bool,
 }
 
 impl NodalTable {
@@ -259,7 +300,11 @@ impl NodalTable {
     /// against the schedule (knots, scales) and the node count.
     pub fn new(schedule: &Schedule, a: &[f64], h: &[f64], n_nodes: usize) -> Result<Self, String> {
         let Schedule::Nodal {
-            t, a_scale, h_scale, ..
+            t,
+            a_scale,
+            h_scale,
+            thickening,
+            ..
         } = schedule
         else {
             return Err("NodalTable needs a nodal schedule".into());
@@ -294,6 +339,8 @@ impl NodalTable {
             a: rows(a, *a_scale),
             h: rows(h, *h_scale),
             tensor: Vec::new(),
+            core: Vec::new(),
+            thickening: *thickening,
         })
     }
 
@@ -318,6 +365,23 @@ impl NodalTable {
             .chunks_exact(n * 6)
             .map(|r| r.iter().map(|x| x * a_scale).collect())
             .collect();
+        Ok(self)
+    }
+
+    /// Adds the growth tensors of the core, row-major [n_knots, n_nodes, 6] (not scaled).
+    pub fn with_core(mut self, data: &[f64]) -> Result<Self, String> {
+        let n = self.a.first().map_or(0, |r| r.len());
+        if data.len() != self.t.len() * n * 6 {
+            return Err(format!(
+                "nodal schedule: core has {} values, expected {} knots x {n} nodes x 6",
+                data.len(),
+                self.t.len()
+            ));
+        }
+        if let Some(x) = data.iter().find(|x| !x.is_finite()) {
+            return Err(format!("nodal schedule: core contains {x}"));
+        }
+        self.core = data.chunks_exact(n * 6).map(|r| r.to_vec()).collect();
         Ok(self)
     }
 
@@ -508,6 +572,9 @@ mod tests {
             mu_white: None,
             tensor: None,
             ga_weeks: None,
+            core: None,
+            thickening: false,
+            wm_growth: None,
         };
         assert!(s.validate().is_ok() && s.is_nodal() && s.expansion(0.3).is_nan());
         // 2 knots x 3 nodes, row-major.
@@ -532,6 +599,9 @@ mod tests {
             mu_white: None,
             tensor: None,
             ga_weeks: None,
+            core: None,
+            thickening: false,
+            wm_growth: None,
         };
         assert!(bad.validate().unwrap_err().contains("strictly increasing"));
         let mu = Schedule::Nodal {
@@ -544,6 +614,9 @@ mod tests {
             mu_white: Some(vec![0.5, 0.25]),
             tensor: None,
             ga_weeks: None,
+            core: None,
+            thickening: false,
+            wm_growth: None,
         };
         assert!(mu.validate().is_ok());
         assert_eq!(mu.shear_moduli(0.5), (None, Some(0.375)));
@@ -557,6 +630,9 @@ mod tests {
             mu_white: Some(vec![0.5, 0.0]),
             tensor: None,
             ga_weeks: None,
+            core: None,
+            thickening: false,
+            wm_growth: None,
         };
         assert!(bad_mu.validate().unwrap_err().contains("mu_white[1] must be > 0"));
         let src = "law = \"nodal\"\nt = [0.0, 1.0]\na = \"a.npy\"\nh = \"h.npy\"\n";

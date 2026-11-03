@@ -13,6 +13,9 @@
 # before the fit), adj.log, adj/ (iterates), ckpt/ (fitted equilibrium)}; fitted surfaces as
 # <out>/surface_<step>.vtk (tools/scan_metrics.py, tools/compare_grid.py --rows).
 # Re-running the same command resumes after the last completed week.
+# The chain also stops if the fitted equilibrium has inverted elements (inadmissible fit).
+# STOP_MM=d (env): after each fit, stop the chain if the final vertex-level rigid deviation
+# (best rotation + translation, no scaling) is above d mm: no adequate parameters for that week.
 # Needs data/adjoint_prep/w<w>/ (tools/adjoint_prep.py <w> data/adjoint_prep/w<w>) and the
 # binaries: cargo build --release -p gyroxide-cli --bin gyroxide
 #           cargo build --release -p gyroxide-cli --example adjoint_week --features "wgpu autodiff"
@@ -20,8 +23,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 cfg=$1; start=$2; w0=$3; w1=$4; D=$5; shift 5
 MESH=data/meshes/w21_left_610k.mesh
-BIN=target/release/gyroxide
-ADJ=target/release/examples/adjoint_week
+BIN=${BIN:-target/release/gyroxide}
+ADJ=${ADJ:-target/release/examples/adjoint_week}
 WEEK=8769
 mkdir -p "$D"
 a_src=$(sed -n 's/^a *= *"\(.*\)".*/\1/p' "$cfg")
@@ -51,6 +54,18 @@ for w in $(seq "$w0" "$w1"); do
     echo "$(date '+%F %T') SG $w: adjoint failed (see $W/adj.log)" | tee -a "$D/chain.log"; exit 1; }
   mv "$W/ckpt.tmp" "$W/ckpt"
   ck=$W/ckpt
+  ninv=$(sed -n 's/^inverted elements at the fitted equilibrium: \([0-9]*\).*/\1/p' "$W/adj.log" | tail -1)
+  if [ -n "$ninv" ] && [ "$ninv" -gt 0 ]; then
+    echo "$(date '+%F %T') SG $w: $ninv inverted elements at the fitted equilibrium: no admissible parameters, chain stopped" | tee -a "$D/chain.log"
+    exit 2
+  fi
+  if [ -n "${STOP_MM:-}" ]; then
+    dev=$(grep -E '^final mm k= +0:' "$W/adj.log" | sed -E 's/.*(rigid|absolute) rms ([0-9.]+).*/\2/' | tail -1)
+    if [ -n "$dev" ] && awk -v d="$dev" -v s="$STOP_MM" 'BEGIN{exit !(d > s)}'; then
+      echo "$(date '+%F %T') SG $w: deviation $dev mm > $STOP_MM mm after the fit: no adequate parameters, chain stopped" | tee -a "$D/chain.log"
+      exit 2
+    fi
+  fi
   echo "$(date '+%F %T') SG $w: fit $(( $(date +%s) - t0 ))s; $(grep -E '^start|^iter [0-9]+: shape' "$W/adj.log" | sed -n '1p;$p' | tr '\n' ' ')" >> "$D/chain.log"
 done
 echo "$(date '+%F %T') CHAIN DONE" >> "$D/chain.log"
