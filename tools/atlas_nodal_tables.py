@@ -13,6 +13,7 @@ mask). Writes <base>.nodal_a.npy and <base>.nodal_h.npy, shape [16, n_nodes].
 """
 import argparse
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -20,7 +21,8 @@ import pyvista as pv
 import scipy.sparse as sp
 from scipy.spatial import cKDTree
 
-ATLAS = Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas")
+# dHCP fetal atlas (.vtk and .gii surfaces, weeks 21-36): $OXIDE_DHCP_ATLAS, else the repository's data/atlas_dhcp.
+ATLAS = Path(os.environ.get("OXIDE_DHCP_ATLAS", Path(__file__).resolve().parent.parent / "data/atlas_dhcp"))
 ap = argparse.ArgumentParser()
 ap.add_argument("base", help="mesh path without extension (reads .mesh and .json)")
 ap.add_argument("--smooth", type=int, default=20, help="neighbour-averaging iterations")

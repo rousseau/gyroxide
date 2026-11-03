@@ -6,6 +6,7 @@ surface triangles, owner surface vertex of every node, initial per-vertex growth
 """
 import json
 import sys
+import os
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +14,8 @@ import pyvista as pv
 from scipy.spatial import cKDTree
 
 ROOT = Path(__file__).resolve().parent.parent
-ATLAS = Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas")
+# dHCP fetal atlas (.vtk and .gii surfaces, weeks 21-36): $OXIDE_DHCP_ATLAS, else the repository's data/atlas_dhcp.
+ATLAS = Path(os.environ.get("OXIDE_DHCP_ATLAS", Path(__file__).resolve().parent.parent / "data/atlas_dhcp"))
 week, out = int(sys.argv[1]), Path(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
 F = json.loads((ROOT / "data/meshes/w21_left_610k.json").read_text())

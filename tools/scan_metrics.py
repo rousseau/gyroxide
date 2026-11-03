@@ -11,6 +11,7 @@ week-21 atlas geometry used as a prediction of week N. Writes <out>/scan_metrics
 import argparse
 import csv
 import json
+import os
 from pathlib import Path
 
 import matplotlib
@@ -23,7 +24,8 @@ import scipy.sparse as sp
 from scipy.spatial import ConvexHull
 
 ROOT = Path(__file__).resolve().parent.parent
-ATLAS = Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas")
+# dHCP fetal atlas (.vtk and .gii surfaces, weeks 21-36): $OXIDE_DHCP_ATLAS, else the repository's data/atlas_dhcp.
+ATLAS = Path(os.environ.get("OXIDE_DHCP_ATLAS", Path(__file__).resolve().parent.parent / "data/atlas_dhcp"))
 ap = argparse.ArgumentParser()
 ap.add_argument("out")
 ap.add_argument("runs", nargs="+", help='"label=run dir"')

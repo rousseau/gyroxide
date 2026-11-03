@@ -13,6 +13,7 @@ parts (gyral crowns), H < 0 in concave parts (sulcal fundi), checked on a sphere
 """
 import json
 import sys
+import os
 from pathlib import Path
 
 import numpy as np
@@ -20,7 +21,8 @@ import pyvista as pv
 
 pv.OFF_SCREEN = True
 ROOT = Path(__file__).resolve().parent.parent
-ATLAS = Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas")
+# dHCP fetal atlas (.vtk and .gii surfaces, weeks 21-36): $OXIDE_DHCP_ATLAS, else the repository's data/atlas_dhcp.
+ATLAS = Path(os.environ.get("OXIDE_DHCP_ATLAS", Path(__file__).resolve().parent.parent / "data/atlas_dhcp"))
 FRAME = json.loads((ROOT / "data/meshes/w21_left_610k.json").read_text())
 NS = FRAME["n_surface"]
 fit = Path(sys.argv[1])

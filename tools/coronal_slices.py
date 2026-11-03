@@ -15,6 +15,7 @@ through each surface's own centroid, so the same anatomy is cut at every age.
 """
 import argparse
 import json
+import os
 from pathlib import Path
 
 import matplotlib
@@ -27,7 +28,8 @@ from matplotlib.collections import PolyCollection
 from scipy.spatial import cKDTree
 
 ROOT = Path(__file__).resolve().parent.parent
-ATLAS = Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas")
+# dHCP fetal atlas (.vtk and .gii surfaces, weeks 21-36): $OXIDE_DHCP_ATLAS, else the repository's data/atlas_dhcp.
+ATLAS = Path(os.environ.get("OXIDE_DHCP_ATLAS", Path(__file__).resolve().parent.parent / "data/atlas_dhcp"))
 FRAME = json.loads((ROOT / "data/meshes/w21_left_610k.json").read_text())
 MM = FRAME["maxd_mm"]
 NS = FRAME["n_surface"]

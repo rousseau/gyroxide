@@ -17,6 +17,7 @@ import json
 import re
 import subprocess
 import time
+import os
 from pathlib import Path
 
 import numpy as np
@@ -26,7 +27,8 @@ from scipy.cluster.vq import kmeans2
 from scipy.spatial import ConvexHull, cKDTree
 
 ROOT = Path(__file__).resolve().parent.parent
-ATLAS = Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas")
+# dHCP fetal atlas (.vtk and .gii surfaces, weeks 21-36): $OXIDE_DHCP_ATLAS, else the repository's data/atlas_dhcp.
+ATLAS = Path(os.environ.get("OXIDE_DHCP_ATLAS", Path(__file__).resolve().parent.parent / "data/atlas_dhcp"))
 FI_ATLAS = {w: v for w, v in zip(range(21, 37), [6.18, 6.18, 6.20, 6.23, 6.29, 6.40, 6.60, 6.83, 7.09, 7.43, 7.82, 8.10, 8.34, 8.59, 8.78, 8.92])}
 ap = argparse.ArgumentParser()
 ap.add_argument("--week", type=int, default=29)
