@@ -3,7 +3,7 @@
 mod surface;
 
 use anyhow::{bail, Context, Result};
-use burn::tensor::backend::Backend;
+use burn::tensor::{Device, DeviceKind, FloatDType};
 use clap::{Parser, Subcommand, ValueEnum};
 use gyroxide_io::{SequenceRow, SequenceWriter, State, Status};
 use gyroxide_mesh::{generate, netgen, normalize, vtk, vtu, TetMesh};
@@ -511,32 +511,18 @@ fn dispatch(
     match args.backend {
         #[cfg(any(feature = "wgpu", feature = "cuda"))]
         BackendKind::Wgpu => {
-            use burn::backend::wgpu::{Wgpu, WgpuDevice};
-            run_on::<Wgpu>(
-                args,
-                params,
-                mesh,
-                mesh_name,
-                transform,
-                bids,
-                WgpuDevice::default(),
-                "f32",
-            )
+            let device = Device::wgpu(DeviceKind::DefaultDevice);
+            run_on(args, params, mesh, mesh_name, transform, bids, device, "f32")
         }
         #[cfg(not(any(feature = "wgpu", feature = "cuda")))]
         BackendKind::Wgpu => bail!("built without the wgpu feature"),
         BackendKind::Ndarray => {
-            use burn::backend::ndarray::{NdArray, NdArrayDevice};
-            run_on::<NdArray<f64>>(
-                args,
-                params,
-                mesh,
-                mesh_name,
-                transform,
-                bids,
-                NdArrayDevice::default(),
-                "f64",
-            )
+            #[allow(deprecated)] // burn-ndarray is deprecated since Burn 0.22 (Device::flex() replaces it)
+            let mut device = Device::ndarray();
+            device
+                .configure(FloatDType::F64)
+                .map_err(|e| anyhow::anyhow!("NdArray in f64: {e:?}"))?;
+            run_on(args, params, mesh, mesh_name, transform, bids, device, "f64")
         }
     }
 }
@@ -744,7 +730,7 @@ impl TraceSink for Outputs<'_> {
     }
 }
 
-fn save_checkpoint<B: Backend>(sim: &Simulation<B>, dir: &std::path::Path) -> Result<()> {
+fn save_checkpoint(sim: &Simulation, dir: &std::path::Path) -> Result<()> {
     use gyroxide_validate::npy;
     let tmp = dir.with_extension("tmp");
     std::fs::create_dir_all(&tmp)?;
@@ -763,7 +749,7 @@ fn save_checkpoint<B: Backend>(sim: &Simulation<B>, dir: &std::path::Path) -> Re
     Ok(())
 }
 
-fn load_checkpoint<B: Backend>(sim: &mut Simulation<B>, dir: &std::path::Path) -> Result<(usize, f64)> {
+fn load_checkpoint(sim: &mut Simulation, dir: &std::path::Path) -> Result<(usize, f64)> {
     use gyroxide_validate::npy;
     let state_path = dir.join("state.json");
     let state: serde_json::Value = serde_json::from_str(
@@ -782,16 +768,17 @@ fn load_checkpoint<B: Backend>(sim: &mut Simulation<B>, dir: &std::path::Path) -
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_on<B: Backend>(
+fn run_on(
     args: RunArgs,
     params: Params,
     mesh: TetMesh,
     mesh_name: String,
     transform: normalize::Transform,
     bids: Option<BidsRun>,
-    device: B::Device,
+    device: Device,
     precision: &str,
 ) -> Result<()> {
+    let backend = format!("{device:?}");
     std::fs::create_dir_all(&args.out)?;
     if bids.is_none() {
         // (in BIDS mode the parameters are in config.toml)
@@ -812,7 +799,7 @@ fn run_on<B: Backend>(
         params.n_steps(),
         params.dynamics.t_start,
         params.dynamics.t_end,
-        std::any::type_name::<B>().split('<').next().unwrap_or("?")
+        backend
     );
 
     let npy = if args.trace_every > 0 {
@@ -834,7 +821,7 @@ fn run_on<B: Backend>(
     };
 
     let t0 = Instant::now();
-    let mut sim = Simulation::<B>::new(mesh.clone(), params.clone(), device)?;
+    let mut sim = Simulation::new(mesh.clone(), params.clone(), device)?;
     if let gyroxide_model::Schedule::Nodal { a, h, tensor, core, .. } = &sim.params.schedule {
         let read = |path: &str| -> Result<Vec<f64>> {
             let arr = gyroxide_validate::npy::read(path).with_context(|| format!("reading {path}"))?;

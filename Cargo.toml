@@ -24,7 +24,7 @@ gyroxide-io = { path = "crates/gyroxide-io" }
 surfoxide-core = { git = "https://github.com/rousseau/surfoxide", rev = "dc02bf7a24ae8e2dd0aec24ae5b16001c6392fb3" }
 surfoxide-io = { git = "https://github.com/rousseau/surfoxide", rev = "dc02bf7a24ae8e2dd0aec24ae5b16001c6392fb3" }
 surfoxide-metrics = { git = "https://github.com/rousseau/surfoxide", rev = "dc02bf7a24ae8e2dd0aec24ae5b16001c6392fb3" }
-burn = { version = "0.21.0", default-features = false, features = ["std"] }
+burn = { version = "0.22.1", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

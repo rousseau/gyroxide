@@ -1,6 +1,6 @@
 //! Unit tests of the reference tensor implementation, in f64 on the CPU.
 
-use burn::backend::NdArray;
+use burn::tensor::{Device, FloatDType};
 use gyroxide_mesh::{generate::voxel_ball, topology::extract_boundary, TetMesh};
 use gyroxide_model::{GrowthMask, Preset};
 use gyroxide_sim::algebra::{floats, to_f64, M3, V3};
@@ -8,10 +8,14 @@ use gyroxide_sim::elastic::{self, sym_eigen};
 use gyroxide_sim::trace::NoTrace;
 use gyroxide_sim::Simulation;
 
-type B = NdArray<f64>;
-
-fn device() -> burn::backend::ndarray::NdArrayDevice {
-    Default::default()
+/// NdArray device in f64 (the arithmetic of `NdArray<f64>` before Burn 0.22). The precision is set
+/// once, before the first tensor: it is global to the device and the tests run in parallel.
+#[allow(deprecated)] // burn-ndarray is deprecated since Burn 0.22 (Device::flex() replaces it)
+fn device() -> Device {
+    static F64: std::sync::Once = std::sync::Once::new();
+    let mut device = Device::ndarray();
+    F64.call_once(|| device.configure(FloatDType::F64).expect("NdArray in f64"));
+    device
 }
 
 fn rng(seed: u64) -> impl FnMut() -> f64 {
@@ -47,8 +51,8 @@ fn max_abs(rows: &[[f64; 3]]) -> f64 {
 #[test]
 fn undeformed_mesh_has_zero_force() {
     let mesh = voxel_ball(5, 1.0);
-    let sim = Simulation::<B>::new(mesh, params_no_contact(), device()).unwrap();
-    let g = floats::<B>(&vec![0.0; sim.mesh.n_tets()], &device());
+    let sim = Simulation::new(mesh, params_no_contact(), device()).unwrap();
+    let g = floats(&vec![0.0; sim.mesh.n_tets()], &device());
     let out = elastic::forces(sim.precomputed(), &sim.params.material, &sim.x, &g, 0.05, true);
     let f = out.force.to_rows();
     assert!(max_abs(&f) < 1e-12, "max |f| = {}", max_abs(&f));
@@ -62,7 +66,7 @@ fn free_growth_is_stress_free() {
     // One tetrahedron: every vertex has the same growth normal, so placing
     // the nodes at G X must cancel the force exactly (F = I, J = Ja = 1).
     let mesh = single_tet();
-    let sim = Simulation::<B>::new(mesh.clone(), params_no_contact(), device()).unwrap();
+    let sim = Simulation::new(mesh.clone(), params_no_contact(), device()).unwrap();
     let n = sim.precomputed().growth_normal.to_rows()[0];
     let s = 0.7;
     let grown: Vec<[f64; 3]> = mesh
@@ -73,8 +77,8 @@ fn free_growth_is_stress_free() {
             std::array::from_fn(|k| x[k] + s * (x[k] - n[k] * d))
         })
         .collect();
-    let x = V3::<B>::from_rows(&grown, &device());
-    let g = floats::<B>(&[s], &device());
+    let x = V3::from_rows(&grown, &device());
+    let g = floats(&[s], &device());
     let out = elastic::forces(sim.precomputed(), &sim.params.material, &x, &g, 0.05, false);
     assert!(max_abs(&out.force.to_rows()) < 1e-12);
     // ... while the same growth without deformation pushes outwards.
@@ -85,11 +89,11 @@ fn free_growth_is_stress_free() {
 #[test]
 fn inverted_tet_has_finite_restoring_force() {
     let mesh = single_tet();
-    let sim = Simulation::<B>::new(mesh.clone(), params_no_contact(), device()).unwrap();
+    let sim = Simulation::new(mesh.clone(), params_no_contact(), device()).unwrap();
     let mut x = mesh.nodes.clone();
     x[3][2] = -0.005; // apex pushed through the opposite face
-    let xv = V3::<B>::from_rows(&x, &device());
-    let g = floats::<B>(&[0.0], &device());
+    let xv = V3::from_rows(&x, &device());
+    let g = floats(&[0.0], &device());
     let out = elastic::forces(sim.precomputed(), &sim.params.material, &xv, &g, 0.05, true);
     let f = out.force.to_rows();
     assert!(f.iter().flatten().all(|v| v.is_finite()));
@@ -121,8 +125,8 @@ fn symmetric_eigen_decomposition() {
             ];
         }
     }
-    let comp = |a: usize, b: usize| floats::<B>(&rows.iter().map(|m| m[a][b]).collect::<Vec<_>>(), &device());
-    let c = M3::<B> {
+    let comp = |a: usize, b: usize| floats(&rows.iter().map(|m| m[a][b]).collect::<Vec<_>>(), &device());
+    let c = M3 {
         m: std::array::from_fn(|a| std::array::from_fn(|b| comp(a, b))),
     };
     let e = sym_eigen(&c);
@@ -151,7 +155,7 @@ fn branches_agree_at_the_stretch_floor() {
     // regular one around that point: both must give the same P.
     let mesh = single_tet();
     let p = params_no_contact();
-    let sim = Simulation::<B>::new(mesh.clone(), p.clone(), device()).unwrap();
+    let sim = Simulation::new(mesh.clone(), p.clone(), device()).unwrap();
     let eps = p.material.eps;
     // F = R diag(eps, 1.1, 0.9) with a rotation R about (1,1,1).
     let (c, s) = (0.6f64.cos(), 0.6f64.sin());
@@ -170,8 +174,8 @@ fn branches_agree_at_the_stretch_floor() {
         .iter()
         .map(|x0| std::array::from_fn(|i| (0..3).map(|j| f[i][j] * x0[j]).sum()))
         .collect();
-    let xv = V3::<B>::from_rows(&x, &device());
-    let g = floats::<B>(&[0.0], &device());
+    let xv = V3::from_rows(&x, &device());
+    let g = floats(&[0.0], &device());
     // Just above and just below the floor: forces must be continuous.
     let out = elastic::forces(sim.precomputed(), &p.material, &xv, &g, 0.05, false)
         .force
@@ -186,7 +190,7 @@ fn branches_agree_at_the_stretch_floor() {
             p[i] -= (1.0 - shrink) * dd * ax[i];
         }
     }
-    let x2v = V3::<B>::from_rows(&x2, &device());
+    let x2v = V3::from_rows(&x2, &device());
     let out2 = elastic::forces(sim.precomputed(), &p.material, &x2v, &g, 0.05, false)
         .force
         .to_rows();
@@ -216,7 +220,7 @@ fn contact_closest_point_matches_scalar() {
     assert!(!pairs.is_empty());
     let gr = vec![1.0; mesh.n_nodes()];
     let dev = device();
-    let gp = gyroxide_sim::contact::upload_pairs::<B>(&mesh, &gr, &pairs, &dev).unwrap();
+    let gp = gyroxide_sim::contact::upload_pairs(&mesh, &gr, &pairs, &dev).unwrap();
     let hc = 0.3; // large skin so that most pairs are active
     let kc = 50.0;
     let got = gyroxide_sim::contact::penalty_forces(&gp, &V3::from_rows(&x, &dev), mesh.n_nodes(), hc, kc, a).to_rows();
@@ -260,7 +264,7 @@ fn growing_ball_smoke_run() {
     let mut p = Preset::BrainGrowth.params();
     p.growth_mask = GrowthMask::Uniform;
     p.dynamics.mesh_spacing = 2.0 / 6.0; // coarse mesh: a sets dt and the contact skins
-    let mut sim = Simulation::<B>::new(mesh, p, device()).unwrap();
+    let mut sim = Simulation::new(mesh, p, device()).unwrap();
     sim.run(Some(200), &mut NoTrace).unwrap();
     let snap = sim.step_recorded();
     let x = &snap.x;
@@ -282,19 +286,18 @@ fn force_tangent_case(beta: f64) {
     let mut params = params_no_contact();
     params.material.wm_growth = 0.3;
     params.material.vol_stab = beta;
-    let sim = Simulation::<B>::new(mesh, params, device()).unwrap();
+    let sim = Simulation::new(mesh, params, device()).unwrap();
     let mut r = rng(7);
     let x0 = sim.x.to_rows();
     let x: Vec<[f64; 3]> = x0.iter().map(|p| [0, 1, 2].map(|d| p[d] + 0.01 * r())).collect();
     let v: Vec<[f64; 3]> = x0.iter().map(|_| [r(), r(), r()]).collect();
     let g: Vec<f64> = (0..sim.mesh.n_tets()).map(|_| 0.15 + 0.15 * r()).collect();
     let (pre, mat) = (sim.precomputed(), &sim.params.material);
-    let gt = floats::<B>(&g, &device());
+    let gt = floats(&g, &device());
     let th = elastic::Thickness::Uniform(0.05);
     let nt = sim.mesh.n_tets();
-    let comp = |d: f64, r: &mut dyn FnMut() -> f64| {
-        floats::<B>(&(0..nt).map(|_| d + 0.1 * r()).collect::<Vec<_>>(), &device())
-    };
+    let comp =
+        |d: f64, r: &mut dyn FnMut() -> f64| floats(&(0..nt).map(|_| d + 0.1 * r()).collect::<Vec<_>>(), &device());
     let (xx, yy, zz) = (comp(1.3, &mut r), comp(1.2, &mut r), comp(1.4, &mut r));
     let (xy, xz, yz) = (comp(0.0, &mut r), comp(0.0, &mut r), comp(0.0, &mut r));
     let core = M3 {
@@ -355,10 +358,10 @@ fn core_growth_is_stress_free() {
     let mesh = single_tet();
     let mut params = params_no_contact();
     params.material.wm_growth = 0.4;
-    let sim = Simulation::<B>::new(mesh.clone(), params, device()).unwrap();
+    let sim = Simulation::new(mesh.clone(), params, device()).unwrap();
     let n = sim.precomputed().growth_normal.to_rows()[0];
     let (s, h) = (0.3, 0.0004);
-    let g = floats::<B>(&[s], &device());
+    let g = floats(&[s], &device());
     let mat = &sim.params.material;
     let gm = to_f64(elastic::forces(sim.precomputed(), mat, &sim.x, &g, h, false).gm)[0];
     assert!(gm > 0.0 && gm < 1.0, "g_m = {gm}");
@@ -371,7 +374,7 @@ fn core_growth_is_stress_free() {
             std::array::from_fn(|k| x[k] + s * (x[k] - n[k] * d) + b * x[k])
         })
         .collect();
-    let x = V3::<B>::from_rows(&grown, &device());
+    let x = V3::from_rows(&grown, &device());
     let out = elastic::forces(sim.precomputed(), mat, &x, &g, h, false);
     assert!(max_abs(&out.force.to_rows()) < 1e-12, "{:?}", out.force.to_rows());
 }
@@ -380,10 +383,10 @@ fn core_growth_is_stress_free() {
 fn thickening_is_stress_free() {
     // G = I + s (I - n n^T) + g_m c n n^T: nodes placed at G X carry no force.
     let mesh = single_tet();
-    let sim = Simulation::<B>::new(mesh.clone(), params_no_contact(), device()).unwrap();
+    let sim = Simulation::new(mesh.clone(), params_no_contact(), device()).unwrap();
     let n = sim.precomputed().growth_normal.to_rows()[0];
     let (s, c, h) = (0.3, -0.25, 0.05);
-    let g = floats::<B>(&[s], &device());
+    let g = floats(&[s], &device());
     let mat = &sim.params.material;
     let th = elastic::Thickness::Uniform(h);
     let gm = to_f64(elastic::forces(sim.precomputed(), mat, &sim.x, &g, h, false).gm)[0];
@@ -395,8 +398,8 @@ fn thickening_is_stress_free() {
             std::array::from_fn(|k| x[k] + s * (x[k] - n[k] * d) + gm * c * n[k] * d)
         })
         .collect();
-    let x = V3::<B>::from_rows(&grown, &device());
-    let rad = floats::<B>(&[c], &device());
+    let x = V3::from_rows(&grown, &device());
+    let rad = floats(&[c], &device());
     let out = elastic::forces_full(sim.precomputed(), mat, &x, &g, None, None, Some(&rad), &th, false);
     assert!(max_abs(&out.force.to_rows()) < 1e-12, "{:?}", out.force.to_rows());
 }
@@ -407,7 +410,7 @@ fn dirichlet_nodes_stay_fixed_and_decouple() {
     let mesh = voxel_ball(5, 1.0);
     let mut params = params_no_contact();
     params.dynamics.mesh_spacing = 2.0 / 5.0;
-    let mut sim = Simulation::<B>::new(mesh, params, device()).unwrap();
+    let mut sim = Simulation::new(mesh, params, device()).unwrap();
     let x0 = sim.x.to_rows();
     let fixed: Vec<bool> = x0.iter().map(|p| p[2] < -0.3).collect();
     let mut r = rng(3);

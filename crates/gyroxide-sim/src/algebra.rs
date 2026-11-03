@@ -5,52 +5,51 @@
 //! Burn op, which the Fusion backend merges into a few kernels. The layout
 //! mirrors what a CubeCL kernel holds in registers, one thread per element.
 
-use burn::tensor::backend::Backend;
-use burn::tensor::{Bool, Int, Tensor, TensorData};
+use burn::tensor::{Bool, Device, Int, Tensor, TensorData};
 
-pub type T1<B> = Tensor<B, 1>;
-pub type I1<B> = Tensor<B, 1, Int>;
+pub type T1 = Tensor<1>;
+pub type I1 = Tensor<1, Int>;
 
 /// Uploads f64 values; they are stored in the backend's float type
-/// (f32 on wgpu, f64 with `NdArray<f64>`).
-pub fn floats<B: Backend>(v: &[f64], device: &B::Device) -> T1<B> {
-    T1::<B>::from_data(TensorData::new(v.to_vec(), [v.len()]), device)
+/// (f32 on wgpu, f64 on an NdArray device configured with `FloatDType::F64`).
+pub fn floats(v: &[f64], device: &Device) -> T1 {
+    T1::from_data(TensorData::new(v.to_vec(), [v.len()]), device)
 }
 
-pub fn ints<B: Backend>(v: &[u32], device: &B::Device) -> I1<B> {
+pub fn ints(v: &[u32], device: &Device) -> I1 {
     let v: Vec<i64> = v.iter().map(|&i| i as i64).collect();
     let n = v.len();
-    I1::<B>::from_data(TensorData::new(v, [n]), device)
+    I1::from_data(TensorData::new(v, [n]), device)
 }
 
-pub fn to_f64<B: Backend, const D: usize>(t: Tensor<B, D>) -> Vec<f64> {
+pub fn to_f64<const D: usize>(t: Tensor<D>) -> Vec<f64> {
     t.into_data()
         .convert::<f64>()
-        .to_vec::<f64>()
+        .try_to_vec::<f64>()
         .expect("float tensor readback")
 }
 
-pub fn scalar<B: Backend>(t: T1<B>) -> f64 {
+pub fn scalar(t: T1) -> f64 {
     to_f64(t)[0]
 }
 
 #[derive(Clone, Debug)]
-pub struct V3<B: Backend> {
-    pub x: T1<B>,
-    pub y: T1<B>,
-    pub z: T1<B>,
+pub struct V3 {
+    pub x: T1,
+    pub y: T1,
+    pub z: T1,
 }
 
-impl<B: Backend> V3<B> {
-    pub fn new(x: T1<B>, y: T1<B>, z: T1<B>) -> Self {
+impl V3 {
+    pub fn new(x: T1, y: T1, z: T1) -> Self {
         Self { x, y, z }
     }
-    pub fn zeros(n: usize, device: &B::Device) -> Self {
-        let z = T1::<B>::zeros([n], device);
+    pub fn zeros(n: usize, device: &Device) -> Self {
+        let z = T1::zeros([n], device);
         Self::new(z.clone(), z.clone(), z)
     }
-    pub fn from_rows(rows: &[[f64; 3]], device: &B::Device) -> Self {
-        let col = |k: usize| floats::<B>(&rows.iter().map(|r| r[k]).collect::<Vec<_>>(), device);
+    pub fn from_rows(rows: &[[f64; 3]], device: &Device) -> Self {
+        let col = |k: usize| floats(&rows.iter().map(|r| r[k]).collect::<Vec<_>>(), device);
         Self::new(col(0), col(1), col(2))
     }
     pub fn to_rows(&self) -> Vec<[f64; 3]> {
@@ -63,7 +62,7 @@ impl<B: Backend> V3<B> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    pub fn select(&self, idx: &I1<B>) -> Self {
+    pub fn select(&self, idx: &I1) -> Self {
         Self::new(
             self.x.clone().select(0, idx.clone()),
             self.y.clone().select(0, idx.clone()),
@@ -87,7 +86,7 @@ impl<B: Backend> V3<B> {
     pub fn neg(&self) -> Self {
         Self::new(-self.x.clone(), -self.y.clone(), -self.z.clone())
     }
-    pub fn mul(&self, s: &T1<B>) -> Self {
+    pub fn mul(&self, s: &T1) -> Self {
         Self::new(
             self.x.clone() * s.clone(),
             self.y.clone() * s.clone(),
@@ -97,7 +96,7 @@ impl<B: Backend> V3<B> {
     pub fn mul_scalar(&self, s: f64) -> Self {
         Self::new(self.x.clone() * s, self.y.clone() * s, self.z.clone() * s)
     }
-    pub fn dot(&self, o: &Self) -> T1<B> {
+    pub fn dot(&self, o: &Self) -> T1 {
         self.x.clone() * o.x.clone() + self.y.clone() * o.y.clone() + self.z.clone() * o.z.clone()
     }
     pub fn cross(&self, o: &Self) -> Self {
@@ -107,7 +106,7 @@ impl<B: Backend> V3<B> {
             self.x.clone() * o.y.clone() - self.y.clone() * o.x.clone(),
         )
     }
-    pub fn norm(&self) -> T1<B> {
+    pub fn norm(&self) -> T1 {
         self.dot(self).sqrt()
     }
     /// v / |v|, leaving zero vectors at zero.
@@ -117,7 +116,7 @@ impl<B: Backend> V3<B> {
         self.mul(&safe.recip())
     }
     /// Where `mask` is true take `other`, else keep `self`.
-    pub fn where_(&self, mask: &Tensor<B, 1, Bool>, other: &Self) -> Self {
+    pub fn where_(&self, mask: &Tensor<1, Bool>, other: &Self) -> Self {
         Self::new(
             self.x.clone().mask_where(mask.clone(), other.x.clone()),
             self.y.clone().mask_where(mask.clone(), other.y.clone()),
@@ -138,12 +137,12 @@ impl<B: Backend> V3<B> {
 
 /// 3x3 matrices, `m[r][c]`.
 #[derive(Clone, Debug)]
-pub struct M3<B: Backend> {
-    pub m: [[T1<B>; 3]; 3],
+pub struct M3 {
+    pub m: [[T1; 3]; 3],
 }
 
-impl<B: Backend> M3<B> {
-    pub fn from_cols(c0: &V3<B>, c1: &V3<B>, c2: &V3<B>) -> Self {
+impl M3 {
+    pub fn from_cols(c0: &V3, c1: &V3, c2: &V3) -> Self {
         Self {
             m: [
                 [c0.x.clone(), c1.x.clone(), c2.x.clone()],
@@ -152,9 +151,9 @@ impl<B: Backend> M3<B> {
             ],
         }
     }
-    pub fn identity(n: usize, device: &B::Device) -> Self {
-        let o = T1::<B>::ones([n], device);
-        let z = T1::<B>::zeros([n], device);
+    pub fn identity(n: usize, device: &Device) -> Self {
+        let o = T1::ones([n], device);
+        let z = T1::zeros([n], device);
         Self {
             m: [
                 [o.clone(), z.clone(), z.clone()],
@@ -163,15 +162,15 @@ impl<B: Backend> M3<B> {
             ],
         }
     }
-    pub fn col(&self, c: usize) -> V3<B> {
+    pub fn col(&self, c: usize) -> V3 {
         V3::new(self.m[0][c].clone(), self.m[1][c].clone(), self.m[2][c].clone())
     }
-    pub fn set_col(&mut self, c: usize, v: &V3<B>) {
+    pub fn set_col(&mut self, c: usize, v: &V3) {
         self.m[0][c] = v.x.clone();
         self.m[1][c] = v.y.clone();
         self.m[2][c] = v.z.clone();
     }
-    pub fn get(&self, r: usize, c: usize) -> T1<B> {
+    pub fn get(&self, r: usize, c: usize) -> T1 {
         self.m[r][c].clone()
     }
     pub fn transpose(&self) -> Self {
@@ -189,7 +188,7 @@ impl<B: Backend> M3<B> {
             m: std::array::from_fn(|r| std::array::from_fn(|c| self.get(r, c) - o.get(r, c))),
         }
     }
-    pub fn mul_s(&self, s: &T1<B>) -> Self {
+    pub fn mul_s(&self, s: &T1) -> Self {
         Self {
             m: std::array::from_fn(|r| std::array::from_fn(|c| self.get(r, c) * s.clone())),
         }
@@ -203,14 +202,14 @@ impl<B: Backend> M3<B> {
             }),
         }
     }
-    pub fn mul_vec(&self, v: &V3<B>) -> V3<B> {
+    pub fn mul_vec(&self, v: &V3) -> V3 {
         let row = |r: usize| self.get(r, 0) * v.x.clone() + self.get(r, 1) * v.y.clone() + self.get(r, 2) * v.z.clone();
         V3::new(row(0), row(1), row(2))
     }
-    pub fn trace(&self) -> T1<B> {
+    pub fn trace(&self) -> T1 {
         self.get(0, 0) + self.get(1, 1) + self.get(2, 2)
     }
-    pub fn det(&self) -> T1<B> {
+    pub fn det(&self) -> T1 {
         self.col(0).dot(&self.col(1).cross(&self.col(2)))
     }
     /// Adjugate (transpose of the cofactor matrix): inv = adj / det.
@@ -228,7 +227,7 @@ impl<B: Backend> M3<B> {
     pub fn inverse(&self) -> Self {
         self.adjugate().mul_s(&self.det().recip())
     }
-    pub fn where_(&self, mask: &Tensor<B, 1, Bool>, other: &Self) -> Self {
+    pub fn where_(&self, mask: &Tensor<1, Bool>, other: &Self) -> Self {
         Self {
             m: std::array::from_fn(|r| {
                 std::array::from_fn(|c| self.get(r, c).mask_where(mask.clone(), other.get(r, c)))
@@ -236,13 +235,13 @@ impl<B: Backend> M3<B> {
         }
     }
     /// diag(d0, d1, d2) * self (scales rows).
-    pub fn scale_rows(&self, d: [&T1<B>; 3]) -> Self {
+    pub fn scale_rows(&self, d: [&T1; 3]) -> Self {
         Self {
             m: std::array::from_fn(|r| std::array::from_fn(|c| self.get(r, c) * d[r].clone())),
         }
     }
     /// self * diag(d0, d1, d2) (scales columns).
-    pub fn scale_cols(&self, d: [&T1<B>; 3]) -> Self {
+    pub fn scale_cols(&self, d: [&T1; 3]) -> Self {
         Self {
             m: std::array::from_fn(|r| std::array::from_fn(|c| self.get(r, c) * d[c].clone())),
         }

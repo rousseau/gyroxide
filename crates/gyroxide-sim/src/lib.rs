@@ -17,7 +17,7 @@ pub mod setup;
 pub mod trace;
 
 use algebra::{floats, scalar, to_f64, M3, T1, V3};
-use burn::tensor::backend::Backend;
+use burn::tensor::Device;
 use contact::ContactPairs;
 use gyroxide_mesh::TetMesh;
 use gyroxide_model::{NodalTable, Params};
@@ -46,69 +46,70 @@ pub struct Diagnostics {
     pub n_contacts: usize,
 }
 
-pub struct Simulation<B: Backend> {
+pub struct Simulation {
     pub params: Params,
     pub mesh: TetMesh,
     pub host: HostFields,
-    pub device: B::Device,
-    pre: Precomputed<B>,
+    pub device: Device,
+    pre: Precomputed,
     /// Positions and velocities [N].
-    pub x: V3<B>,
-    pub v: V3<B>,
+    pub x: V3,
+    pub v: V3,
     /// g_m a_t of the previous step, per tetrahedron (defines G).
-    growth_prev: T1<B>,
-    pairs: Option<ContactPairs<B>>,
+    growth_prev: T1,
+    pairs: Option<ContactPairs>,
     /// Surface positions at the last contact rebuild; None forces a rebuild.
-    x_surf_old: Option<V3<B>>,
+    x_surf_old: Option<V3>,
     pub n_rebuilds: usize,
     pub t: f64,
     pub step: usize,
     /// Per-tetrahedron a_t and H at each knot of a nodal schedule.
-    nodal: Option<NodalTets<B>>,
+    nodal: Option<NodalTets>,
     /// Growth g_m a_t held fixed (relaxation at constant growth, adjoint
     /// studies): when set, steps use it and do not advance t.
-    growth_fixed: Option<T1<B>>,
+    growth_fixed: Option<T1>,
     /// Optional spring w (target - x) on the first nodes (target positions, per-node weight).
-    pull: Option<(V3<B>, T1<B>)>,
+    pull: Option<(V3, T1)>,
     /// Optional correction of the cortical thickening c per tetrahedron (inverse studies), added
     /// to c or, with `radial_mult`, multiplicative: 1 + c = (1 + c_scheduled) exp(delta) > 0.
-    radial_delta: Option<T1<B>>,
+    radial_delta: Option<T1>,
     radial_mult: bool,
     /// Optional isotropic correction delta I added to the core growth tensor U per tetrahedron.
-    core_delta: Option<T1<B>>,
+    core_delta: Option<T1>,
     /// Optional radial correction delta_r n n^T added to the core growth U per tetrahedron (n: the
     /// growth normal): with `core_delta`, tangential growth delta and radial growth delta + delta_r.
-    core_delta_radial: Option<T1<B>>,
+    core_delta_radial: Option<T1>,
     /// Unit normals of the pull targets: if set, springs act along them only (tangential sliding).
-    pull_normals: Option<V3<B>>,
+    pull_normals: Option<V3>,
     /// Optional core growth tensor per tetrahedron replacing the scheduled one (remodelling).
-    core_override: Option<[T1<B>; 6]>,
+    core_override: Option<[T1; 6]>,
     /// Dirichlet nodes: (free mask, 1 free / 0 fixed; prescribed positions of the fixed nodes).
-    dirichlet: Option<(T1<B>, V3<B>)>,
+    dirichlet: Option<(T1, V3)>,
 }
 
 /// Expansion a_t: one value, or one per tetrahedron.
-enum Expansion<B: Backend> {
+#[allow(clippy::large_enum_variant)] // a Burn 0.22 tensor is a 256-byte handle; one value per simulation
+enum Expansion {
     Uniform(f64),
-    PerTet(T1<B>),
+    PerTet(T1),
 }
 
 /// A [`NodalTable`] averaged over the 4 nodes of each tetrahedron, on the device.
-struct NodalTets<B: Backend> {
+struct NodalTets {
     table_t: NodalTable,
-    a: Vec<T1<B>>,
-    h: Vec<T1<B>>,
+    a: Vec<T1>,
+    h: Vec<T1>,
     /// Per knot: the 6 components (xx, yy, zz, xy, xz, yz) of the growth tensor
     /// per tetrahedron; empty without anisotropic growth.
-    tensor: Vec<[T1<B>; 6]>,
+    tensor: Vec<[T1; 6]>,
     /// Per knot: the growth tensor U of the core per tetrahedron; empty if none.
-    core: Vec<[T1<B>; 6]>,
+    core: Vec<[T1; 6]>,
 }
 
-impl<B: Backend> NodalTets<B> {
-    fn at(&self, t: f64) -> (T1<B>, T1<B>) {
+impl NodalTets {
+    fn at(&self, t: f64) -> (T1, T1) {
         let (i0, i1, w) = self.table_t.bracket(t);
-        let lerp = |v: &[T1<B>]| {
+        let lerp = |v: &[T1]| {
             if i0 == i1 {
                 v[i0].clone()
             } else {
@@ -119,7 +120,7 @@ impl<B: Backend> NodalTets<B> {
     }
 
     /// Thickness H of the cortical layer: H(t), or H at the first knot with thickening.
-    fn thickness(&self, t: f64) -> T1<B> {
+    fn thickness(&self, t: f64) -> T1 {
         if self.table_t.thickening {
             self.h[0].clone()
         } else {
@@ -128,24 +129,24 @@ impl<B: Backend> NodalTets<B> {
     }
 
     /// Thickening c = H(t) / H(t_0) - 1 of the cortex, if enabled.
-    fn radial_at(&self, t: f64) -> Option<T1<B>> {
+    fn radial_at(&self, t: f64) -> Option<T1> {
         self.table_t.thickening.then(|| self.at(t).1 / self.h[0].clone() - 1.0)
     }
 
-    fn tensor_at(&self, t: f64) -> Option<M3<B>> {
+    fn tensor_at(&self, t: f64) -> Option<M3> {
         self.sym_at(&self.tensor, t)
     }
 
-    fn core_at(&self, t: f64) -> Option<M3<B>> {
+    fn core_at(&self, t: f64) -> Option<M3> {
         self.sym_at(&self.core, t)
     }
 
-    fn sym_at(&self, rows: &[[T1<B>; 6]], t: f64) -> Option<M3<B>> {
+    fn sym_at(&self, rows: &[[T1; 6]], t: f64) -> Option<M3> {
         if rows.is_empty() {
             return None;
         }
         let (i0, i1, w) = self.table_t.bracket(t);
-        let c: [T1<B>; 6] = std::array::from_fn(|k| {
+        let c: [T1; 6] = std::array::from_fn(|k| {
             if i0 == i1 {
                 rows[i0][k].clone()
             } else {
@@ -159,14 +160,14 @@ impl<B: Backend> NodalTets<B> {
     }
 }
 
-impl<B: Backend> Simulation<B> {
+impl Simulation {
     /// `mesh` must already be normalised (see `gyroxide_mesh::normalize`).
-    pub fn new(mesh: TetMesh, params: Params, device: B::Device) -> std::io::Result<Self> {
+    pub fn new(mesh: TetMesh, params: Params, device: Device) -> std::io::Result<Self> {
         let host = setup::host_fields(&mesh, &params)?;
-        let pre = setup::upload::<B>(&mesh, &host, &params, &device);
+        let pre = setup::upload(&mesh, &host, &params, &device);
         let x = V3::from_rows(&mesh.nodes, &device);
         let v = V3::zeros(mesh.n_nodes(), &device);
-        let growth_prev = T1::<B>::zeros([mesh.n_tets()], &device);
+        let growth_prev = T1::zeros([mesh.n_tets()], &device);
         let t = params.dynamics.t_start;
         Ok(Self {
             params,
@@ -199,7 +200,7 @@ impl<B: Backend> Simulation<B> {
     /// the first step when `params.schedule` is nodal). Each tetrahedron takes
     /// the mean of its 4 nodes.
     pub fn set_nodal_table(&mut self, table: NodalTable) {
-        let per_tet = |rows: &[Vec<f64>]| -> Vec<T1<B>> {
+        let per_tet = |rows: &[Vec<f64>]| -> Vec<T1> {
             rows.iter()
                 .map(|r| {
                     let v: Vec<f64> = self
@@ -214,7 +215,7 @@ impl<B: Backend> Simulation<B> {
         };
         let a = per_tet(&table.a);
         let h = per_tet(&table.h);
-        let sym = |rows: &[Vec<f64>]| -> Vec<[T1<B>; 6]> {
+        let sym = |rows: &[Vec<f64>]| -> Vec<[T1; 6]> {
             rows.iter()
                 .map(|row| {
                     std::array::from_fn(|k| {
@@ -281,19 +282,14 @@ impl<B: Backend> Simulation<B> {
         self.maybe_rebuild_contact();
     }
 
-    fn thickness_at(&self, t: f64) -> elastic::Thickness<B> {
+    fn thickness_at(&self, t: f64) -> elastic::Thickness {
         match &self.nodal {
             None => elastic::Thickness::Uniform(self.params.schedule.thickness(t)),
             Some(nd) => elastic::Thickness::PerTet(nd.thickness(t)),
         }
     }
 
-    fn compute_force(
-        &self,
-        x: &V3<B>,
-        thickness: &elastic::Thickness<B>,
-        record: bool,
-    ) -> (V3<B>, elastic::ElasticOutput<B>) {
+    fn compute_force(&self, x: &V3, thickness: &elastic::Thickness, record: bool) -> (V3, elastic::ElasticOutput) {
         let tensor = self.nodal.as_ref().and_then(|nd| nd.tensor_at(self.t));
         let material = self.params.material_at(self.t);
         let core = self.core_growth();
@@ -337,7 +333,7 @@ impl<B: Backend> Simulation<B> {
     }
 
     /// Growth tensor U of the core per tetrahedron at the current time (`core` table).
-    pub fn core_growth(&self) -> Option<M3<B>> {
+    pub fn core_growth(&self) -> Option<M3> {
         let mut u = match &self.core_override {
             Some(c) => {
                 let [xx, yy, zz, xy, xz, yz] = c.clone();
@@ -384,7 +380,7 @@ impl<B: Backend> Simulation<B> {
     }
 
     /// Thickening c of the cortex per tetrahedron at the current time (`thickening`).
-    pub fn radial_growth(&self) -> Option<T1<B>> {
+    pub fn radial_growth(&self) -> Option<T1> {
         let base = self.nodal.as_ref().and_then(|nd| nd.radial_at(self.t));
         match (base, &self.radial_delta, self.radial_mult) {
             (Some(c), Some(d), false) => Some(c + d.clone()),
@@ -439,7 +435,7 @@ impl<B: Backend> Simulation<B> {
     }
 
     /// Contact and mid-plane forces at `x` (current contact lists).
-    fn non_elastic(&self, x: &V3<B>) -> V3<B> {
+    fn non_elastic(&self, x: &V3) -> V3 {
         let p = &self.params;
         let (a, k) = (p.dynamics.mesh_spacing, p.material.bulk);
         let hc = p.repulsive_skin();
@@ -655,7 +651,7 @@ impl<B: Backend> Simulation<B> {
         snapshot
     }
 
-    fn snapshot(&self, force: &V3<B>, el: &elastic::ElasticOutput<B>) -> Snapshot {
+    fn snapshot(&self, force: &V3, el: &elastic::ElasticOutput) -> Snapshot {
         let (ue, ninv) = el
             .energy
             .clone()
@@ -717,7 +713,7 @@ impl<B: Backend> Simulation<B> {
     }
 
     /// Device constants (for tests and alternative kernels).
-    pub fn precomputed(&self) -> &Precomputed<B> {
+    pub fn precomputed(&self) -> &Precomputed {
         &self.pre
     }
 

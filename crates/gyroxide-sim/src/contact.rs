@@ -9,23 +9,22 @@
 //! more than half the gap between proximity and repulsive skins.
 
 use crate::algebra::{floats, ints, I1, T1, V3};
-use burn::tensor::backend::Backend;
-use burn::tensor::Bool;
 use burn::tensor::Tensor;
+use burn::tensor::{Bool, Device};
 use gyroxide_mesh::topology::Ell;
 use gyroxide_mesh::{add, dot, norm, scale, sub, TetMesh, Vec3};
 use std::collections::HashMap;
 
 /// Candidate (surface point, triangle) pairs on the device.
-pub struct ContactPairs<B: Backend> {
+pub struct ContactPairs {
     pub n_pairs: usize,
-    pub point: I1<B>,
-    pub tri: [I1<B>; 3],
+    pub point: I1,
+    pub tri: [I1; 3],
     /// 1.0 where `gr[pt] + gr[tri.n1] > 0` (the C code's condition), else 0.
-    pub active: T1<B>,
+    pub active: T1,
     /// Node <- (role, pair) incidence, slot = role * n_pairs + pair,
     /// role 0 = point, 1..3 = triangle vertices.
-    pub ell: I1<B>,
+    pub ell: I1,
     pub ell_width: usize,
 }
 
@@ -68,12 +67,7 @@ pub fn build_pairs(mesh: &TetMesh, surface_nodes: &[u32], x: &[Vec3], cell: f64,
     pairs
 }
 
-pub fn upload_pairs<B: Backend>(
-    mesh: &TetMesh,
-    gr: &[f64],
-    pairs: &[(u32, u32)],
-    device: &B::Device,
-) -> Option<ContactPairs<B>> {
+pub fn upload_pairs(mesh: &TetMesh, gr: &[f64], pairs: &[(u32, u32)], device: &Device) -> Option<ContactPairs> {
     if pairs.is_empty() {
         return None;
     }
@@ -106,14 +100,7 @@ pub fn upload_pairs<B: Backend>(
 }
 
 /// Penalty forces on all nodes [N] for the current positions.
-pub fn penalty_forces<B: Backend>(
-    pairs: &ContactPairs<B>,
-    x: &V3<B>,
-    n_nodes: usize,
-    hc: f64,
-    kc: f64,
-    a: f64,
-) -> V3<B> {
+pub fn penalty_forces(pairs: &ContactPairs, x: &V3, n_nodes: usize, hc: f64, kc: f64, a: f64) -> V3 {
     let p = x.select(&pairs.point);
     let ta = x.select(&pairs.tri[0]);
     let tb = x.select(&pairs.tri[1]);
@@ -136,8 +123,8 @@ pub fn penalty_forces<B: Backend>(
         out[1].push(part.y);
         out[2].push(part.z);
     }
-    let gather = |mut cols: Vec<T1<B>>| -> T1<B> {
-        cols.push(T1::<B>::zeros([1], &device));
+    let gather = |mut cols: Vec<T1>| -> T1 {
+        cols.push(T1::zeros([1], &device));
         T1::cat(cols, 0)
             .select(0, pairs.ell.clone())
             .reshape([n_nodes, pairs.ell_width])
@@ -153,15 +140,7 @@ pub fn penalty_forces<B: Backend>(
 /// closest point) on the relative displacement of the point and of the closest point, with
 /// the barycentric weights frozen at `x` (the reflection of the C code is left out, so that
 /// the operator stays linear and symmetric). Returns dF.
-pub fn penalty_tangent<B: Backend>(
-    pairs: &ContactPairs<B>,
-    x: &V3<B>,
-    dx: &V3<B>,
-    n_nodes: usize,
-    hc: f64,
-    kc: f64,
-    a: f64,
-) -> V3<B> {
+pub fn penalty_tangent(pairs: &ContactPairs, x: &V3, dx: &V3, n_nodes: usize, hc: f64, kc: f64, a: f64) -> V3 {
     let p = x.select(&pairs.point);
     let ta = x.select(&pairs.tri[0]);
     let tb = x.select(&pairs.tri[1]);
@@ -187,8 +166,8 @@ pub fn penalty_tangent<B: Backend>(
         out[1].push(part.y);
         out[2].push(part.z);
     }
-    let gather = |mut cols: Vec<T1<B>>| -> T1<B> {
-        cols.push(T1::<B>::zeros([1], &device));
+    let gather = |mut cols: Vec<T1>| -> T1 {
+        cols.push(T1::zeros([1], &device));
         T1::cat(cols, 0)
             .select(0, pairs.ell.clone())
             .reshape([n_nodes, pairs.ell_width])
@@ -201,17 +180,17 @@ pub fn penalty_tangent<B: Backend>(
 
 /// Tangent of [`midplane_force`] along `dy`, with the side flags frozen at `y`.
 #[allow(clippy::too_many_arguments)]
-pub fn midplane_tangent<B: Backend>(
-    y: &T1<B>,
-    dy: &T1<B>,
-    low: &T1<B>,
-    high: &T1<B>,
+pub fn midplane_tangent(
+    y: &T1,
+    dy: &T1,
+    low: &T1,
+    high: &T1,
     mpy: f64,
     hc: f64,
     k: f64,
     a: f64,
     restoring: bool,
-) -> T1<B> {
+) -> T1 {
     let above = y.clone().greater_elem(mpy).float();
     let below = y.clone().lower_elem(mpy).float();
     let on = low.clone() * above + high.clone() * below;
@@ -223,16 +202,7 @@ pub fn midplane_tangent<B: Backend>(
 /// side and are now on the other. `restoring = false` is Brains.cpp's
 /// `Ft.y -= (mpy - y)/hc * a^2 K`, which points away from the plane.
 #[allow(clippy::too_many_arguments)]
-pub fn midplane_force<B: Backend>(
-    y: &T1<B>,
-    low: &T1<B>,
-    high: &T1<B>,
-    mpy: f64,
-    hc: f64,
-    k: f64,
-    a: f64,
-    restoring: bool,
-) -> T1<B> {
+pub fn midplane_force(y: &T1, low: &T1, high: &T1, mpy: f64, hc: f64, k: f64, a: f64, restoring: bool) -> T1 {
     let above = y.clone().greater_elem(mpy).float();
     let below = y.clone().lower_elem(mpy).float();
     let on = low.clone() * above + high.clone() * below;
@@ -283,7 +253,7 @@ pub fn closest_point_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> (Vec3, [f64
 
 /// Batched version: all regions are evaluated and the first matching one
 /// (in Ericson's order) is selected, by overriding in reverse priority.
-fn closest_point_triangle_t<B: Backend>(p: &V3<B>, a: &V3<B>, b: &V3<B>, c: &V3<B>) -> (V3<B>, [T1<B>; 3]) {
+fn closest_point_triangle_t(p: &V3, a: &V3, b: &V3, c: &V3) -> (V3, [T1; 3]) {
     let ab = b.sub(a);
     let ac = c.sub(a);
     let ap = p.sub(a);
@@ -301,7 +271,7 @@ fn closest_point_triangle_t<B: Backend>(p: &V3<B>, a: &V3<B>, b: &V3<B>, c: &V3<
     let one = d1.ones_like();
     let zero = d1.zeros_like();
 
-    let and = |m: Vec<Tensor<B, 1, Bool>>| m.into_iter().reduce(|x, y| x.bool_and(y)).unwrap();
+    let and = |m: Vec<Tensor<1, Bool>>| m.into_iter().reduce(|x, y| x.bool_and(y)).unwrap();
 
     // Interior (lowest priority).
     let denom = (va.clone() + vb.clone() + vc.clone()).recip();
@@ -310,7 +280,7 @@ fn closest_point_triangle_t<B: Backend>(p: &V3<B>, a: &V3<B>, b: &V3<B>, c: &V3<
     let mut q = a.add(&ab.mul(&v_in)).add(&ac.mul(&w_in));
     let mut bary = [one.clone() - v_in.clone() - w_in.clone(), v_in, w_in];
 
-    let mut apply = |mask: Tensor<B, 1, Bool>, qq: V3<B>, uvw: [T1<B>; 3]| {
+    let mut apply = |mask: Tensor<1, Bool>, qq: V3, uvw: [T1; 3]| {
         q = q.where_(&mask, &qq);
         for k in 0..3 {
             bary[k] = bary[k].clone().mask_where(mask.clone(), uvw[k].clone());
@@ -374,7 +344,7 @@ fn closest_point_triangle_t<B: Backend>(p: &V3<B>, a: &V3<B>, b: &V3<B>, c: &V3<
 
 /// Number of active contact pairs: points closer to their triangle than the repulsive skin `hc`
 /// (the pairs that [`penalty_forces`] pushes apart; one scalar read).
-pub fn count_active<B: Backend>(pairs: &ContactPairs<B>, x: &V3<B>, hc: f64) -> usize {
+pub fn count_active(pairs: &ContactPairs, x: &V3, hc: f64) -> usize {
     let p = x.select(&pairs.point);
     let ta = x.select(&pairs.tri[0]);
     let tb = x.select(&pairs.tri[1]);
@@ -386,6 +356,6 @@ pub fn count_active<B: Backend>(pairs: &ContactPairs<B>, x: &V3<B>, hc: f64) -> 
 }
 
 /// Maximum displacement of the surface nodes since `x_old` (one scalar read).
-pub fn max_surface_displacement<B: Backend>(x: &V3<B>, surface: &I1<B>, x_old: &V3<B>) -> f64 {
+pub fn max_surface_displacement(x: &V3, surface: &I1, x_old: &V3) -> f64 {
     crate::algebra::scalar(x.select(surface).sub(x_old).norm().max())
 }

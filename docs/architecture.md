@@ -6,7 +6,7 @@
 |---|---|
 | `gyroxide-mesh` | `TetMesh`, lecture/écriture Netgen `.mesh`, normalisation (et sa transformée inverse), surface, normales de référence, incidence ELL, plus proche nœud de surface (grille), boule voxelisée de test, sorties VTK |
 | `gyroxide-model` | `Params` (TOML via serde), préréglages, lois de croissance, masque gr |
-| `gyroxide-sim` | `Simulation<B: Backend>` : état sur le device, pas de temps, élasticité, contact ; trait `TraceSink` |
+| `gyroxide-sim` | `Simulation` : état sur le device (`burn::tensor::Device`, Burn 0.22), pas de temps, élasticité, contact ; trait `TraceSink` |
 | `gyroxide-validate` | E/S NPY, écrivain de traces, comparaison à un oracle |
 | `gyroxide-cli` | binaire `gyroxide` : `run`, `preset`, `ball`, `compare` |
 

@@ -66,9 +66,7 @@
 //! Gradient: K lambda = dL/dx (K = -dF/dx, CG with finite-difference products of the total
 //! force), then dL/ds = lambda . dF/ds by one reverse-mode pass of the regular elastic
 //! branch (Burn autodiff). Optimiser: L-BFGS with Armijo backtracking.
-use burn::backend::wgpu::WgpuDevice;
-use burn::backend::{Autodiff, Wgpu};
-use burn::tensor::{Tensor, TensorData};
+use burn::tensor::{Device, DeviceKind, Tensor, TensorData};
 use gyroxide_mesh::{netgen, vtk};
 use gyroxide_model::{NodalTable, Params, Schedule};
 use gyroxide_sim::algebra::{to_f64, V3};
@@ -78,12 +76,10 @@ use gyroxide_validate::npy;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-type Fwd = Wgpu;
-type Ad = Autodiff<Wgpu>;
-
 struct Problem {
-    sim: Simulation<Fwd>,
-    ad: Simulation<Ad>,
+    sim: Simulation,
+    /// Same mesh and parameters on the autodiff device (reverse-mode passes).
+    ad: Simulation,
     tets: Vec<[u32; 4]>,
     owner: Vec<usize>,
     gm: Vec<f64>,
@@ -1472,15 +1468,15 @@ impl Problem {
 
     /// lambda . dF/ds per tetrahedron (one reverse-mode pass of the regular elastic branch).
     fn vjp_growth(&self, x: &[[f64; 3]], s: &[f64], lam: &[[f64; 3]]) -> Vec<f64> {
-        let dev = WgpuDevice::default();
-        let xv = V3::<Ad>::from_rows(x, &dev);
-        let lv = V3::<Ad>::from_rows(lam, &dev);
-        let st: Tensor<Ad, 1> = Tensor::from_data(
+        let dev = self.ad.device.clone();
+        let xv = V3::from_rows(x, &dev);
+        let lv = V3::from_rows(lam, &dev);
+        let st: Tensor<1> = Tensor::from_data(
             TensorData::new(s.iter().map(|&v| v as f32).collect::<Vec<_>>(), [s.len()]),
             &dev,
         )
         .require_grad();
-        let h: Tensor<Ad, 1> = Tensor::from_data(
+        let h: Tensor<1> = Tensor::from_data(
             TensorData::new(
                 self.thick.iter().map(|&v| v as f32).collect::<Vec<_>>(),
                 [self.thick.len()],
@@ -1513,10 +1509,10 @@ impl Problem {
         want_k: bool,
         want_r: bool,
     ) -> (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>) {
-        let dev = WgpuDevice::default();
-        let xv = V3::<Ad>::from_rows(x, &dev);
-        let lv = V3::<Ad>::from_rows(lam, &dev);
-        let t1 = |v: &[f64]| -> Tensor<Ad, 1> {
+        let dev = self.ad.device.clone();
+        let xv = V3::from_rows(x, &dev);
+        let lv = V3::from_rows(lam, &dev);
+        let t1 = |v: &[f64]| -> Tensor<1> {
             Tensor::from_data(
                 TensorData::new(v.iter().map(|&a| a as f32).collect::<Vec<_>>(), [v.len()]),
                 &dev,
@@ -1744,8 +1740,13 @@ fn main() {
     let (knots, a_path, a_scale) = (knots.clone(), a_path.clone(), *a_scale);
     let mesh = netgen::read(mesh_path).unwrap();
     let t0 = Instant::now();
-    let mut sim = Simulation::<Fwd>::new(mesh.clone(), params.clone(), WgpuDevice::default()).unwrap();
-    let mut ad = Simulation::<Ad>::new(mesh.clone(), params.clone(), WgpuDevice::default()).unwrap();
+    let mut sim = Simulation::new(mesh.clone(), params.clone(), Device::wgpu(DeviceKind::DefaultDevice)).unwrap();
+    let mut ad = Simulation::new(
+        mesh.clone(),
+        params.clone(),
+        Device::wgpu(DeviceKind::DefaultDevice).autodiff(),
+    )
+    .unwrap();
     if let Schedule::Nodal { a, h, core, .. } = &params.schedule {
         let table = || {
             let t = NodalTable::new(

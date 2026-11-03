@@ -4,38 +4,37 @@
 
 use crate::algebra::{M3, T1, V3};
 use crate::setup::Precomputed;
-use burn::tensor::backend::Backend;
 use burn::tensor::Tensor;
 use gyroxide_model::Material;
 
 /// What one evaluation of the elastic forces produces.
-pub struct ElasticOutput<B: Backend> {
+pub struct ElasticOutput {
     /// Assembled nodal forces [N].
-    pub force: V3<B>,
+    pub force: V3,
     /// Grown reference nodal volumes Vn0 [N] (also the lumped masses / rho).
-    pub vn0: T1<B>,
+    pub vn0: T1,
     /// Deformed nodal volumes Vn [N].
-    pub vn: T1<B>,
+    pub vn: T1,
     /// Cortical indicator g_m per tetrahedron [T].
-    pub gm: T1<B>,
+    pub gm: T1,
     /// Elastic energy and number of inverted elements, when requested.
-    pub energy: Option<(T1<B>, T1<B>)>,
+    pub energy: Option<(T1, T1)>,
     /// Cauchy stress of the regular branch and J = det F per tetrahedron, with the energy.
-    pub stress: Option<(M3<B>, T1<B>)>,
+    pub stress: Option<(M3, T1)>,
 }
 
 /// Sums per-vertex tetrahedral contributions into nodes through the ELL
 /// incidence table (gather, deterministic, no atomics).
-pub fn gather_nodes<B: Backend>(pre: &Precomputed<B>, per_vertex: [T1<B>; 4]) -> T1<B> {
+pub fn gather_nodes(pre: &Precomputed, per_vertex: [T1; 4]) -> T1 {
     let device = per_vertex[0].device();
-    let mut parts: Vec<T1<B>> = per_vertex.into();
-    parts.push(T1::<B>::zeros([1], &device)); // padding slot
+    let mut parts: Vec<T1> = per_vertex.into();
+    parts.push(T1::zeros([1], &device)); // padding slot
     let flat = T1::cat(parts, 0).select(0, pre.ell_tet.clone());
     let n = pre.n_nodes;
     flat.reshape([n, pre.ell_tet_width]).sum_dim(1).reshape([n])
 }
 
-fn gather_v3<B: Backend>(pre: &Precomputed<B>, f: [V3<B>; 4]) -> V3<B> {
+fn gather_v3(pre: &Precomputed, f: [V3; 4]) -> V3 {
     let [a, b, c, d] = f;
     V3::new(
         gather_nodes(pre, [a.x, b.x, c.x, d.x]),
@@ -46,7 +45,7 @@ fn gather_v3<B: Backend>(pre: &Precomputed<B>, f: [V3<B>; 4]) -> V3<B> {
 
 /// Nodal forces of the first Piola-Kirchhoff stress `p` on the grown reference
 /// edges `ar`: P (N_a + N_b + N_c) / 6 per vertex, then gathered.
-fn nodal_forces<B: Backend>(pre: &Precomputed<B>, ar: &M3<B>, p: &M3<B>) -> V3<B> {
+fn nodal_forces(pre: &Precomputed, ar: &M3, p: &M3) -> V3 {
     // Undeformed (grown) face normals.
     let (xr1, xr2, xr3) = (ar.col(0), ar.col(1), ar.col(2));
     let n1 = xr3.cross(&xr1);
@@ -64,34 +63,35 @@ fn nodal_forces<B: Backend>(pre: &Precomputed<B>, ar: &M3<B>, p: &M3<B>) -> V3<B
 }
 
 /// Thickness H of the growing layer: one value, or one per tetrahedron.
-pub enum Thickness<B: Backend> {
+#[allow(clippy::large_enum_variant)] // a Burn 0.22 tensor is a 256-byte handle; one value per simulation
+pub enum Thickness {
     Uniform(f64),
-    PerTet(T1<B>),
+    PerTet(T1),
 }
 
 /// Elastic forces for positions `x`, given the growth stretch `growth_prev`
 /// (= g_m a_t of the previous step, as in the C code where G is updated at
 /// the end of the loop and used at the next step) and thickness `h`.
-pub fn forces<B: Backend>(
-    pre: &Precomputed<B>,
+pub fn forces(
+    pre: &Precomputed,
     mat: &Material,
-    x: &V3<B>,
-    growth_prev: &T1<B>,
+    x: &V3,
+    growth_prev: &T1,
     thickness: f64,
     with_energy: bool,
-) -> ElasticOutput<B> {
+) -> ElasticOutput {
     forces_with(pre, mat, x, growth_prev, &Thickness::Uniform(thickness), with_energy)
 }
 
 /// [`forces`] with a uniform or per-tetrahedron thickness.
-pub fn forces_with<B: Backend>(
-    pre: &Precomputed<B>,
+pub fn forces_with(
+    pre: &Precomputed,
     mat: &Material,
-    x: &V3<B>,
-    growth_prev: &T1<B>,
-    thickness: &Thickness<B>,
+    x: &V3,
+    growth_prev: &T1,
+    thickness: &Thickness,
     with_energy: bool,
-) -> ElasticOutput<B> {
+) -> ElasticOutput {
     forces_impl(
         pre,
         mat,
@@ -108,15 +108,15 @@ pub fn forces_with<B: Backend>(
 
 /// [`forces_with`] with an anisotropic growth tensor T per tetrahedron:
 /// G = I + g T, with `g` (= g_m of the previous step) in `growth_prev`.
-pub fn forces_tensor<B: Backend>(
-    pre: &Precomputed<B>,
+pub fn forces_tensor(
+    pre: &Precomputed,
     mat: &Material,
-    x: &V3<B>,
-    growth_prev: &T1<B>,
-    tensor: &M3<B>,
-    thickness: &Thickness<B>,
+    x: &V3,
+    growth_prev: &T1,
+    tensor: &M3,
+    thickness: &Thickness,
     with_energy: bool,
-) -> ElasticOutput<B> {
+) -> ElasticOutput {
     forces_impl(
         pre,
         mat,
@@ -135,15 +135,15 @@ pub fn forces_tensor<B: Backend>(
 /// tetrahedron. Equal to [`forces_with`] when no element is inverted or below
 /// the stretch floor; meant for reverse-mode differentiation, where the
 /// unselected inverted branch would otherwise propagate NaN (0 * NaN).
-pub fn forces_regular<B: Backend>(
-    pre: &Precomputed<B>,
+pub fn forces_regular(
+    pre: &Precomputed,
     mat: &Material,
-    x: &V3<B>,
-    growth: &T1<B>,
-    thickness: &Thickness<B>,
-    core: Option<&M3<B>>,
-    radial: Option<&T1<B>>,
-) -> V3<B> {
+    x: &V3,
+    growth: &T1,
+    thickness: &Thickness,
+    core: Option<&M3>,
+    radial: Option<&T1>,
+) -> V3 {
     forces_impl(pre, mat, x, growth, None, core, radial, thickness, false, true).force
 }
 
@@ -151,17 +151,17 @@ pub fn forces_regular<B: Backend>(
 /// I - n n^T, or the anisotropic `tensor`), thickening c of the cortex and the growth tensor
 /// U of the core, G = I + g_m a (I - n n^T) + g_m c n n^T + (1 - g_m)(U - I).
 #[allow(clippy::too_many_arguments)]
-pub fn forces_full<B: Backend>(
-    pre: &Precomputed<B>,
+pub fn forces_full(
+    pre: &Precomputed,
     mat: &Material,
-    x: &V3<B>,
-    growth_prev: &T1<B>,
-    tensor: Option<&M3<B>>,
-    core: Option<&M3<B>>,
-    radial: Option<&T1<B>>,
-    thickness: &Thickness<B>,
+    x: &V3,
+    growth_prev: &T1,
+    tensor: Option<&M3>,
+    core: Option<&M3>,
+    radial: Option<&T1>,
+    thickness: &Thickness,
     with_energy: bool,
-) -> ElasticOutput<B> {
+) -> ElasticOutput {
     forces_impl(
         pre,
         mat,
@@ -180,19 +180,19 @@ pub fn forces_full<B: Backend>(
 /// exact): K v = -force_tangent(..). Same growth and thickness conventions as
 /// [`forces_regular`]; elements outside the regular branch use its formula too.
 #[allow(clippy::too_many_arguments)]
-pub fn force_tangent<B: Backend>(
-    pre: &Precomputed<B>,
+pub fn force_tangent(
+    pre: &Precomputed,
     mat: &Material,
-    x: &V3<B>,
-    v: &V3<B>,
-    growth: &T1<B>,
-    thickness: &Thickness<B>,
-    core: Option<&M3<B>>,
-    radial: Option<&T1<B>>,
-) -> V3<B> {
+    x: &V3,
+    v: &V3,
+    growth: &T1,
+    thickness: &Thickness,
+    core: Option<&M3>,
+    radial: Option<&T1>,
+) -> V3 {
     let nt = pre.n_tets;
     let device = x.x.device();
-    let frob = |a: &M3<B>, b: &M3<B>| -> T1<B> {
+    let frob = |a: &M3, b: &M3| -> T1 {
         (0..3)
             .flat_map(|r| (0..3).map(move |c| (r, c)))
             .map(|(r, c)| a.get(r, c) * b.get(r, c))
@@ -207,7 +207,7 @@ pub fn force_tangent<B: Backend>(
     let mu = (gm.clone() * (mat.mu_gray - mat.mu_white)).add_scalar(mat.mu_white);
     let n = &pre.growth_normal;
     let nn = M3::from_cols(&n.mul(&n.x), &n.mul(&n.y), &n.mul(&n.z));
-    let eye = M3::<B>::identity(nt, &device);
+    let eye = M3::identity(nt, &device);
     let mut g = eye.add(&eye.sub(&nn).mul_s(growth));
     if mat.wm_growth != 0.0 {
         g = g.add(&eye.mul_s(&((-gm.clone()).add_scalar(1.0) * mat.wm_growth)));
@@ -220,8 +220,8 @@ pub fn force_tangent<B: Backend>(
     }
     let ar = g.matmul(&pre.ar0);
 
-    let xs: [V3<B>; 4] = std::array::from_fn(|k| x.select(&pre.tet_nodes[k]));
-    let vs: [V3<B>; 4] = std::array::from_fn(|k| v.select(&pre.tet_nodes[k]));
+    let xs: [V3; 4] = std::array::from_fn(|k| x.select(&pre.tet_nodes[k]));
+    let vs: [V3; 4] = std::array::from_fn(|k| v.select(&pre.tet_nodes[k]));
     let a = M3::from_cols(&xs[1].sub(&xs[0]), &xs[2].sub(&xs[0]), &xs[3].sub(&xs[0]));
     let da = M3::from_cols(&vs[1].sub(&vs[0]), &vs[2].sub(&vs[0]), &vs[3].sub(&vs[0]));
 
@@ -234,8 +234,8 @@ pub fn force_tangent<B: Backend>(
     let dvn = gather_nodes(pre, [dq.clone(), dq.clone(), dq.clone(), dq]);
     let jn = vn / vn0.clone();
     let djn = dvn / vn0;
-    let mean4 = |t: &T1<B>| {
-        let s: [T1<B>; 4] = std::array::from_fn(|k| t.clone().select(0, pre.tet_nodes[k].clone()));
+    let mean4 = |t: &T1| {
+        let s: [T1; 4] = std::array::from_fn(|k| t.clone().select(0, pre.tet_nodes[k].clone()));
         (s[0].clone() + s[1].clone() + s[2].clone() + s[3].clone()) / 4.0
     };
     let ari = ar.inverse();
@@ -270,18 +270,18 @@ pub fn force_tangent<B: Backend>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn forces_impl<B: Backend>(
-    pre: &Precomputed<B>,
+fn forces_impl(
+    pre: &Precomputed,
     mat: &Material,
-    x: &V3<B>,
-    growth_prev: &T1<B>,
-    tensor: Option<&M3<B>>,
-    core: Option<&M3<B>>,
-    radial: Option<&T1<B>>,
-    thickness: &Thickness<B>,
+    x: &V3,
+    growth_prev: &T1,
+    tensor: Option<&M3>,
+    core: Option<&M3>,
+    radial: Option<&T1>,
+    thickness: &Thickness,
     with_energy: bool,
     regular_only: bool,
-) -> ElasticOutput<B> {
+) -> ElasticOutput {
     let nt = pre.n_tets;
     let device = x.x.device();
 
@@ -296,7 +296,7 @@ fn forces_impl<B: Backend>(
     // Growth tensor G = I + s (I - n n^T), applied to the reference edges.
     let n = &pre.growth_normal;
     let nn = M3::from_cols(&n.mul(&n.x), &n.mul(&n.y), &n.mul(&n.z));
-    let eye = M3::<B>::identity(nt, &device);
+    let eye = M3::identity(nt, &device);
     let mut g = match tensor {
         None => eye.add(&eye.sub(&nn).mul_s(growth_prev)),
         Some(t) => eye.add(&t.mul_s(growth_prev)),
@@ -313,7 +313,7 @@ fn forces_impl<B: Backend>(
     let ar = g.matmul(&pre.ar0);
 
     // Current edges.
-    let xs: [V3<B>; 4] = std::array::from_fn(|k| x.select(&pre.tet_nodes[k]));
+    let xs: [V3; 4] = std::array::from_fn(|k| x.select(&pre.tet_nodes[k]));
     let a = M3::from_cols(&xs[1].sub(&xs[0]), &xs[2].sub(&xs[0]), &xs[3].sub(&xs[0]));
 
     // Nodal volumes (reference grown and deformed) for the averaged J.
@@ -324,7 +324,7 @@ fn forces_impl<B: Backend>(
     let vn0 = gather_nodes(pre, [q0.clone(), q0.clone(), q0.clone(), q0]);
     let vn = gather_nodes(pre, [q.clone(), q.clone(), q.clone(), q]);
     let jn = vn.clone() / vn0.clone();
-    let js: [T1<B>; 4] = std::array::from_fn(|k| jn.clone().select(0, pre.tet_nodes[k].clone()));
+    let js: [T1; 4] = std::array::from_fn(|k| jn.clone().select(0, pre.tet_nodes[k].clone()));
     let ja = (js[0].clone() + js[1].clone() + js[2].clone() + js[3].clone()) / 4.0;
     // Kinematics.
     let f = a.matmul(&ar.inverse());
@@ -395,21 +395,21 @@ fn forces_impl<B: Backend>(
 }
 
 /// Eigen-decomposition of a batch of symmetric 3x3 matrices.
-pub struct SymEigen<B: Backend> {
+pub struct SymEigen {
     /// Eigenvalues in ascending order (Rayleigh quotients of `vectors`).
-    pub values: [T1<B>; 3],
+    pub values: [T1; 3],
     /// Unit eigenvectors as columns, same order as `values`.
-    pub vectors: M3<B>,
+    pub vectors: M3,
     /// Smallest eigenvalue from the closed form (`Matrix::EV().z` in vema.h),
     /// used for the branch test exactly as in the C code.
-    pub lambda_min: T1<B>,
+    pub lambda_min: T1,
 }
 
 /// Closed-form eigenvalues (Kopp's trigonometric form, as `EV()` in vema.h)
 /// plus robust eigenvectors: the best-separated eigenvalue's vector from the
 /// largest cross product of the rows of (C - lambda I), the two others from
 /// the 2x2 problem in its orthogonal complement (Eberly's construction).
-pub fn sym_eigen<B: Backend>(c: &M3<B>) -> SymEigen<B> {
+pub fn sym_eigen(c: &M3) -> SymEigen {
     let (a, b, cc) = (c.get(0, 0), c.get(0, 1), c.get(0, 2));
     let (e, f, i) = (c.get(1, 1), c.get(1, 2), c.get(2, 2));
     let tr = a.clone() + e.clone() + i.clone();
@@ -484,7 +484,7 @@ pub fn sym_eigen<B: Backend>(c: &M3<B>) -> SymEigen<B> {
 
 /// Unit eigenvector of symmetric `c` for eigenvalue `lam`: the largest of the
 /// cross products of the rows of (C - lam I); e_x if all vanish.
-fn eigvec_from_rows<B: Backend>(c: &M3<B>, lam: &T1<B>) -> V3<B> {
+fn eigvec_from_rows(c: &M3, lam: &T1) -> V3 {
     let row = |r: usize| {
         let mut v = [c.get(r, 0), c.get(r, 1), c.get(r, 2)];
         v[r] = v[r].clone() - lam.clone();
@@ -509,17 +509,17 @@ fn eigvec_from_rows<B: Backend>(c: &M3<B>, lam: &T1<B>) -> V3<B> {
 /// Port of the "Needs SVD" branch of Brains.cpp. Returns P, the deviatoric +
 /// floor part of W (the volumetric term is added by the caller), and the
 /// mask of truly inverted elements (det F < 0).
-pub fn inverted_branch<B: Backend>(
-    f: &M3<B>,
-    j: &T1<B>,
-    eig: &SymEigen<B>,
-    mu: &T1<B>,
-    kja: &T1<B>,
+pub fn inverted_branch(
+    f: &M3,
+    j: &T1,
+    eig: &SymEigen,
+    mu: &T1,
+    kja: &T1,
     mat: &Material,
-) -> (M3<B>, T1<B>, Tensor<B, 1, burn::tensor::Bool>) {
+) -> (M3, T1, Tensor<1, burn::tensor::Bool>) {
     let eps = mat.eps;
     let tiny = 1e-25;
-    let l: [T1<B>; 3] = std::array::from_fn(|k| eig.values[k].clone().clamp_min(0.0).sqrt());
+    let l: [T1; 3] = std::array::from_fn(|k| eig.values[k].clone().clamp_min(0.0).sqrt());
 
     // Right-handed eigenvector basis.
     let mut v = eig.vectors.clone();

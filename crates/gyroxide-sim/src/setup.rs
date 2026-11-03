@@ -1,7 +1,7 @@
 //! One-off CPU preprocessing, uploaded once to the device.
 
 use crate::algebra::{floats, ints, I1, M3, T1, V3};
-use burn::tensor::backend::Backend;
+use burn::tensor::Device;
 use gyroxide_mesh::distance::nearest;
 use gyroxide_mesh::topology::{surface_normals, Ell, Surface};
 use gyroxide_mesh::{add, normalize, sub, TetMesh, Vec3};
@@ -21,28 +21,28 @@ pub struct HostFields {
 }
 
 /// Device-resident constants.
-pub struct Precomputed<B: Backend> {
+pub struct Precomputed {
     pub n_nodes: usize,
     pub n_tets: usize,
-    pub tet_nodes: [I1<B>; 4],
+    pub tet_nodes: [I1; 4],
     /// Reference edge matrix [x1-x0, x2-x0, x3-x0] per tetrahedron.
-    pub ar0: M3<B>,
+    pub ar0: M3,
     /// Growth normal per tetrahedron: normalised sum of N0 at the nearest
     /// surface nodes of its 4 vertices (constant: reference normals).
-    pub growth_normal: V3<B>,
+    pub growth_normal: V3,
     /// Mean distance to the surface and mean growth mask of the 4 vertices.
-    pub d_mean: T1<B>,
-    pub gr_mean: T1<B>,
+    pub d_mean: T1,
+    pub gr_mean: T1,
     /// Node -> tetrahedron-vertex incidence (ELL), padded with `4 * n_tets`.
-    pub ell_tet: I1<B>,
+    pub ell_tet: I1,
     pub ell_tet_width: usize,
     /// Surface node indices (`SN`).
-    pub surface_nodes: I1<B>,
+    pub surface_nodes: I1,
     /// Growth mask per node.
-    pub gr: T1<B>,
+    pub gr: T1,
     /// Midplane masks (1.0 for surface nodes starting below / above it).
-    pub midplane_low: T1<B>,
-    pub midplane_high: T1<B>,
+    pub midplane_low: T1,
+    pub midplane_high: T1,
 }
 
 pub fn host_fields(mesh: &TetMesh, params: &Params) -> std::io::Result<HostFields> {
@@ -60,10 +60,10 @@ pub fn host_fields(mesh: &TetMesh, params: &Params) -> std::io::Result<HostField
     })
 }
 
-pub fn upload<B: Backend>(mesh: &TetMesh, host: &HostFields, params: &Params, device: &B::Device) -> Precomputed<B> {
+pub fn upload(mesh: &TetMesh, host: &HostFields, params: &Params, device: &Device) -> Precomputed {
     let nt = mesh.n_tets();
     let nn = mesh.n_nodes();
-    let tet_nodes = std::array::from_fn(|k| ints::<B>(&mesh.tets.iter().map(|t| t[k]).collect::<Vec<_>>(), device));
+    let tet_nodes = std::array::from_fn(|k| ints(&mesh.tets.iter().map(|t| t[k]).collect::<Vec<_>>(), device));
 
     let mut cols: [Vec<Vec3>; 3] = Default::default();
     let mut gnorm = Vec::with_capacity(nt);
