@@ -51,9 +51,9 @@ pub struct Material {
     pub eps: f64,
     /// Extra stiffness on the floored stretch in the inverted branch, `k` (0 in both codes).
     pub k_inverted: f64,
-    /// Isotropic growth b of the core (white matter, subplate): G = I + g_m a_t (I - n n^T)
-    /// + (1 - g_m) b I. 0 in both codes (only the cortex grows); set over time by the
-    /// `wm_growth` table of the nodal schedule.
+    /// Isotropic growth b of the core (white matter, subplate):
+    /// `G = I + g_m a_t (I - n n^T) + (1 - g_m) b I`. 0 in both codes (only the cortex grows);
+    /// set over time by the `wm_growth` table of the nodal schedule.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub wm_growth: f64,
     /// Share beta of the element J in the volumetric pressure, K [(1 - beta)(J_a - 1) +

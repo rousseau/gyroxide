@@ -92,7 +92,18 @@ pub fn forces_with<B: Backend>(
     thickness: &Thickness<B>,
     with_energy: bool,
 ) -> ElasticOutput<B> {
-    forces_impl(pre, mat, x, growth_prev, None, None, None, thickness, with_energy, false)
+    forces_impl(
+        pre,
+        mat,
+        x,
+        growth_prev,
+        None,
+        None,
+        None,
+        thickness,
+        with_energy,
+        false,
+    )
 }
 
 /// [`forces_with`] with an anisotropic growth tensor T per tetrahedron:
@@ -106,7 +117,18 @@ pub fn forces_tensor<B: Backend>(
     thickness: &Thickness<B>,
     with_energy: bool,
 ) -> ElasticOutput<B> {
-    forces_impl(pre, mat, x, growth_prev, Some(tensor), None, None, thickness, with_energy, false)
+    forces_impl(
+        pre,
+        mat,
+        x,
+        growth_prev,
+        Some(tensor),
+        None,
+        None,
+        thickness,
+        with_energy,
+        false,
+    )
 }
 
 /// Nodal forces from the regular (neo-Hookean) branch only, for every
@@ -140,12 +162,24 @@ pub fn forces_full<B: Backend>(
     thickness: &Thickness<B>,
     with_energy: bool,
 ) -> ElasticOutput<B> {
-    forces_impl(pre, mat, x, growth_prev, tensor, core, radial, thickness, with_energy, false)
+    forces_impl(
+        pre,
+        mat,
+        x,
+        growth_prev,
+        tensor,
+        core,
+        radial,
+        thickness,
+        with_energy,
+        false,
+    )
 }
 
 /// Directional derivative dF_reg/dx . v of the regular-branch elastic force (forward mode,
 /// exact): K v = -force_tangent(..). Same growth and thickness conventions as
 /// [`forces_regular`]; elements outside the regular branch use its formula too.
+#[allow(clippy::too_many_arguments)]
 pub fn force_tangent<B: Backend>(
     pre: &Precomputed<B>,
     mat: &Material,
@@ -229,7 +263,9 @@ pub fn force_tangent<B: Backend>(
     // is dropped (their force uses the inverted branch) so that NaN does not reach the Newton and
     // adjoint solves.
     let bad = j.lower_equal_elem(1e-6);
-    let dp = M3 { m: dp.m.map(|row| row.map(|e| e.mask_fill(bad.clone(), 0.0))) };
+    let dp = M3 {
+        m: dp.m.map(|row| row.map(|e| e.mask_fill(bad.clone(), 0.0))),
+    };
     nodal_forces(pre, &ar, &dp)
 }
 
