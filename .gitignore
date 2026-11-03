@@ -5,3 +5,4 @@
 !crates/**/tests/data/*.npy
 /data/
 /target-dev*
+__pycache__/
