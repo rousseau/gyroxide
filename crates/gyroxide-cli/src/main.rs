@@ -27,10 +27,31 @@ struct Cli {
 
 #[derive(Copy, Clone, ValueEnum)]
 enum BackendKind {
+    /// The fastest the machine offers: CUDA when built with the `cuda` feature and an NVIDIA driver is loaded, else wgpu.
+    Auto,
     /// GPU through wgpu (Metal / Vulkan / DX12), f32, with kernel fusion.
     Wgpu,
+    /// NVIDIA GPU through CUDA (build with `--features cuda`), f32, with kernel fusion.
+    Cuda,
     /// CPU reference, f64.
     Ndarray,
+}
+
+impl BackendKind {
+    /// `Auto` resolved to the backend actually used.
+    fn resolve(self) -> BackendKind {
+        match self {
+            BackendKind::Auto if cfg!(feature = "cuda") && nvidia_driver() => BackendKind::Cuda,
+            BackendKind::Auto if cfg!(feature = "wgpu") => BackendKind::Wgpu,
+            BackendKind::Auto => BackendKind::Ndarray,
+            other => other,
+        }
+    }
+}
+
+/// True when an NVIDIA driver is loaded (Linux): reads one file, loads no CUDA library.
+fn nvidia_driver() -> bool {
+    cfg!(target_os = "linux") && std::path::Path::new("/proc/driver/nvidia/version").is_file()
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, ValueEnum)]
@@ -136,7 +157,7 @@ struct RunArgs {
     /// Cubes per diameter of the generated voxel ball.
     #[arg(long, default_value_t = 8)]
     ball: usize,
-    #[arg(long, value_enum, default_value_t = BackendKind::Wgpu)]
+    #[arg(long, value_enum, default_value_t = BackendKind::Auto)]
     backend: BackendKind,
     /// Stop after this many steps (default: until t_end).
     #[arg(long)]
@@ -513,14 +534,22 @@ fn dispatch(
     transform: normalize::Transform,
     bids: Option<BidsRun>,
 ) -> Result<()> {
-    match args.backend {
-        #[cfg(any(feature = "wgpu", feature = "cuda"))]
+    match args.backend.resolve() {
+        BackendKind::Auto => unreachable!("resolved above"),
+        #[cfg(feature = "wgpu")]
         BackendKind::Wgpu => {
             let device = Device::wgpu(DeviceKind::DefaultDevice);
             run_on(args, params, mesh, mesh_name, transform, bids, device, "f32")
         }
-        #[cfg(not(any(feature = "wgpu", feature = "cuda")))]
+        #[cfg(not(feature = "wgpu"))]
         BackendKind::Wgpu => bail!("built without the wgpu feature"),
+        #[cfg(feature = "cuda")]
+        BackendKind::Cuda => {
+            let device = Device::cuda(0);
+            run_on(args, params, mesh, mesh_name, transform, bids, device, "f32")
+        }
+        #[cfg(not(feature = "cuda"))]
+        BackendKind::Cuda => bail!("built without the cuda feature (cargo build --release --features cuda)"),
         BackendKind::Ndarray => {
             #[allow(deprecated)] // burn-ndarray is deprecated since Burn 0.22 (Device::flex() replaces it)
             let mut device = Device::ndarray();
@@ -931,4 +960,26 @@ fn run_on(
         sim.n_contact_pairs()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `auto` picks CUDA only when built with it and an NVIDIA driver is loaded, else wgpu; explicit choices are kept.
+    #[test]
+    fn auto_backend_resolves_to_the_fastest_available() {
+        let expected = if cfg!(feature = "cuda") && nvidia_driver() {
+            "cuda"
+        } else if cfg!(feature = "wgpu") {
+            "wgpu"
+        } else {
+            "ndarray"
+        };
+        let name = |b: BackendKind| b.to_possible_value().unwrap().get_name().to_string();
+        assert_eq!(name(BackendKind::Auto.resolve()), expected);
+        for b in [BackendKind::Wgpu, BackendKind::Cuda, BackendKind::Ndarray] {
+            assert_eq!(name(b.resolve()), name(b));
+        }
+    }
 }

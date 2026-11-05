@@ -18,7 +18,8 @@ cargo run --release --bin gyroxide -- run --preset braingrowth \
 cargo run --release --bin gyroxide -- preset tallinen2016   # paramètres en TOML
 ```
 
-Options utiles de `run` : `--backend ndarray` (CPU f64), `--steps N`,
+Options utiles de `run` : `--backend` (défaut `auto` : CUDA si gyroxide est compilé avec `--features cuda` et qu'un
+pilote NVIDIA est chargé, sinon wgpu ; `ndarray` pour le CPU en f64), `--steps N`,
 `--surface-every N` (surfaces GIfTI), `--hemi L|R`, `--trace-every N` (traces NPY),
 `--vtk-every N` (surfaces VTK de débogage, ParaView), `--no-contact`, `--no-midplane`,
 `--uniform-growth`, `--config params.toml`.
