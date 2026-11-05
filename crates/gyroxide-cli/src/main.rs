@@ -98,9 +98,10 @@ struct MeshArgs {
     output_dir: Option<PathBuf>,
     #[arg(long, value_enum, default_value_t = Hemi::L)]
     hemi: Hemi,
-    /// TetGen executable (external program, AGPL: never linked to gyroxide).
-    #[arg(long, default_value = "tetgen")]
-    tetgen: PathBuf,
+    /// TetGen executable (external program, AGPL: never linked to gyroxide). Default: found
+    /// automatically (GYROXIDE_TETGEN, PATH, ~/.local/bin, conda/mamba environment `tetgen`).
+    #[arg(long)]
+    tetgen: Option<PathBuf>,
     /// TetGen switches (Y keeps the pial triangles exactly).
     #[arg(long, default_value = gyroxide_mesh::tetgen::DEFAULT_SWITCHES)]
     switches: String,
@@ -266,6 +267,11 @@ fn mesh_session(args: &MeshArgs) -> Result<()> {
     use surfoxide_io::bids;
     let session = args.session.as_deref();
     let h = args.hemi.letter();
+    // TetGen first: a missing executable fails before any reading.
+    let tetgen = match &args.tetgen {
+        Some(p) => p.clone(),
+        None => gyroxide_mesh::tetgen::locate()?,
+    };
     // surfx outputs: under --output-dir first (a chain run with the same --output-dir), then in the study.
     let mut src = None;
     for out in [args.output_dir.as_deref(), None] {
@@ -298,8 +304,7 @@ fn mesh_session(args: &MeshArgs) -> Result<()> {
     }
     let work = std::env::temp_dir().join(format!("gyroxide-mesh-{}", std::process::id()));
     let t0 = Instant::now();
-    let mesh =
-        gyroxide_mesh::tetgen::tetrahedralise(&args.tetgen, pial.vertices(), pial.faces(), &args.switches, &work)?;
+    let mesh = gyroxide_mesh::tetgen::tetrahedralise(&tetgen, pial.vertices(), pial.faces(), &args.switches, &work)?;
     let _ = std::fs::remove_dir_all(&work);
     let white_matter = gyroxide_mesh::inside::inside(&mesh.nodes, white.vertices(), white.faces());
     let near = gyroxide_mesh::distance::nearest(&mesh.nodes, &mesh.nodes[..nv]);

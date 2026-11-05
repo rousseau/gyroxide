@@ -6,13 +6,100 @@
 
 use crate::topology::extract_boundary;
 use crate::{MeshError, TetMesh, Vec3};
+use std::ffi::OsString;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Default switches: piecewise linear complex (`p`), quality (radius-edge 1.5, min dihedral 10 deg),
 /// surface kept (`Y`), quiet (`Q`).
 pub const DEFAULT_SWITCHES: &str = "pq1.5/10YQ";
+
+/// Name of the conda / mamba environment searched for TetGen (`conda create -n tetgen -c conda-forge tetgen`).
+const CONDA_ENV: &str = "tetgen";
+
+/// How to install TetGen, for error messages.
+pub const INSTALL_HINT: &str = "install TetGen (Debian/Ubuntu: sudo apt install tetgen; macOS: \
+     conda create -n tetgen -c conda-forge tetgen, or the oxide installer), or give its path with \
+     --tetgen or GYROXIDE_TETGEN";
+
+/// Finds the TetGen executable, so that it never has to be given by hand: `GYROXIDE_TETGEN`, then
+/// `tetgen` on the PATH, then the per-user places where installers put it (`~/.local/bin`, the
+/// `tetgen` environment of conda, mamba or micromamba).
+pub fn locate() -> Result<PathBuf, MeshError> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let env = |k: &str| std::env::var_os(k);
+    candidates(
+        env("GYROXIDE_TETGEN"),
+        env("PATH"),
+        home,
+        &[env("CONDA_PREFIX"), env("CONDA_EXE"), env("MAMBA_ROOT_PREFIX")],
+    )
+    .into_iter()
+    .find(|p| is_executable(p))
+    .ok_or_else(|| MeshError::Invalid(format!("TetGen not found: {INSTALL_HINT}")))
+}
+
+/// Places searched by [`locate`], in order. `conda` holds `CONDA_PREFIX` (active environment),
+/// `CONDA_EXE` (`<base>/bin/conda` or `<base>/condabin/conda`) and `MAMBA_ROOT_PREFIX`.
+fn candidates(
+    explicit: Option<OsString>,
+    path: Option<OsString>,
+    home: Option<PathBuf>,
+    conda: &[Option<OsString>; 3],
+) -> Vec<PathBuf> {
+    let exe = format!("tetgen{}", std::env::consts::EXE_SUFFIX);
+    let mut out: Vec<PathBuf> = explicit.into_iter().map(PathBuf::from).collect();
+    if let Some(path) = path {
+        out.extend(std::env::split_paths(&path).map(|d| d.join(&exe)));
+    }
+    let in_env = |base: &Path| base.join("envs").join(CONDA_ENV).join("bin").join(&exe);
+    let [prefix, conda_exe, mamba_root] = conda;
+    if let Some(prefix) = prefix {
+        out.push(Path::new(prefix).join("bin").join(&exe));
+    }
+    if let Some(base) = conda_exe
+        .as_ref()
+        .and_then(|c| Path::new(c).parent()?.parent().map(Path::to_path_buf))
+    {
+        out.push(in_env(&base));
+    }
+    if let Some(root) = mamba_root {
+        out.push(in_env(Path::new(root)));
+    }
+    if let Some(home) = home {
+        out.push(home.join(".local").join("bin").join(&exe));
+        for base in [
+            "miniforge3",
+            "mambaforge",
+            "miniconda3",
+            "anaconda3",
+            "micromamba",
+            ".local/share/mamba",
+        ] {
+            out.push(in_env(&home.join(base)));
+        }
+    }
+    for base in ["/opt/homebrew/Caskroom/miniforge/base", "/opt/miniconda3", "/opt/conda"] {
+        out.push(in_env(Path::new(base)));
+    }
+    out
+}
+
+fn is_executable(p: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(p) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        meta.is_file()
+    }
+}
 
 /// Tetrahedralises the closed surface (`vertices`, `faces`) with the `tetgen` executable `exe`, using
 /// `workdir` for the exchange files. The surface vertices are the first nodes of the result.
@@ -43,7 +130,7 @@ pub fn tetrahedralise(
         .arg(&smesh)
         .current_dir(workdir)
         .output()
-        .map_err(|e| MeshError::Invalid(format!("running TetGen ({}): {e}", exe.display())))?;
+        .map_err(|e| MeshError::Invalid(format!("running TetGen ({}): {e}; {INSTALL_HINT}", exe.display())))?;
     if !out.status.success() {
         return Err(MeshError::Invalid(format!(
             "TetGen failed ({}): {}{}",
@@ -157,7 +244,53 @@ mod tests {
     use super::*;
     use crate::generate::voxel_ball;
 
-    /// Needs the `tetgen` executable (path in GYROXIDE_TETGEN, else `tetgen` in the PATH).
+    #[test]
+    fn tetgen_searched_explicit_first_then_path_then_user_places() {
+        let home = PathBuf::from("/h");
+        let path = std::env::join_paths(["/a", "/b"]).unwrap();
+        let c = candidates(
+            Some("/x/tetgen".into()),
+            Some(path),
+            Some(home),
+            &[
+                Some("/env".into()),
+                Some("/base/bin/conda".into()),
+                Some("/mamba".into()),
+            ],
+        );
+        let at = |s: &str| {
+            c.iter()
+                .position(|p| p == Path::new(s))
+                .unwrap_or_else(|| panic!("{s} absent"))
+        };
+        assert_eq!(at("/x/tetgen"), 0);
+        assert!(at("/a/tetgen") < at("/b/tetgen"));
+        assert!(at("/b/tetgen") < at("/env/bin/tetgen"));
+        assert!(at("/env/bin/tetgen") < at("/base/envs/tetgen/bin/tetgen"));
+        assert!(at("/mamba/envs/tetgen/bin/tetgen") < at("/h/.local/bin/tetgen"));
+        assert!(at("/h/.local/bin/tetgen") < at("/h/miniforge3/envs/tetgen/bin/tetgen"));
+    }
+
+    #[test]
+    fn only_executable_files_are_accepted() {
+        let dir = std::env::temp_dir().join(format!("gyroxide-locate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("tetgen");
+        std::fs::write(&f, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(!is_executable(&f));
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert!(is_executable(&f));
+        assert!(!is_executable(&dir));
+        assert!(!is_executable(&dir.join("absent")));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Needs the `tetgen` executable (found by [`locate`]).
     #[test]
     #[ignore = "tetgen"]
     fn surface_gardee_et_tetraedres_droits() {
@@ -171,9 +304,9 @@ mod tests {
             }
         }
         let faces: Vec<[u32; 3]> = ball.faces.iter().map(|f| f.map(|i| on[i as usize])).collect();
-        let exe = std::env::var("GYROXIDE_TETGEN").unwrap_or_else(|_| "tetgen".into());
+        let exe = locate().unwrap();
         let dir = std::env::temp_dir().join(format!("gyroxide-tetgen-{}", std::process::id()));
-        let m = tetrahedralise(Path::new(&exe), &verts, &faces, DEFAULT_SWITCHES, &dir).unwrap();
+        let m = tetrahedralise(&exe, &verts, &faces, DEFAULT_SWITCHES, &dir).unwrap();
         assert_eq!(&m.nodes[..verts.len()], &verts[..]);
         assert!((0..m.tets.len()).all(|i| m.tet_volume(i) > 0.0));
         assert_eq!(m.faces.len(), faces.len());

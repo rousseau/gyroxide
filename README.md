@@ -49,6 +49,9 @@ repère de l'image, avec par nœud `gray_matter` (1 substance grise, 0 substance
 intérieur à la surface blanche) et `cortex` (masque du cortex du sommet de piale le plus proche).
 TetGen est appelé comme **programme externe** (licence AGPL : jamais lié à gyroxide) ; avec les
 options par défaut (`pq1.5/10YQ`) il garde exactement les triangles de la piale, ses sommets en tête.
+Sans `--tetgen`, l'exécutable est cherché tout seul : `GYROXIDE_TETGEN`, le `PATH`, `~/.local/bin`, puis
+l'environnement conda ou mamba nommé `tetgen` (installation : `sudo apt install tetgen` sous Debian/Ubuntu ;
+sous macOS, où Homebrew ne l'a pas, `conda create -n tetgen -c conda-forge tetgen`).
 Prévu ensuite : isosurface stuffing (Labelle et Shewchuk 2007) en Rust dans `gyroxide-mesh`.
 
 `run --mesh` accepte ce `.vtu` (lu par `gyroxide-mesh`) ; c'est l'entrée par défaut de
@@ -72,7 +75,7 @@ moyenne donne des NaN en quelques centaines de pas. C'est environ 4 fois plus le
 stuffing (gyroxide#5) réglera ces tétraèdres. Exemple, sur la session d'essai :
 
 ```sh
-gyroxide mesh --bids /tmp/surfx-e2e/sourcedata --participant 0avbc --session 02 --hemi L --tetgen <tetgen>
+gyroxide mesh --bids /tmp/surfx-e2e/sourcedata --participant 0avbc --session 02 --hemi L
 gyroxide run --bids /tmp/surfx-e2e/sourcedata --participant 0avbc --session 02 --label essai \
     --hemi L --steps 20000 --uniform-growth --no-midplane
 ```
