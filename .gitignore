@@ -7,3 +7,6 @@
 /target-dev*
 .DS_Store
 __pycache__/
+
+# ROADMAP privé, dans le dépôt oxide (claude/gyroxide-roadmap.md), lié par setup/install.sh
+docs/ROADMAP.md
