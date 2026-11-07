@@ -92,6 +92,16 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Scorecard of a run (atlas or subject): rigid deviation in mm at S^200, S^50 and vertex scale, mean
+    /// curvature correlation, fold depth, area, gyrification index and thickness against the dHCP atlas of the
+    /// same gestational week, curvature power by band, inverted elements and final residual. Writes
+    /// scorecard.json. Everything after `eval` goes to tools/scorecard.py (`gyroxide eval --help` lists the
+    /// options): `eval <run> --week SG`, `eval --persistence` (atlas w-1 against atlas w), `eval --compare A B`.
+    #[command(disable_help_flag = true)]
+    Eval {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Compares two trace directories step by step.
     Compare {
         ours: PathBuf,
@@ -245,6 +255,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Mesh(args) => mesh_session(&args),
+        Cmd::Eval { args } => eval(&args),
         Cmd::Ball { n, out } => {
             let m = generate::voxel_ball(n, 1.0);
             netgen::write(&m, &out)?;
@@ -282,6 +293,38 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// The metrics (cotangent Laplacian, heat-kernel bands, convex hull) live in tools/*.py, the same code as the
+/// tables of the paper: `eval` is the single entry point and runs tools/scorecard.py, so that no definition
+/// exists twice. `GYROXIDE_TOOLS` overrides the tools directory (default: the checkout this binary was built
+/// from), `GYROXIDE_PYTHON` the interpreter (default `python3`; needs numpy, scipy, nibabel).
+fn scorecard_script() -> Result<PathBuf> {
+    let dir = std::env::var_os("GYROXIDE_TOOLS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tools")));
+    let script = dir.join("scorecard.py");
+    if !script.is_file() {
+        bail!(
+            "{} not found: set GYROXIDE_TOOLS to the tools/ directory of the gyroxide checkout",
+            script.display()
+        );
+    }
+    Ok(script)
+}
+
+fn eval(args: &[String]) -> Result<()> {
+    let script = scorecard_script()?;
+    let python = std::env::var_os("GYROXIDE_PYTHON").unwrap_or_else(|| "python3".into());
+    let status = std::process::Command::new(&python)
+        .arg(&script)
+        .args(args)
+        .status()
+        .with_context(|| format!("cannot run {}", python.to_string_lossy()))?;
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
 }
 
 fn mesh_session(args: &MeshArgs) -> Result<()> {
