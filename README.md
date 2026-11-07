@@ -102,6 +102,16 @@ sinon la racine elle-même (même règle que medoxide et surfoxide) :
 Le crate `gyroxide-io` (sans Burn) lit ces fichiers pour guioxide : `lire_status`,
 `lire_sequence`, `lister_runs`, et calcule `gi`.
 
+## Évaluer un run
+
+```sh
+gyroxide eval <run> --week SG            # scorecard.json : écart rigide (mm), courbure, profondeur, aire, IG, épaisseur, bandes
+gyroxide eval --persistence --out <dir>  # ligne de référence : atlas w-1 contre atlas w
+python3 tools/scorecard_table.py <dir>... --out <préfixe>   # tableau Markdown, CSV et figure
+```
+
+Définitions, chiffres et reproduction : [validation](docs/validation.md#tableau-de-bord-dun-run-gyroxide-eval).
+
 Documentation : [modèle](docs/model.md), [architecture](docs/architecture.md),
 [validation](docs/validation.md).
 

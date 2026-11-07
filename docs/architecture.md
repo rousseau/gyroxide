@@ -8,7 +8,7 @@
 | `gyroxide-model` | `Params` (TOML via serde), préréglages, lois de croissance, masque gr |
 | `gyroxide-sim` | `Simulation` : état sur le device (`burn::tensor::Device`, Burn 0.22), pas de temps, élasticité, contact ; trait `TraceSink` |
 | `gyroxide-validate` | E/S NPY, écrivain de traces, comparaison à un oracle |
-| `gyroxide-cli` | binaire `gyroxide` : `run`, `preset`, `ball`, `compare` |
+| `gyroxide-cli` | binaire `gyroxide` : `run`, `preset`, `ball`, `compare`, `mesh`, `eval` (lance `tools/scorecard.py`) |
 
 ## État sur le device
 

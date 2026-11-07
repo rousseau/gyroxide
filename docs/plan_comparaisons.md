@@ -7,6 +7,9 @@ est mesuré de la même façon.
 
 ## Protocole commun
 
+Les métriques ci-dessous s'obtiennent toutes par `gyroxide eval` (tableau de bord et persistance, voir
+`docs/validation.md`) ; ce sont les mêmes fonctions que les outils cités.
+
 - Données : atlas dHCP, hémisphère gauche, SG 21 → 36 ; maillage `w21_left_610k_s`.
 - Métriques : écart rigide au cortex (mm, `tools/deviation_mm.py`), aux échelles S²⁰⁰ / S⁵⁰ /
   sommets ; normales, corrélation de courbure, profondeur des plis (`tools/full_eval.py`) ; IG et
