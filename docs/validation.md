@@ -228,7 +228,10 @@ de l'écriture.
 
 **Non fait sur la PGX** : les runs de la Table 1 (`out/remodel_a0`, `out/paper/fit*_lbm`, `data/full/prep`,
 maillage `w21_left_610k_s`) ne sont ni sur la PGX ni dans le bucket `dev-gyroxide` (seul `out/atlas_fit/` y est).
-Sur la machine qui les a, avec `--atlas-npy` et `--mesh-name w21_left_610k_s` :
+Pour les amener sur la PGX par Garage (seuls les fichiers nécessaires : positions finales, cibles à l'échelle,
+maillage `_s`), `tools/table1_runs.sh push` sur la machine qui a les runs, puis `tools/table1_runs.sh pull` ici ;
+`list` montre ce qui serait transféré, `pull` termine par la liste des fichiers encore absents. Puis, avec
+`--atlas-npy` et `--mesh-name w21_left_610k_s` :
 
 ```sh
 for w in 26 28 30 33 36; do
