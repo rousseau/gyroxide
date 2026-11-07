@@ -57,7 +57,9 @@ pull)
     MODE=pull
     # fichier par fichier : --files-from s'arrête aux fichiers absents de Garage
     list | while read -r f; do
-        [ -f "$f" ] || rclone copyto "$REMOTE/$f" "$f" 2> /dev/null && echo "ok      $f" || echo "absent  $f"
+        [ -f "$f" ] || rclone copyto "$REMOTE/$f" "$f" 2> /dev/null || true
+        # copyto renvoie 0 même si la source n'existe pas : on teste le fichier
+        if [ -f "$f" ]; then echo "ok      $f"; else echo "absent  $f"; fi
     done ;;
 *) sed -n '2,12p' "$0"; exit 2 ;;
 esac
