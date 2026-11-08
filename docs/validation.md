@@ -226,12 +226,12 @@ de l'écriture.
 
 ### Rejouer la Table 1 de l'article ISBI
 
-**Non fait sur la PGX** : les runs de la Table 1 (`out/remodel_a0`, `out/paper/fit*_lbm`, `data/full/prep`,
-maillage `w21_left_610k_s`) ne sont ni sur la PGX ni dans le bucket `dev-gyroxide` (seul `out/atlas_fit/` y est).
-Pour les amener sur la PGX par Garage (seuls les fichiers nécessaires : positions finales, cibles à l'échelle,
-maillage `_s`), `tools/table1_runs.sh push` sur la machine qui a les runs, puis `tools/table1_runs.sh pull` ici ;
-`list` montre ce qui serait transféré, `pull` termine par la liste des fichiers encore absents. Puis, avec
-`--atlas-npy` et `--mesh-name w21_left_610k_s` :
+**Fait sur la PGX le 8 novembre 2026, en régénérant les runs** (le transfert par Garage, `tools/table1_runs.sh`,
+est resté possible mais les fichiers n'étaient pas dans le bucket) : maillage `w21_left_610k_s`
+(`split_boundary_tets.py`), `adjoint_prep_s`, croissance mesurée `out/remodel_a0` (SG 22 à 36, 18 cœurs
+partagés avec d'autres sessions : la boucle CPU est le facteur limitant), puis `tools/paper_chain.sh` (inverse
+ajusté chaque semaine, SG 22 à 36, environ 15 min par semaine). Entrées de `paper_table.py` :
+`tools/make_full.py --out data/full --weeks $(seq 22 36) --full 'out/remodel_a0/w{w}/eq/x_released.npy'`.
 
 ```sh
 for w in 26 28 30 33 36; do
@@ -243,14 +243,42 @@ done
 gyroxide eval --persistence --weeks 26-36 --atlas-npy 'data/full/prep/w{w}/target.npy' \
     --mesh-name w21_left_610k_s --out out/scorecard/t1/persistence
 python3 tools/scorecard_table.py out/scorecard/t1 --out out/scorecard/t1/table
+python3 tools/table1_check.py out/scorecard/t1 <table_metrics.json>     # écart relatif par cellule
 ```
 
-à comparer à `table_metrics.json` (colonnes : `dev_vertex_rms_mm` = RMS, `dev_vertex_p95_mm` = p95,
-`curvature_corr` = corr, `fold_depth_mm.model` / `.atlas` = profondeur, `folding_index.ratio` = indice de
-plissement). Écarts attendus, à vérifier : (1) `scorecard` lit pour un dossier `x_stress.npy` avant les
-`x_<k>.npy`, alors que `paper_table.py` prend le plus grand `x_<k>` (`inputs.positions` dit quel fichier a été
-lu : passer le `.npy` en cas de doute) ; (2) le masque du cortex vient de `w21_left_610k_s.gr.txt` (supposé
-identique à `data/full/prep/w<w>/cortex.npy`, dont `paper_table.py` prend celui de SG 30 pour toutes les semaines).
+**Outil contre `paper_table.py`** : sur les mêmes runs, mêmes valeurs à 1e-9 (RMS, corrélation, profondeur,
+indice de plissement, SG 36 estimé compris). Les écarts ci-dessous viennent donc des runs, pas de l'outil.
+
+**Résultats** (60 cellules : RMS, p95, corrélation, profondeur, indice de plissement ; persistance RMS et p95) :
+
+- **Croissance mesurée** : 24 cellules sur 25 à 0,2 % ou moins ; SG 28 RMS 1,193 contre 1,172 (+1,85 %, p95
+  +0,7 %), reste de l'écart du transitoire de `remodel_a0` à SG 27-28 (+1,1 % et +1,8 % à la régénération).
+- **Croissance estimée, SG 26 à 30** : RMS 0,343 / 0,687 / 1,136 contre 0,345 / 0,693 / 1,147 (≤ 1 %) ; autres
+  colonnes ≤ 0,5 %.
+- **Croissance estimée, SG 33** : RMS 1,833 contre 1,839, p95 +0,5 %, mais corrélation 0,845 contre 0,859
+  (−1,7 %) et profondeur 1,407 contre 1,434 (−1,8 %).
+- **Croissance estimée, SG 36 : hors des 1 %** (RMS 2,152 contre 2,096, corrélation 0,827 contre 0,874,
+  profondeur 1,535 contre 1,677). Cause identifiée : la Table 1 de l'article lit SG 36 dans
+  `out/full/fit36_lbmf` (chaîne lobaire antérieure, `fitted()` de `paper_figure.py` ne prend la chaîne
+  `paper_chain` que si elle est finie), pas dans `out/paper/fit36_lbm`. La chaîne `paper_chain` finie donne un
+  SG 36 plus lissé que la ligne publiée. À trancher pour l'article : régénérer la ligne avec la chaîne finie, ou
+  garder `lbmf` et le dire. SG 33 (écart de 1,7 à 1,8 % sur deux colonnes) : non reproductible à 1 % à partir de
+  la chaîne régénérée ; causes possibles, non isolées : GPU et pilote, f32, chemin de relaxation des semaines
+  précédentes.
+- **Persistance** : SG 28 à 36 à 0,3 % ou moins. **SG 26 : 1,008 contre 0,907 mm** (p95 1,591 contre 1,448).
+  La cellule publiée mélange un atlas SG 25 brut (hypothèse : pas de `data/full/prep/w25` à l'époque, d'où le repli sur le GIfTI
+  de `atlas_xyz`) et un atlas SG 26 mis à l'échelle ; ce mélange donne 0,917 mm (à 1 % près de 0,907), la
+  définition cohérente (les deux à l'échelle) 1,008 mm. La cellule SG 26 de la Table 1 est donc à corriger.
+- La chaîne ajustée n'améliore pas SG 31 (départ = arrivée, 1,427 mm, `--keep-best` garde le départ) ; sans
+  conséquence pour la table (SG 26, 28, 30, 33, 36).
+- Non rejoué : la ligne « Original growth law » (SG 26), qui lit `out/atlas_w21_tab/surface_*.vtk` (régénéré,
+  mais non évalué ici).
+
+Vérifications de configuration : `scorecard` lit pour un dossier `x_stress.npy` avant les `x_<k>.npy` ;
+`paper_table.py` prend le plus grand `x_<k>` (ici aucun `x_stress.npy` dans ces dossiers, `inputs.positions`
+du scorecard donne le fichier lu). Masque du cortex : `cortex.npy` est le même pour les semaines 22 à 36 de `data/full/prep` (vérifié) ; sa
+concordance avec `w21_left_610k_s.gr.txt`, lu par le scorecard, n'a pas été comparée directement (les RMS
+rejoués coïncident à 1e-9 avec `paper_table.py`, qui prend le masque de `cortex.npy`).
 
 ### Outils touchés
 
