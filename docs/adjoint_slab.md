@@ -760,3 +760,126 @@ Chaîne refaite intégralement avec ce matériau (`tools/real_chain.sh`, 28–29
   0,21) ; l'adjoint sur ces états hors équilibre échoue (CG résidu 1) et θ ne bouge pas. Chaîne
   arrêtée. Le saut d'une semaine de croissance dans un tissu quasi incompressible demande une
   continuation en temps (`tools/time_ramp.sh`), non tentée.
+
+## Version de référence (P02, branche `l1-isbi`, 9 novembre 2026)
+
+Point de départ de l'article ISBI 2027 et des lots suivants. Première tranche (tâches 1 et 2) ; les tâches 3 à 5
+restent à faire (fin de la section).
+
+### Table 1 depuis zéro : un script (tâche 1)
+
+`tools/table1_repro.sh [étape ...]` enchaîne les étapes `build`, `tab` (loi d'origine), `remodel` (croissance
+mesurée), `paper` (croissance estimée, `tools/paper_chain.sh`), `eval` (tableau de bord de `gyroxide eval`) et `check`
+(`tools/table1_check.py` contre `table_metrics.json`). Le commit, le binaire et les configurations sont notés dans
+`out/table1_repro/provenance.txt`, la durée de chaque étape dans `duree.tsv`, celle de chaque semaine de la chaîne
+estimée dans `duree_semaines.tsv`. Il n'y a pas de graine aléatoire à figer, mais la chaîne n'est **pas déterministe** d'un
+lancement à l'autre (voir plus bas). Vérifié le 9 novembre sur la PGX : `eval` puis `check` sur les runs régénérés du 8 novembre (133 s ;
+mêmes 60 cellules, même écart maximal 11,06 % que dans `validation.md`). Les étapes `build`, `tab`, `remodel` et
+`paper` n'ont pas été relancées de bout en bout (plus d'une journée de calcul) : leurs commandes sont celles qui
+ont produit `out/regen`, reconstituées du journal (`out/regen/*.log`) et de `docs/validation.md`.
+
+**Temps de calcul par semaine** (chaîne estimée, `out/paper/fit<SG>_lbm`, premier au dernier fichier du dossier ;
+PGX, 20 cœurs partagés avec d'autres sessions, 7 au 8 novembre) :
+
+| SG | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32 | 33 | 34 | 35 | 36 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| minutes | 98 | 7 | 10 | 10 | 22 | 21 | 25 | 24 | 39 | 4 | 177 | 337 | 311 | 330 | 241 |
+
+Au total 1 655 min, environ 27,6 h. `docs/validation.md` dit « environ 15 min par semaine » : vrai de SG 23 à 30
+(7 à 39 min), faux à partir de SG 32 (3 à 5,6 h par semaine : équilibre de départ plus long, gradient adjoint à
+300 à 380 itérations de CG, recherche linéaire qui rejette des pas). SG 22 compte l'équilibre de départ de la chaîne.
+Croissance mesurée (`remodel_a0`, SG 22 à 36) et loi d'origine (`atlas_w21_tab`, 43 845 pas) : 2 571 s pour la
+seconde sur le GPU (58,6 ms par pas).
+
+**Variation d'un run à l'autre.** Le départ de l'ajustement de SG 33 (même état, mêmes options) rejoué le 9 novembre
+(`out/determinisme/fit33_lbm`) redonne le départ à quatre chiffres (écart rigide 1,833 mm, perte de départ),
+l'itération 1 à sept chiffres de perte (3,220106) mais pas la suite : perte de l'itération 2 de 3,215237 contre
+3,215431, de l'itération 6 de 3,196870 contre 3,189107 (0,24 %), nombre d'itérations de CG de l'itération 1 de 302
+contre 362, itération rejetée à 7 dans un cas et à 8 dans l'autre ; l'écart rigide de l'itération 7 est de
+1,838 contre 1,836 mm. Le calcul n'est donc pas reproductible bit à bit d'un lancement à l'autre (somme parallèle
+sur les cœurs et opérations GPU dans l'ordre des fils ; non départagées) ; l'écart est faible à chaque semaine, mais
+il s'ajoute d'une semaine à l'autre, puisque chaque semaine part de l'état rendu par la précédente.
+
+### SG 33 estimé et SG 36 estimé : ce que sont ces lignes
+
+`--keep-best` rend **l'itéré 0, l'état de départ de la semaine, à SG 31, 33 et 36** (`keep-best: iterate 0
+restored` dans `fit31_lbm.log`, `fit33_lbm.log` et `fit36_lbm.log`) : à ces semaines, l'ajustement n'abaisse pas
+l'écart rigide, qui monte au fil des itérations (SG 33 : 1,833 au départ, 1,838 à l'itération 8). La ligne
+« croissance estimée » de SG 33 et de SG 36 est donc l'état de la semaine précédente déplacé par la chaîne de
+référence avec les corrections de croissance de la semaine d'avant, pas un ajustement de la semaine. À SG 34 et 35, l'itéré
+rendu est le 4e, pour 1,980 et 2,074 mm contre un départ de 1,981 et 2,075 : un gain de 0,001 mm. De SG 33 à 36,
+l'ajustement n'améliore donc pas l'écart ; SG 32 est la dernière semaine ajustée (1,653 → 1,638 mm).
+
+- **SG 33, écart avec l'article** (corrélation 0,845 contre 0,859, profondeur 1,407 contre 1,434, RMS 0,30 %) : la
+  cause n'est pas isolée. Ce qui est établi : le départ de la semaine se reproduit à quatre chiffres (ci-dessus), donc
+  l'écart ne vient pas du calcul de la semaine mais de l'état hérité de SG 32 ; or les itérations d'une même
+  semaine divergent d'un run à l'autre dans les mêmes proportions (0,24 % de perte, 0,002 mm d'écart rigide en
+  7 itérations). Hypothèse la plus économique : la variation d'un run à l'autre, accumulée de SG 22 à 32. Pour la
+  trancher, il faudrait rejouer SG 31 à 33 deux fois (environ 8 h) et comparer les états rendus ; non fait.
+- **SG 36, deux valeurs à garder côte à côte** (écart rigide RMS, p95 en mm, corrélation de courbure, profondeur de
+  sillon en mm, indice de plissement relatif) :
+
+  | SG 36 estimé | RMS | p95 | corr. | prof. | IG |
+  |---|---|---|---|---|---|
+  | article (`out/full/fit36_lbmf`, chaîne lobaire antérieure ; absente de la PGX, valeurs de `table_metrics.json`) | 2,096 | 3,459 | 0,874 | 1,677 | 0,847 |
+  | chaîne `paper_chain` régénérée (`out/paper/fit36_lbm`) | 2,152 | 3,517 | 0,827 | 1,535 | 0,821 |
+
+  La ligne publiée n'est pas régénérable par le dépôt (`out/full` n'existe ni sur la PGX ni dans `garage:dev-gyroxide/out`) ; la chaîne
+  régénérée l'est (script ci-dessus) mais est un peu moins bonne. **À garder dans l'article : la chaîne régénérée.**
+  C'est celle que le script reproduit, d'un seul protocole de SG 22 à 36 (`paper_chain.sh`), et la seule dont les
+  cinq semaines de la Table 1 se lisent dans les mêmes dossiers. Le coût : SG 36 passe de 2,096 à 2,152 mm
+  (corrélation de 0,874 à 0,827), et la phrase de l'article sur SG 36 est à relire ; le texte de l'article n'a pas
+  été modifié. La décision reste à François.
+- **Persistance SG 26 de l'article** : 0,907 mm publié contre 1,008 mm pour la définition cohérente (atlas SG 25 et
+  SG 26 tous deux à l'échelle), p95 1,448 contre 1,591 ; la cellule publiée est à corriger (mélange d'un atlas SG 25
+  brut et d'un atlas SG 26 à l'échelle, qui redonne 0,917 mm).
+
+### Sélection de l'itéré (tâche 2)
+
+`adjoint_week --keep-best` garde l'itéré de plus faible écart rigide au niveau le plus fin, qui est aussi la mesure
+d'évaluation : on choisit sur ce qu'on mesure. Nouvelle option `--select-by rigid|loss|last` (avec `--keep-best` ;
+défaut `rigid`, le comportement d'avant, résultats publiés inchangés) : `loss` garde l'itéré de coût L minimal
+(perte de forme + régularisation) parmi ceux du dernier niveau, départ du niveau compris, sans regarder la mesure
+d'évaluation ; `last` garde le dernier. Le coût d'un niveau n'est comparable qu'à l'intérieur du niveau (les niveaux
+s'ajoutent à la perte), d'où la restriction. Vérifiée en fonctionnement sur SG 22 (4 + 4 itérations, coût décroissant,
+`loss` = dernier itéré, écart rigide 0,020 mm ; chemin « un itéré antérieur est restauré » non exercé : aucun cas
+du genre dans ce court test ; il l'est par le test de `tools/select_iterate.py`, qui reproduit la règle sur journal).
+
+**Refaire la Table 1 avec `loss` : fait après coup, sans rejouer la chaîne.** Comme tous les itérés sont dans les
+journaux et sur disque, `tools/select_iterate.py out/paper/fit{22..36}_lbm.log` donne l'itéré que chaque règle aurait
+rendu et son écart rigide ; `gyroxide eval out/paper/fit<SG>_lbm/x_<k>.npy` donne la ligne complète de la Table 1.
+Pas de rejeu de chaîne : en chaîne, la semaine suivante partirait de l'itéré choisi (27,6 h de calcul, hors de portée
+d'un lancement) ; l'effet de la règle sur une semaine donnée, à départ égal, est borné ci-dessous.
+
+| SG | 26 | 28 | 30 | 31 | 32 | 33 | 34 | 35 | 36 |
+|---|---|---|---|---|---|---|---|---|---|
+| écart rigide, `rigid` (mm) | 0,343 | 0,687 | 1,137 | 1,427 | 1,638 | 1,833 | 1,980 | 2,074 | 2,152 |
+| écart rigide, `loss` (mm) | 0,343 | 0,687 | 1,137 | 1,427 | 1,638 | 1,838 | 1,986 | 2,081 | 2,155 |
+| écart rigide, `last` (mm) | 0,343 | 0,687 | 1,137 | 1,427 | 1,639 | 1,838 | 1,988 | 2,081 | 2,155 |
+
+Les deux règles coïncident de SG 22 à 32 (même itéré, ou à 0,001 mm). À SG 33–36, `loss` rend un itéré ajusté au
+lieu de l'état de départ, 0,3 % plus loin de l'atlas (0,003 à 0,007 mm). Lignes complètes de la Table 1 (écart
+rigide RMS et p95 en mm, corrélation, profondeur en mm, indice de plissement) :
+
+| SG | règle | RMS | p95 | corr. | prof. | IG |
+|---|---|---|---|---|---|---|
+| 33 | `rigid` (départ, itéré 0) | 1,833 | 3,030 | 0,845 | 1,407 | 0,872 |
+| 33 | `loss` (itéré 8) | 1,838 | 3,032 | 0,849 | 1,413 | 0,874 |
+| 36 | `rigid` (départ, itéré 0) | 2,152 | 3,517 | 0,827 | 1,535 | 0,821 |
+| 36 | `loss` (itéré 60) | 2,155 | 3,491 | 0,854 | 1,584 | 0,834 |
+
+SG 26, 28 et 30 : identiques à trois décimales. **Conclusion** : la sélection sur la mesure d'évaluation ne
+gonfle pas la Table 1 de façon sensible (au plus 0,3 % sur l'écart, à départ égal) ; sélectionner sur le coût L est
+même un peu meilleur sur la corrélation et la profondeur à SG 36 (0,854 contre 0,827 ; 1,584 contre 1,535 mm), parce
+que l'itéré 0 n'est alors pas l'itéré rendu. Recommandation : `loss` pour la version de référence (c'est le critère
+qui est minimisé et il ne regarde pas l'atlas de la semaine évaluée). Une chaîne refaite avec `loss` reste à
+produire pour confirmer l'effet cumulé.
+
+### Reste à faire pour P02
+
+- Tâche 3 (rapport μ_w/μ_g) : aujourd'hui la loi d'origine est à μ_g/μ_w = 1/1,167 = 0,857
+  (`configs/atlas_w21_tabulated.toml`), les croissances mesurée et estimée à 2 (`configs/mu_test/mu2_s.toml`,
+  `mu2_full*.toml`). Même valeur partout, ou étude de sensibilité à 0,5 / 0,857 / 1 : chacune demande de refaire la
+  croissance mesurée et la chaîne estimée (environ 28 h chacune sur la PGX).
+- Tâche 4 : maillage SG 21 de l'hémisphère droit et refaire la chaîne et la Table 1.
+- Tâche 5 : bras de persistance équitable (mode de `tools/full_chain.sh`, SG 26 à 36).

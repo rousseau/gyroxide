@@ -2171,9 +2171,23 @@ fn main() {
     // level, not the last one; at late weeks the equilibrium noise (~1e-2 on the
     // loss) exceeds the expected decrease and the accepted steps can drift upwards.
     let keep_best = args.iter().any(|a| a == "--keep-best");
+    // --select-by rigid|loss|last (with --keep-best): which iterate the fit returns. `rigid` (default): lowest rigid
+    // rms deviation, which is also the evaluation metric; `loss`: lowest cost L (shape loss + regularisation) among the
+    // iterates of the last level, whose loss is the one minimised (no use of the evaluation metric); `last`: the
+    // last iterate, like running without --keep-best.
+    let select_by = args
+        .iter()
+        .position(|a| a == "--select-by")
+        .map_or("rigid".to_string(), |i| args[i + 1].clone());
+    assert!(
+        matches!(select_by.as_str(), "rigid" | "loss" | "last"),
+        "--select-by: rigid, loss or last"
+    );
     let crit_of = |d: &(usize, [f64; 4], [f64; 4], [f64; 4]), rigid: bool| if rigid { d.2[0] } else { d.1[0] };
     let mut best = (dev0.last().unwrap().2[0], theta.clone(), x.clone(), 0usize);
     let (mut ls, mut lr, mut gx) = p.loss(&x, &theta);
+    // Lowest cost L of the current level (reset at each level: the active levels change the loss).
+    let mut best_loss = (ls + lr, theta.clone(), x.clone(), 0usize);
     println!(
         "start: shape loss {ls:.6e}, reg {lr:.3e}; K Rayleigh {ray:.3e}, shift {sigma:.3e}; |F| {:.3e} -> {:.3e}",
         p.last_residual.0, p.last_residual.1
@@ -2904,6 +2918,7 @@ fn main() {
             (ls, lr, gx) = p.loss(&x, &theta);
             let (gn, _, _) = p.gradient(&x, &theta, &gx, sigma, cg);
             g = gn;
+            best_loss = (ls + lr, theta.clone(), x.clone(), k);
         }
         // Parameter resolution of this level: theta = theta + S^m z (m = 0: theta itself).
         let pm = (param_smooth * level as f64).round() as usize;
@@ -3075,6 +3090,9 @@ fn main() {
             if last.2[0] < best.0 {
                 best = (last.2[0], theta.clone(), x.clone(), k);
             }
+            if ls + lr < best_loss.0 {
+                best_loss = (ls + lr, theta.clone(), x.clone(), k);
+            }
             if tol_mm > 0.0 && crit < tol_mm {
                 println!(
                     "iter {k}: {} rms deviation below {tol_mm} mm, done",
@@ -3106,15 +3124,24 @@ fn main() {
         println!("final loss per level: {}", report.join(", "));
     }
 
-    if keep_best && best.3 != k {
+    let chosen = match select_by.as_str() {
+        "loss" => Some(best_loss),
+        "last" => None,
+        _ => Some(best),
+    };
+    if let Some(chosen) = chosen.filter(|c| keep_best && c.3 != k) {
+        let what = if select_by == "loss" {
+            format!("cost {:.6e}", chosen.0)
+        } else {
+            format!("rigid rms {:.3} mm", chosen.0)
+        };
         println!(
-            "keep-best: iterate {} restored (rigid rms {:.3} mm), saved as iterate {}",
-            best.3,
-            best.0,
+            "keep-best ({select_by}): iterate {} restored ({what}), saved as iterate {}",
+            chosen.3,
             k + 1
         );
-        theta = best.1;
-        x = best.2;
+        theta = chosen.1;
+        x = chosen.2;
         save_rows(out.join(format!("x_{}.npy", k + 1)), &x);
         npy::write_f64(out.join(format!("theta_{}.npy", k + 1)), &[theta.len()], &theta).unwrap();
     }
