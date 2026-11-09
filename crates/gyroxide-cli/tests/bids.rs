@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{ball_in_mm, gyroxide};
+use common::{ball_in_mm, gyroxide, gyroxide_output};
 use std::process::Command;
 
 #[test]
@@ -94,5 +94,67 @@ fn bids_run_directory() {
     let desc: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(pipeline.join("dataset_description.json")).unwrap()).unwrap();
     assert_eq!(desc["GeneratedBy"][0]["Name"], "gyroxide run");
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Growth mask from the `cortex` field of a session .vtu (`--growth-field cortex`): the name is kept in
+/// config.toml, a missing field is an error.
+#[test]
+fn growth_mask_from_vtu_field() {
+    let root = std::env::temp_dir().join(format!("gyroxide-growth-field-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("sourcedata")).unwrap();
+    let netgen = root.join("ball.mesh");
+    ball_in_mm(&netgen);
+    let mesh = gyroxide_mesh::netgen::read(&netgen).unwrap();
+    // "medial wall": no growth for x < -20 mm
+    let cortex: Vec<f64> = mesh
+        .nodes
+        .iter()
+        .map(|p| if p[0] < -20.0 { 0.0 } else { 1.0 })
+        .collect();
+    assert!(cortex.contains(&0.0) && cortex.contains(&1.0));
+    let vtu = root.join("ball_tet.vtu");
+    let field = |name: &str, values: Vec<f64>| gyroxide_mesh::vtu::PointField {
+        name: name.into(),
+        values,
+    };
+    gyroxide_mesh::vtu::write(&vtu, &mesh, &[field("cortex", cortex)]).unwrap();
+    let run = |growth_field: &str, label: &str| {
+        gyroxide_output(&[
+            "run",
+            "--preset",
+            "braingrowth",
+            "--mesh",
+            vtu.to_str().unwrap(),
+            "--backend",
+            "ndarray",
+            "--growth-field",
+            growth_field,
+            "--no-midplane",
+            "--mesh-spacing",
+            "0.4",
+            "--steps",
+            "20",
+            "--bids",
+            root.join("sourcedata").to_str().unwrap(),
+            "--participant",
+            "01",
+            "--label",
+            label,
+            "--hemi",
+            "L",
+        ])
+    };
+    let out = run("cortex", "masque");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let config = std::fs::read_to_string(root.join("derivatives/gyroxide/sub-01/anat/run-masque/config.toml")).unwrap();
+    assert!(
+        config.contains("kind = \"mesh_field\"") && config.contains("name = \"cortex\""),
+        "{config}"
+    );
+    let out = run("sulc", "absent");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no node field 'sulc'"));
     std::fs::remove_dir_all(&root).unwrap();
 }

@@ -22,7 +22,7 @@ Options utiles de `run` : `--backend` (défaut `auto` : CUDA si gyroxide est com
 pilote NVIDIA est chargé, sinon wgpu ; `ndarray` pour le CPU en f64), `--steps N`,
 `--surface-every N` (surfaces GIfTI), `--hemi L|R`, `--trace-every N` (traces NPY),
 `--vtk-every N` (surfaces VTK de débogage, ParaView), `--no-contact`, `--no-midplane`,
-`--uniform-growth`, `--config params.toml`.
+`--uniform-growth`, `--growth-field <champ du .vtu>`, `--config params.toml`.
 
 ## Surfaces écrites
 
@@ -68,8 +68,9 @@ gyroxide run --bids <racine BIDS> --participant X [--session Y] [--output-dir D]
 ```
 
 Pour un hémisphère de session (état initial par défaut : le `.vtu` de `gyroxide mesh`), ajouter
-**`--uniform-growth --no-midplane`** : le masque ellipsoïdal et le plan médian des préréglages
-sont faits pour le maillage de Tallinen (le plan médian de `tallinen2016`, y′ = −0,004, couperait
+**`--growth-field cortex --no-midplane`** : la croissance suit le masque du cortex de surfx (champ
+`cortex` du `.vtu`, 0 sur la face médiale, qui ne croît pas ; `--uniform-growth` fait croître
+partout). Le masque ellipsoïdal et le plan médian des préréglages sont faits pour le maillage de Tallinen (le plan médian de `tallinen2016`, y′ = −0,004, couperait
 l'hémisphère normalisé en son milieu). L'espacement `a` vaut par défaut la **plus courte arête de
 surface** : les maillages TetGen gardent des tétraèdres plats contre la piale et `a` = arête
 moyenne donne des NaN en quelques centaines de pas. C'est environ 4 fois plus lent ; l'isosurface
@@ -78,7 +79,7 @@ stuffing (gyroxide#5) réglera ces tétraèdres. Exemple, sur la session d'essai
 ```sh
 gyroxide mesh --bids /tmp/surfx-e2e/sourcedata --participant 0avbc --session 02 --hemi L
 gyroxide run --bids /tmp/surfx-e2e/sourcedata --participant 0avbc --session 02 --label essai \
-    --hemi L --steps 20000 --uniform-growth --no-midplane
+    --hemi L --steps 20000 --growth-field cortex --no-midplane
 ```
 
 écrit dans `<étude>/derivatives/gyroxide/sub-X[/ses-Y]/anat/run-<label>/`, `<étude>` étant

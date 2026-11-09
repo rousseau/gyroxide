@@ -6,16 +6,20 @@ use std::path::Path;
 use std::process::Command;
 
 pub fn gyroxide(args: &[&str]) {
-    let out = Command::new(env!("CARGO_BIN_EXE_gyroxide"))
-        .args(args)
-        .output()
-        .unwrap();
+    let out = gyroxide_output(args);
     assert!(
         out.status.success(),
         "gyroxide {args:?}\n{}\n{}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+pub fn gyroxide_output(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_gyroxide"))
+        .args(args)
+        .output()
+        .unwrap()
 }
 
 /// Netgen mesh of a voxel ball scaled to a "brain" in mm (radius 30 mm, off-centre).

@@ -215,6 +215,10 @@ struct RunArgs {
     /// the presets is made for Tallinen's brain mesh.
     #[arg(long)]
     uniform_growth: bool,
+    /// Growth mask gr read from a node field of the initial .vtu, e.g. `cortex` (written by
+    /// `gyroxide mesh` from the cortex mask of surfx: 0 on the medial wall, no growth there).
+    #[arg(long, value_name = "FIELD", conflicts_with = "uniform_growth")]
+    growth_field: Option<String>,
     #[arg(long)]
     no_contact: bool,
     /// No midplane. Needed for a session hemisphere: the midplane of the presets (y' = -0.004 in
@@ -224,8 +228,9 @@ struct RunArgs {
     /// BIDS mode: root of the BIDS dataset (or its sourcedata/). The run is written to
     /// <study>/derivatives/gyroxide/sub-X[/ses-Y]/anat/run-<label>/ (config.toml, status.json,
     /// sequence.tsv, one GIfTI surface per output), instead of --out. For a session hemisphere
-    /// (default initial state: the .vtu of `gyroxide mesh`), also give --uniform-growth and
-    /// --no-midplane; the mesh spacing defaults to the shortest surface edge (see --mesh-spacing).
+    /// (default initial state: the .vtu of `gyroxide mesh`), also give --growth-field cortex (or
+    /// --uniform-growth) and --no-midplane; the mesh spacing defaults to the shortest surface edge
+    /// (see --mesh-spacing).
     #[arg(long, requires_all = ["participant", "label"])]
     bids: Option<PathBuf>,
     /// BIDS participant (without sub-).
@@ -439,6 +444,12 @@ fn load_params(args: &RunArgs) -> Result<Params> {
     if args.uniform_growth {
         p.growth_mask = GrowthMask::Uniform;
     }
+    if let Some(name) = &args.growth_field {
+        p.growth_mask = GrowthMask::MeshField {
+            name: name.clone(),
+            values: Vec::new(),
+        };
+    }
     if args.no_contact {
         p.contact.enabled = false;
     }
@@ -467,7 +478,11 @@ fn load_mesh(args: &RunArgs, params: &mut Params) -> Result<(TetMesh, String, no
         Some(path) => {
             let is_vtu = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("vtu"));
             let mut m = if is_vtu {
-                let (m, _) = vtu::read(path).with_context(|| format!("reading {}", path.display()))?;
+                let (m, fields) = vtu::read(path).with_context(|| format!("reading {}", path.display()))?;
+                params
+                    .growth_mask
+                    .fill_field(fields.iter().map(|f| (f.name.as_str(), f.values.as_slice())))
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
                 if params.normalization == MeshNormalization::None {
                     // A .vtu session mesh is in mm: it is always normalised for the computation.
                     params.normalization = MeshNormalization::BrainGrowthWhole;
@@ -475,6 +490,10 @@ fn load_mesh(args: &RunArgs, params: &mut Params) -> Result<(TetMesh, String, no
                 }
                 m
             } else {
+                params
+                    .growth_mask
+                    .fill_field([])
+                    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
                 netgen::read(path).with_context(|| format!("reading {}", path.display()))?
             };
             let mode = match params.normalization {
