@@ -286,3 +286,81 @@ Pour rendre les briques importables sans effet de bord, sans changer aucune déf
 (nouveau : `Surf`, `rigid_to`, `metrics` de `model_gallery.py`, la boucle d'échelles de `deviation_mm.py`,
 `folding_index` de `paper_table.py`) ; `mota_law.model_T` extraite de `main()` ; import de `full_figure`
 (matplotlib) rendu paresseux dans `fold_standard.main()`.
+
+## Vérification et convergence (P03, branche `l1-verification`, 9 novembre 2026)
+
+Première tranche : tâches 1 et 2 de P03. Tâches 3 (convergence en maillage de l'hémisphère), 4 (indépendance au
+solveur) et 5 (gradients de l'adjoint) non faites ; voir la fin de la section.
+
+### Tests en f64 (`crates/gyroxide-sim/tests/verification.rs`, dans la CI, 2,3 s)
+
+- **Patch test** : cube en 4³ cellules (384 tétraèdres), déformation homogène F_el = [[1,10 ; 0,20 ; −0,10], [0,05 ;
+  0,90 ; 0,15], [−0,20 ; 0,10 ; 1,20]] (J = 1,135) et croissance anisotrope uniforme G = I + 0,6 T, positions x =
+  F_el G X. Forces nulles aux nœuds intérieurs (< 1e−13 de l'échelle des forces de bord), somme des forces nulle
+  (1e−12), contrainte de Cauchy égale dans tous les tétraèdres à μ J^(−5/3) dev B + K (J − 1) I analytique, J exact à
+  3e−15, énergie totale égale à W V₀ analytique. **Écart constaté de 2e−10 (relatif) sur la contrainte et de 2e−8 sur
+  l'énergie**, et non l'arrondi : l'exposant 2/3 de `powf_scalar(2.0 / 3.0)` (`elastic.rs`, `pow_j23`, `force_tangent`)
+  est arrondi en f32 (0,666 666 69), même sur le dispositif f64. Vérifié : avec cet exposant la contrainte analytique
+  redonne 0,727 632 449 97 comme le code, contre 0,727 632 450 10 avec 2/3 exact. Sans conséquence pour l'oracle de
+  CI (le test a 1e−9 et 1e−7), mais l'oracle f64 n'est exact qu'à 2e−10 ; une correction possible : `exp(ln J · 2/3)`
+  en facteur scalaire f64 (non faite : elle changerait les résultats au dernier chiffre).
+- **Force = −gradient de l'énergie** (différences finies centrées, maillage perturbé, G anisotrope, 18 composantes) :
+  écart relatif **3,4e−8** (même exposant). La pression nodale J̄ du code C est donc cohérente avec l'énergie.
+- **Solution manufacturée** (cube, u = 0,05 (sin πX sin πY, sin πY sin πZ, sin πZ sin πX), μ = 1, K = 5, u imposé au
+  bord, force volumique = −Div P calculée sur la solution exacte, équilibre par Newton-Krylov sur la tangente
+  exacte, 4 itérations de Newton) :
+
+  | h | erreur max | erreur L2 | CG |
+  |---|---|---|---|
+  | 1/3 | 5,58e−2 | 4,80e−2 | 32 |
+  | 1/6 | 1,53e−2 | 8,83e−3 | 115 |
+  | 1/12 | 3,73e−3 | 1,83e−3 | 249 |
+
+  Ordres mesurés : **L2 2,44 puis 2,27, max 1,87 puis 2,03**, soit l'ordre 2 attendu des éléments P1 sur une solution
+  lisse (seuils du test : L2 > 1,8 et max > 1,5 entre les deux maillages fins).
+
+### Bicouche plane (`crates/gyroxide-sim/tests/bilayer.rs`, ignoré, environ 150 s)
+
+**Théorie** (formules vérifiées dans la littérature : Allen 1969 ; Chen et Hutchinson 2004 ; Cao et Hutchinson 2012,
+« Wrinkling phenomena in neo-Hookean film/substrate bilayers », J. Appl. Mech. 79, 031019, que j'ai retrouvé sans y
+lire la formule même, la page citant seulement Allen par les modules de déformation plane) : film mince sur substrat
+épais, λ = 2π H (Ē_f / 3 Ē_s)^(1/3) et ε_c = ¼ (3 Ē_s / Ē_f)^(2/3), Ē = E / (1 − ν²) module de déformation plane ;
+pour deux matériaux incompressibles Ē = 4 μ et l'on retrouve λ = 2π H (μ_f / 3 μ_s)^(1/3). Ici K = 5 μ_g : le film
+est compressible (ν = 0,406, Ē_f = 3,37 μ_g), on prend les Ē du matériau du code. Pour μ_f/μ_s = 50 : Ē_f/Ē_s = 42,3,
+λ = 15,18 H, ε_c = 0,0429 (croissance critique s_c = 0,0448).
+
+**Méthode** : brique d'une cellule d'épaisseur (déformation plane, u_y = 0), rouleaux sur les côtés, bas encastré à
+0,8 λ, croissance selon x seulement (`forces_tensor`, G = I + g_m s diag(1,0,0)) ; état plat calculé sur une colonne
+(Newton-Krylov) puis recopié ; la croissance critique est celle où la plus petite valeur propre de K = −dF/dx (Lanczos
+sur K par différences finies centrées de la force, f64) change de signe (bissection) ; domaine de longueur L : le premier
+mode cos(π x / L) a pour longueur d'onde 2 L ; on balaie λ/λ_th = 0,8 ; 1 ; 1,25 et on ajuste une parabole.
+Maillage grossier : 3 éléments par H dans le film, 0,5 H en x, 20 couches sous le film.
+
+| μ_f/μ_s = 50, maillage grossier | s_c (λ/λ_th = 0,8 ; 1 ; 1,25) | λ* | ε_c |
+|---|---|---|---|
+| théorie (bicouche net) | | 15,18 H | 0,0429 |
+| transition de la loi du code (sigmoïde, 0,4 H entre 10 et 90 %) | 0,0728 ; 0,0643 ; 0,0634 | 17,4 H (+14,6 %) | 0,0591 (+38 %) |
+| transition resserrée 10 fois (0,04 H, d' = H + 10 (d − H)) | 0,0281 ; 0,0265 ; 0,0288 | 14,9 H (−2,0 %) | 0,0258 (−40 %) |
+
+**Lecture, critère non tenu en l'état** : avec une transition nette, le premier flambage a la longueur d'onde
+théorique (−2 %, dans les 5 %) ; avec la loi de cortex du code, 14,6 % au-dessus, parce que la transition graduelle
+raidit la surface du substrat (μ à 0,12 H sous le film : 7 fois μ_s). La croissance critique n'est pas à 5 % dans
+aucun des deux cas : +38 % avec la loi du code, −40 % avec la transition nette, à ce maillage ; l'écart du cas net
+est une erreur de discrétisation à 3 éléments par H (la transition de 0,04 H est plus fine que le maillage), pas
+une mesure de la loi. **Convergence en maillage non atteinte** : sur la loi du code, 3 → 6 éléments par H (h_x de
+0,5 à 0,25 H) donne s_c = 0,0643 → 0,0600 (Lanczos à 400 pas) → 0,0573 (800 pas, encore non convergé : le spectre de K
+est dense, la plus petite valeur propre converge lentement quand le maillage s'affine). Il faut un solveur propre
+meilleur (inverse itération avec préconditionneur, ou factorisation creuse de K, que le dépôt n'a pas) pour conclure
+à la résolution de travail ; non fait. Cas non balayés : μ_f/μ_s = 20 et 100 (la même fonction `scan`).
+
+### Reste à faire pour P03
+
+- Tâche 2 : solveur propre pour les maillages fins, et balayage de μ_f/μ_s (20, 50, 100).
+- Tâche 3 : convergence en maillage de l'hémisphère (remaillage TetGen SG 21 à 0,3 / 0,6 / 1,6 M tétraèdres, au moins
+  3 éléments dans l'épaisseur corticale, tables nodales transportées, chaîne de référence SG 21 → 30 par maillage, soit
+  de 3 à 30 h par maillage).
+- Tâche 4 : indépendance au solveur (explicite à pas / 2 et amortissement × 2 contre quasi statique, SG 21 → 24 ;
+  f32 contre f64 sur une région).
+- Tâche 5 : `adjoint_week --diag` en f64 comme test de non-régression : l'exemple fixe le dispositif wgpu (f32) dans
+  son code (`Device::wgpu(...)`, ligne 1743) et exige un point de contrôle, un dossier `prep/` et des tables ; un
+  test de CI demande un petit cas synthétique complet (boule, cible, masque) et un choix de dispositif f64.
