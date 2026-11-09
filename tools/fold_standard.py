@@ -21,7 +21,6 @@ from scipy.spatial import ConvexHull
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
-from full_figure import CHAINS, WEEKS, state  # noqa: E402
 from lobar_basis import cotan_laplacian  # noqa: E402
 
 SCALES = [1, 2, 4, 8, 16, 32]   # mm; band k between SCALES[k] and SCALES[k + 1]
@@ -86,6 +85,7 @@ def compare(mod, atl):
 
 
 def main():
+    from full_figure import CHAINS, WEEKS, state  # matplotlib : seulement pour la ligne de commande
     out = Path(sys.argv[1])
     meta = json.loads((ROOT / "data/meshes/w21_left_610k_s.json").read_text())
     ns, mm = meta["n_surface"], meta["maxd_mm"]

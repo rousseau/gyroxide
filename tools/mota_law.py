@@ -96,6 +96,12 @@ def quantities(q, faces, cortex, mm):
     return va[cortex].sum(), hull.area, va
 
 
+def model_T(x, mesh, va, cortex, mm):
+    """Épaisseur du modèle avant calibration : volume de la couche corticale (tétraèdres pondérés par
+    leur poids cortical g) / aire externe du cortex, en mm (x en unités de 1/mm, va aires de sommet en mm²)."""
+    return (tet_volumes(x * mm, mesh.tets) * mesh.g).sum() / va[cortex].sum()
+
+
 def fit(log_ae, log_y):
     slope, icpt = np.polyfit(log_ae, log_y, 1)
     return slope, float(np.mean(log_y - 1.25 * log_ae))
@@ -122,13 +128,9 @@ def main():
         t = float((H[w - 21] * va)[cortex].sum() / va[cortex].sum())
         res["atlas"][w] = {"A_t": at, "A_e": ae, "T": t}
 
-    def model_T(x, mesh, va):
-        v = (tet_volumes(x * mm, mesh.tets) * mesh.g).sum()
-        return v / va[cortex].sum()
-
     m = meshes["w21_left_610k_s"]
     _, _, va = quantities(m.x0[:ns], faces, cortex, mm)
-    t21 = model_T(m.x0, m, va)
+    t21 = model_T(m.x0, m, va, cortex, mm)
     calib = res["atlas"][21]["T"] / t21
     res["check_sg21"] = {"T_volume_estimator": t21, "T_atlas": res["atlas"][21]["T"], "calibration": calib}
 
@@ -146,7 +148,7 @@ def main():
             if key not in meshes:
                 meshes[key] = Mesh(MESHES[key], ns, h21)
             at, ae, va = quantities(x[:ns], faces, cortex, mm)
-            res[label][w] = {"A_t": at, "A_e": ae, "T": calib * model_T(x, meshes[key], va)}
+            res[label][w] = {"A_t": at, "A_e": ae, "T": calib * model_T(x, meshes[key], va, cortex, mm)}
 
 
     print(f"SG 21 thickness: layer volume / area {res['check_sg21']['T_volume_estimator']:.3f} mm, "

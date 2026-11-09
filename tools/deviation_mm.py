@@ -13,13 +13,15 @@ Writes <run>/deviation_mm.json.
 """
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
-import scipy.sparse as sp
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from surface_metrics import LEVELS, deviation_levels, smoother  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-LEVELS = [200, 50, 10, 0]
 
 ap = argparse.ArgumentParser()
 ap.add_argument("run", type=Path)
@@ -31,20 +33,9 @@ F = json.loads((ROOT / "data/meshes/w21_left_610k.json").read_text())
 MM, NS = F["maxd_mm"], F["n_surface"]
 
 
-def smoother(prep):
-    e = np.load(prep / "edges.npy").astype(int)
-    A = sp.coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(NS, NS))
-    A = ((A + A.T) > 0).astype(float).tocsr()
-    return 0.5 * sp.identity(NS) + 0.5 * sp.diags(1 / np.asarray(A.sum(1)).ravel()) @ A
-
-
 def volume(p, tri):
     a, b, c = p[tri[:, 0]], p[tri[:, 1]], p[tri[:, 2]]
     return abs(np.einsum("ij,ij->i", a, np.cross(b, c)).sum() / 6)
-
-
-def stats(d):
-    return {"rms": float(np.sqrt((d ** 2).mean())), "p95": float(np.percentile(d, 95))}
 
 
 out = {}
@@ -56,27 +47,13 @@ for w in range(w0, w1 + 1):
     if not (ck / "x.npy").exists() or not prep.exists():
         continue
     if S is None:
-        S = smoother(prep)
+        S = smoother(np.load(prep / "edges.npy"), NS)
     x = np.load(ck / "x.npy")[:NS]
     y = np.load(prep / "target.npy")
     cx = np.load(prep / "cortex.npy") > 0.5
     tri = np.load(prep / "faces.npy").astype(int)
     row = {"volume_ratio": volume(x, tri) / volume(y, tri)}
-    sx, sy = x.copy(), y.copy()
-    done = 0
-    for k in sorted(LEVELS):
-        for _ in range(k - done):
-            sx, sy = S @ sx, S @ sy
-        done = k
-        a = np.linalg.norm(sx[cx] - sy[cx], axis=1) * MM
-        xc, yc = sx[cx] - sx[cx].mean(0), sy[cx] - sy[cx].mean(0)
-        rx, ry = np.sqrt((xc ** 2).sum(1).mean()), np.sqrt((yc ** 2).sum(1).mean())
-        s = np.linalg.norm(xc / rx - yc / ry, axis=1) * ry * MM
-        u, _, vt = np.linalg.svd(xc.T @ yc)
-        dfix = np.diag([1, 1, np.sign(np.linalg.det(u @ vt))])
-        r = u @ dfix @ vt  # xc @ r ~ yc
-        g = np.linalg.norm(xc @ r - yc, axis=1) * MM
-        row[f"k{k}"] = {"absolute_mm": stats(a), "rigid_mm": stats(g), "shape_mm": stats(s)}
+    row.update(deviation_levels(x, y, cx, S, MM))
     out[w] = row
     print(f"{w:3d} {row['volume_ratio']:8.3f} | " + " | ".join(
         f"{row[f'k{k}']['absolute_mm']['rms']:5.2f} {row[f'k{k}']['rigid_mm']['rms']:5.2f} ({row[f'k{k}']['rigid_mm']['p95']:5.2f}) "

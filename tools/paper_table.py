@@ -16,13 +16,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 from model_gallery import Surf, load_full, metrics, rigid_to  # noqa: E402
 from paper_figure import ROWS, atlas_xyz, fitted  # noqa: E402
-
-
-def folding_index(x, f):
-    a, b, c = x[f[:, 0]], x[f[:, 1]], x[f[:, 2]]
-    area = 0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1).sum()
-    vol = abs(np.einsum("ij,ij->i", a, np.cross(b, c)).sum()) / 6
-    return area / vol ** (2 / 3)
+from surface_metrics import folding_index  # noqa: E402
 
 
 def main():

@@ -13,7 +13,6 @@ from pathlib import Path
 
 import matplotlib
 import numpy as np
-import scipy.sparse as sp
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -21,6 +20,7 @@ from matplotlib.colors import LinearSegmentedColormap  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))
 from raster import camera, render  # noqa: E402
+from surface_metrics import Surf, metrics, rigid_to  # noqa: E402,F401
 
 INK, INK2, MUTED, BG = "#1B2430", "#4A5361", "#6B7280", "#FCFCFB"
 ACCENT, BLUE = "#C2571A", "#2A5DA8"
@@ -36,58 +36,6 @@ def last_x(run):
         return np.load(p)
     ks = [int(q.stem.split("_")[1]) for q in p.glob("x_*.npy") if q.stem.split("_")[1].isdigit()]
     return np.load(p / f"x_{max(ks)}.npy")
-
-
-class Surf:
-    """Surface operators on one triangulation (the atlas one, shared by every week and model)."""
-
-    def __init__(self, faces, ref, mm):
-        self.mm = mm
-        n = len(ref)
-        f = faces
-        fn = np.cross(ref[f[:, 1]] - ref[f[:, 0]], ref[f[:, 2]] - ref[f[:, 0]])
-        if np.mean(np.einsum("ij,ij->i", fn, ref[f].mean(1) - ref.mean(0)) > 0) < 0.5:
-            f = f[:, ::-1]                  # outward normals
-        self.f = f
-        e = np.concatenate([f[:, [0, 1]], f[:, [1, 2]], f[:, [2, 0]]])
-        a = sp.coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(n, n)).tocsr()
-        a = ((a + a.T) > 0).astype(float)
-        deg = np.asarray(a.sum(1)).ravel()
-        self.s = 0.5 * sp.identity(n) + 0.5 * sp.diags(1 / deg) @ a
-        self.lap = sp.identity(n) - sp.diags(1 / deg) @ a
-
-    def normals(self, q):
-        f = self.f
-        fn = np.cross(q[f[:, 1]] - q[f[:, 0]], q[f[:, 2]] - q[f[:, 0]])
-        vn = np.zeros_like(q)
-        for k in range(3):
-            np.add.at(vn, f[:, k], fn)
-        return vn / (np.linalg.norm(vn, axis=1, keepdims=True) + 1e-12)
-
-    def curv(self, q):
-        h = np.einsum("ij,ij->i", self.lap @ q, self.normals(q))
-        return self.s @ (self.s @ h)
-
-    def depth(self, q):
-        qs = q
-        for _ in range(30):
-            qs = self.s @ qs
-        return np.einsum("ij,ij->i", q - qs, self.normals(qs)) * self.mm
-
-
-def rigid_to(x, y, m):
-    ca, cb = x[m].mean(0), y[m].mean(0)
-    u, _, vt = np.linalg.svd((x[m] - ca).T @ (y[m] - cb))
-    d = np.diag([1, 1, np.sign(np.linalg.det(u @ vt))])
-    return (x - ca) @ (u @ d @ vt) + cb
-
-
-def metrics(S, x, y, m):
-    d = np.linalg.norm(x - y, axis=1) * S.mm
-    dx, dy = S.depth(x), S.depth(y)
-    return {"mm": np.sqrt((d[m] ** 2).mean()), "corr": np.corrcoef(S.curv(x)[m], S.curv(y)[m])[0, 1],
-            "depth": np.percentile(dx[m], 95) - np.percentile(dx[m], 5),
-            "depth_atlas": np.percentile(dy[m], 95) - np.percentile(dy[m], 5), "err": d}
 
 
 def curv_colors(S, q, hmax):
