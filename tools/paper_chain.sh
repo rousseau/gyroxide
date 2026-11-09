@@ -6,33 +6,43 @@
 # re-equilibrates the fits afterwards).
 #  1. inputs from the measured-growth chain (out/remodel_a0): tools/make_full.py, data/full_paper;
 #     SG 21 = rest state; law maps of SG 21-25 added to data/full/law (atlas depth, as make_full)
-#  2. SG 22 fit from the measured-growth state, law maps of SG 21 (predictive), out/paper/fit22_lbm
+#  2. SG 22 fit from the measured-growth state, law maps of SG 21 (predictive), $PAPER/fit22_lbm
 #  3. chain SG 22 -> 36 (tools/full_chain.sh, LAW=1), out/paper/fit<SG>_lbm
 #   [FROM=<SG>] tools/paper_chain.sh [first step, default 1]
+# Variables : TAG (suffixe des dossiers, data/full_paper$TAG, out/paper$TAG, configs mu2_full_paper$TAG ; défaut : aucun),
+# REMODEL (chaîne de croissance mesurée, défaut out/remodel_a0), CFG_BASE (configuration de départ, défaut
+# configs/mu_test/mu2_full.toml), SELECT (rigid, loss ou last : sélection de l'itéré, défaut loss depuis la décision du
+# 9 novembre ; la Table 1 publiée est en rigid), BIN (défaut target/mu/adjoint_week_sel, qui connaît --select-by).
 set -e
 cd "$(dirname "$0")/.."
-BIN=${BIN:-target/mu/adjoint_week_v8}
-D=data/full_paper
+BIN=${BIN:-target/mu/adjoint_week_sel}
+TAG=${TAG:-}
+REMODEL=${REMODEL:-out/remodel_a0}
+CFG_BASE=${CFG_BASE:-configs/mu_test/mu2_full.toml}
+SELECT=${SELECT:-loss}
+PAPER=out/paper$TAG
+D=data/full_paper$TAG
+CFG=configs/mu_test/mu2_full_paper$TAG.toml
 L=data/full/law
 LB=$(ls $L/lb40/basis_lb*_s100.npy | paste -sd,)
 SOLVER="--newton-cg 600 --force-tol 5e-5 --ls-tol 3e-3"
 S=${1:-1}
-mkdir -p out/paper
+mkdir -p $PAPER
 if [ "$S" -le 1 ]; then
-    python3 tools/make_full.py --out $D --weeks $(seq 22 36) --full "out/remodel_a0/w{w}/eq/x_released.npy"
-    python3 - <<'EOF'
-import json, shutil, sys
+    python3 tools/make_full.py --out $D --weeks $(seq 22 36) --full "$REMODEL/w{w}/eq/x_released.npy"
+    D=$D REMODEL=$REMODEL python3 - <<'EOF'
+import json, os, shutil, sys
 from pathlib import Path
 import numpy as np
 sys.path.insert(0, "tools")
 from make_full import depth_bases
-D, L = Path("data/full_paper"), Path("data/full/law")
+D, L = Path(os.environ["D"]), Path("data/full/law")
 meta = json.loads(Path("data/meshes/w21_left_610k_s.json").read_text())
 ns, mm = meta["n_surface"], meta["maxd_mm"]
 ck = D / "ckpt_w21"                                 # rest state (start of the measured-growth chain)
 shutil.rmtree(ck, ignore_errors=True)
 shutil.copytree(D / "ckpt_w22", ck)
-x = np.load("out/remodel_a0/w22/eq/x_0.npy")
+x = np.load(os.environ["REMODEL"] + "/w22/eq/x_0.npy")
 np.save(ck / "x.npy", x)
 (ck / "state.json").write_text(json.dumps({"step": 0, "t": 0.0}))
 p = Path("data/adjoint_prep_s/w22")
@@ -46,17 +56,17 @@ for w in range(21, 26):
             np.save(f, v / 100)
 print("SG 21 rest state and law maps of SG 21-25 written")
 EOF
-    cp configs/mu_test/mu2_full.toml configs/mu_test/mu2_full_paper.toml
+    cp $CFG_BASE $CFG
 fi
 if [ "$S" -le 2 ]; then
     # shellcheck disable=SC2086
-    $BIN configs/mu_test/mu2_full_paper.toml data/meshes/w21_left_610k_s.mesh $D/ckpt_w22 $D/prep/w22 \
-        out/paper/fit22_lbm --absolute --multiscale 10:30,0:30 --cumulative --theta0-table --relax 300 \
+    $BIN $CFG data/meshes/w21_left_610k_s.mesh $D/ckpt_w22 $D/prep/w22 \
+        $PAPER/fit22_lbm --absolute --multiscale 10:30,0:30 --cumulative --theta0-table --relax 300 \
         --relax0 3000 --newton 40 --min-growth 0 --max-step 0.05 --cg 600 --w-vertex 1 --w-normal 1 --w-lap 1 \
         --w-area 0.5 --growth-band 0.5 --fit-fields c,k --field-band 50 \
         --field-law $L/basis_d30_w21_s100.npy,$L/basis_d3o_w21_s100.npy,$L/basis_one_s100.npy \
-        --field-law-k $LB --thick-mult --keep-best $SOLVER > out/paper/fit22_lbm.log 2>&1
-    grep -E "^start mm k=  0|^final mm k=  0|panicked|inverted" out/paper/fit22_lbm.log
+        --field-law-k $LB --thick-mult --keep-best --select-by $SELECT $SOLVER > $PAPER/fit22_lbm.log 2>&1
+    grep -E "^start mm k=  0|^final mm k=  0|panicked|inverted" $PAPER/fit22_lbm.log
 fi
 # Equilibrium settings of the earlier lobar chain: default up to SG 31, the late-week ones after.
 # FROM=<SG>: resume the chain from the finished fit of that week.
@@ -65,10 +75,10 @@ P=""
 [ "$W" -gt 22 ] && P=lbm$W
 if [ "$W" -lt 31 ]; then
     # shellcheck disable=SC2086
-    LAW=1 DATA=$D OUTD=out/paper PREV0=$P BIN=$BIN tools/full_chain.sh lbm out/paper/fit${W}_lbm $W 31 \
-        --field-law-k $LB --thick-mult --keep-best
+    LAW=1 DATA=$D OUTD=$PAPER PREV0=$P BIN=$BIN tools/full_chain.sh lbm $PAPER/fit${W}_lbm $W 31 \
+        --field-law-k $LB --thick-mult --keep-best --select-by $SELECT
     W=31; P=lbm31
 fi
 # shellcheck disable=SC2086
-LAW=1 DATA=$D OUTD=out/paper PREV0=$P RELAX=300 BIN=$BIN tools/full_chain.sh lbm out/paper/fit${W}_lbm $W 36 \
-    --field-law-k $LB --thick-mult --keep-best $SOLVER
+LAW=1 DATA=$D OUTD=$PAPER PREV0=$P RELAX=300 BIN=$BIN tools/full_chain.sh lbm $PAPER/fit${W}_lbm $W 36 \
+    --field-law-k $LB --thick-mult --keep-best --select-by $SELECT $SOLVER

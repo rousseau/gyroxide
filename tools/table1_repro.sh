@@ -10,7 +10,7 @@
 #            noms attendus par les outils
 #   tab      « Original growth law » : gyroxide run, loi tabulée de Tallinen, 43 845 pas (SG 21 → 26), une surface
 #            tous les 8 769 pas, out/atlas_w21_tab (GPU wgpu/CUDA, environ 45 min sur la PGX)
-#   remodel  croissance mesurée, tools/remodel_chain.py --alpha 0 --core, SG 22 → 36, out/remodel_a0 ;
+#   remodel  croissance mesurée, tools/remodel_chain.py --alpha 0, SG 22 → 36, out/remodel_a0 ;
 #            puis tools/make_full.py (data/full), entrée des outils de mesure
 #   paper    croissance estimée, tools/paper_chain.sh (SG 22 → 36 ; 10 à 30 min par semaine jusqu'à SG 31, puis
 #            3 à 6 h par semaine) ; la durée de chaque semaine est celle de son journal (fit<SG>_lbm.log)
@@ -55,6 +55,7 @@ step_build() {
     cargo build --release --example adjoint_week --features autodiff
     mkdir -p target/mu
     cp target/release/examples/adjoint_week target/mu/adjoint_week_regen
+    cp target/release/examples/adjoint_week target/mu/adjoint_week_sel
     # noms attendus par remodel_chain.py, paper_chain.sh et full_chain.sh
     for n in core law2 lawk v8; do ln -sf adjoint_week_regen "target/mu/adjoint_week_$n"; done
     provenance
@@ -66,7 +67,7 @@ step_tab() {
 }
 
 step_remodel() {
-    python3 tools/remodel_chain.py out/remodel_a0 --alpha 0 --core --w1 36 --resume "${RESUME:-0}" \
+    python3 tools/remodel_chain.py out/remodel_a0 --alpha 0 --w1 36 --resume "${RESUME:-0}" \
         > "$OUT/remodel.log" 2>&1
     # shellcheck disable=SC2046
     python3 tools/make_full.py --out data/full --weeks $(seq 22 36) --full 'out/remodel_a0/w{w}/eq/x_released.npy'
