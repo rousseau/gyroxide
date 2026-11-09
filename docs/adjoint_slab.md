@@ -875,11 +875,98 @@ que l'itéré 0 n'est alors pas l'itéré rendu. Recommandation : `loss` pour la
 qui est minimisé et il ne regarde pas l'atlas de la semaine évaluée). Une chaîne refaite avec `loss` reste à
 produire pour confirmer l'effet cumulé.
 
+### Variabilité d'une exécution à l'autre : SG 32 → 33 (E33, tranche 1)
+
+Trois répétitions du même ajustement (mêmes entrées que `paper_chain.sh` : état de départ `ckpt_w33_from_lbm33`, loi de
+SG 32, options identiques, `--select-by loss`), lancées ensemble le 9 novembre : `tools/variabilite_sg33.sh <n>`,
+sorties `out/variabilite/rep<n>/fit33_lbm` ; la chaîne d'origine (`out/paper/fit33_lbm`, sélection `rigid`) en regard.
+Itérations (perte de forme + régularisation, écart rigide en mm) :
+
+| itération | origine | rép. 1 | rép. 2 | rép. 3 |
+|---|---|---|---|---|
+| 1 | 3,238936 / 1,834 | 3,238936 / 1,834 | 3,238936 / 1,834 | 3,238936 / 1,834 |
+| 5 | 3,213938 / 1,834 | 3,213938 / 1,834 | 3,213935 / 1,834 | 3,213938 / 1,834 |
+| 6 | 3,216410 / 1,837 | 3,216410 / 1,837 | 3,216514 / 1,837 | 3,216516 / 1,837 |
+| 7 | 3,218859 / 1,838 | 3,218858 / 1,838 | 3,219406 / 1,838 | 3,219409 / 1,838 |
+| 8 | 3,219653 / 1,838 | 3,219654 / 1,838 | 3,225379 / 1,839 | 3,225380 / 1,839 |
+
+**Les quatre exécutions sont identiques à six chiffres jusqu'à l'itération 5, puis la trajectoire bifurque à l'itération
+6 à 8** (écart de perte de 3e-5, puis de 0,18 % à l'itération 8) : la répétition 1 suit l'origine (le premier niveau, à
+lissage 10, s'arrête après 9 itérations et le second niveau commence à 4,2269), les répétitions 2 et 3 prennent un autre
+pas dans la recherche linéaire à l'itération 7 et poursuivent le premier niveau jusqu'à ses 30 itérations (perte de
+3,13 à l'itération 29). L'écart rigide, lui, ne bouge pas : il ne diffère que de 0,001 mm entre exécutions à une même
+itération (1,838 contre 1,839 à l'itération 8, 1,836 à l'itération 15 et 20 pour les répétitions 2 et 3). **Le
+non-déterminisme change donc le chemin (nombre d'itérations, niveau atteint) bien plus que l'écart rigide à une
+itération donnée.** Les trois répétitions n'avaient pas fini à la clôture de ce lancement (répétitions 2 et 3 au début du
+second niveau, itération 30 ; répétition 1 à l'itération 11) : **l'étendue des états finaux et des métriques du tableau
+de bord est donc encore à mesurer** (reprise : voir le compte rendu d'E33). Seuil provisoire, à confirmer : un écart de
+métrique inférieur à 0,001 mm sur l'écart rigide à itération égale n'est pas un gain.
+
+**D'où vient le non-déterminisme** (non corrigé) :
+- `adjoint_week` ne contient aucun parallélisme sur CPU (ni `rayon` ni fils : sommes en f64 séquentielles) ; tout le
+  calcul physique tourne sur le GPU (wgpu, f32).
+- Deux processus lancés sur le même état de départ donnent **les mêmes chiffres à tous les chiffres imprimés** pour le
+  départ, le gradient (CG de 302 itérations), l'adjoint, la symétrie de K et le test du gradient (`--diag`, 9 novembre,
+  `out/variabilite/diag`) ; un produit K·v répété dans le même processus est identique au bit (écart 0). Le gradient
+  analytique de la perte coïncide avec les différences finies à 1e-6 (rapport 0,999999).
+- Avec le contact désactivé (`enabled = false`, `configs/mu_test/mu2_full_paper_carry_lbm33_nocontact.toml`), deux
+  processus donnent **les mêmes quatre premières itérations à tous les chiffres imprimés** (3,220106 ; 3,215240 ;
+  3,208265 ; 3,201372, mêmes nombres d'itérations de CG). Avec le contact, les itérations 2 et suivantes diffèrent d'un
+  processus à l'autre (3,215237 contre 3,215431 à l'itération 2 dans le premier rejeu).
+- Piste la plus probable, **non démontrée** : le contact (liste de candidats et accumulation des forces de contact par
+  `scatter` sur le GPU, dont l'ordre d'addition en f32 n'est pas fixé) ; le départ n'est pas touché, parce que le contact
+  n'y est pas actif. Pour trancher : rejouer plus de quatre itérations sans contact (il n'y a que quatre), ou rendre
+  l'accumulation du contact déterministe et refaire la comparaison.
+
+### Sensibilité au rapport μ_g/μ_w, croissance mesurée (E33, tranche 1)
+
+Le rapport de la référence est μ_g/μ_w = 2 (`mu_gray = 1`, `mu_white = 0,5`). Étude sur le seul bras mesuré
+(`tools/remodel_chain.py --alpha 0`, SG 22 à 36, configurations `configs/mu_test/mu_r<tag>_s.toml`, sorties
+`out/remodel_r<tag>`) à μ_g/μ_w = 0,5 (`mu_white = 2`), 0,857 (`mu_white = 1,167`, la loi d'origine) et 1
+(`mu_white = 1`). Les étiquettes `r0500`, `r0857`, `r1000` des dossiers sont ces rapports μ_g/μ_w × 1000. Les trois
+chaînes arrivent à SG 36 sans élément retourné ni arrêt (écart rigide de la chaîne à SG 36 : 2,806 mm pour la référence,
+2,683 / 2,665 / 2,613 mm pour 1 / 0,857 / 0,5). Table 1 (croissance mesurée, `gyroxide eval`, mêmes cibles) face à la
+référence ; chaque cellule est la valeur puis son écart relatif à la référence :
+
+```
+ SG bras            RMS              p95             corr             prof               IG        
+ 26 ref           0.520   +0.0%    1.049   +0.0%    0.837   +0.0%    0.644   +0.0%    0.975   +0.0%
+ 26 mug_mw_0.5    0.511   -1.7%    1.036   -1.3%    0.835   -0.2%    0.631   -2.1%    0.971   -0.4%
+ 26 mug_mw_0.857    0.513   -1.2%    1.041   -0.8%    0.836   -0.1%    0.635   -1.4%    0.972   -0.3%
+ 26 mug_mw_1      0.514   -1.1%    1.042   -0.6%    0.836   -0.1%    0.637   -1.1%    0.973   -0.2%
+ 28 ref           1.193   +0.0%    2.348   +0.0%    0.657   +0.0%    0.743   +0.0%    0.933   +0.0%
+ 28 mug_mw_0.5    1.133   -5.1%    2.307   -1.7%    0.650   -0.9%    0.708   -4.7%    0.922   -1.1%
+ 28 mug_mw_0.857    1.148   -3.8%    2.322   -1.1%    0.653   -0.6%    0.719   -3.1%    0.925   -0.8%
+ 28 mug_mw_1      1.154   -3.3%    2.326   -0.9%    0.653   -0.5%    0.723   -2.7%    0.926   -0.7%
+ 30 ref           1.866   +0.0%    3.418   +0.0%    0.493   +0.0%    0.829   +0.0%    0.874   +0.0%
+ 30 mug_mw_0.5    1.753   -6.0%    3.344   -2.2%    0.479   -2.8%    0.763   -8.0%    0.855   -2.2%
+ 30 mug_mw_0.857    1.800   -3.5%    3.389   -0.8%    0.484   -1.8%    0.782   -5.7%    0.860   -1.6%
+ 30 mug_mw_1      1.811   -2.9%    3.397   -0.6%    0.485   -1.5%    0.789   -4.9%    0.862   -1.4%
+ 33 ref           2.532   +0.0%    4.397   +0.0%    0.369   +0.0%    0.990   +0.0%    0.798   +0.0%
+ 33 mug_mw_0.5    2.368   -6.5%    4.281   -2.6%    0.348   -5.7%    0.830  -16.2%    0.765   -4.1%
+ 33 mug_mw_0.857    2.407   -4.9%    4.310   -2.0%    0.354   -3.9%    0.874  -11.7%    0.774   -3.0%
+ 33 mug_mw_1      2.418   -4.5%    4.318   -1.8%    0.357   -3.2%    0.892   -9.9%    0.777   -2.6%
+ 36 ref           2.785   +0.0%    4.829   +0.0%    0.323   +0.0%    1.076   +0.0%    0.755   +0.0%
+ 36 mug_mw_0.5    2.617   -6.0%    4.688   -2.9%    0.298   -7.9%    0.867  -19.4%    0.717   -5.1%
+ 36 mug_mw_0.857    2.660   -4.5%    4.718   -2.3%    0.307   -5.1%    0.922  -14.4%    0.727   -3.8%
+ 36 mug_mw_1      2.674   -4.0%    4.719   -2.3%    0.310   -4.2%    0.942  -12.4%    0.731   -3.3%
+```
+
+**Lecture** : plus la substance blanche est raide devant la grise (μ_g/μ_w décroît de 2 à 0,5), plus le modèle plisse
+moins : la profondeur de sillon baisse de 12 % (rapport 1) à 19 % (0,5) à SG 36, la corrélation de courbure de 4 à 8 %,
+l'écart rigide de 3 à 6 % (le modèle moins plissé est un peu plus près de l'atlas en écart RMS, plus loin en profondeur et
+en corrélation). Les écarts de profondeur de SG 33 et 36 (10 à 19 %) et de corrélation (3 à 8 %) dépassent de loin
+l'écart rigide entre exécutions (0,001 mm, soit moins de 0,1 %) ; l'écart rigide RMS (3 à 6 %) aussi. **Une valeur
+unique de μ_g/μ_w dans les trois bras de la Table 1 déplace donc les lignes de plus que le bruit d'exécution à SG 30 et
+après**, surtout en profondeur de sillon ; à SG 26 les écarts (≤ 2 %) sont de l'ordre de la variation de la chaîne.
+Ce qui n'est pas fait : la chaîne estimée à 0,857 (voir ci-dessous) et la loi d'origine à μ_g/μ_w = 2.
+
 ### Reste à faire pour P02
 
-- Tâche 3 (rapport μ_w/μ_g) : aujourd'hui la loi d'origine est à μ_g/μ_w = 1/1,167 = 0,857
-  (`configs/atlas_w21_tabulated.toml`), les croissances mesurée et estimée à 2 (`configs/mu_test/mu2_s.toml`,
-  `mu2_full*.toml`). Même valeur partout, ou étude de sensibilité à 0,5 / 0,857 / 1 : chacune demande de refaire la
-  croissance mesurée et la chaîne estimée (environ 28 h chacune sur la PGX).
+- Tâche 3 (rapport μ_g/μ_w) : bras mesuré à 0,5 / 0,857 / 1 fait (ci-dessus). Reste la **chaîne estimée à 0,857**, en
+  cours (commande : `TAG=_r0857 REMODEL=out/remodel_r0857 CFG_BASE=configs/mu_test/mu2_full_r0857.toml SELECT=loss
+  tools/paper_chain.sh`, sorties `out/paper_r0857`, `data/full_paper_r0857` ; environ 28 h ; reprise d'une semaine
+  interrompue : `FROM=<SG>` avec les mêmes variables), puis son tableau (`gyroxide eval out/paper_r0857/fit<SG>_lbm`,
+  `tools/sensibilite_table.py --label estimated`) face à la référence, et la fin des trois répétitions de SG 33.
 - Tâche 4 : maillage SG 21 de l'hémisphère droit et refaire la chaîne et la Table 1.
 - Tâche 5 : bras de persistance équitable (mode de `tools/full_chain.sh`, SG 26 à 36).
