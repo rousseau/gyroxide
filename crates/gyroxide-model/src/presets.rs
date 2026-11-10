@@ -50,6 +50,7 @@ impl Preset {
             check_every: 10,
             midplane: Some(-0.004),
             midplane_restoring: false,
+            deterministic_sum: false,
         };
         match self {
             Preset::Tallinen2016 => Params {

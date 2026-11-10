@@ -12,6 +12,59 @@
 
 pub mod algebra;
 pub mod contact;
+
+/// Journal de sommes de contrôle (E40, diagnostic du non-déterminisme) : si la variable d'environnement `GYROXIDE_HASH_LOG` nomme un fichier,
+/// chaque pas, chaque force totale, chaque produit K·v et chaque reconstruction des listes de contact y écrit une ligne ; deux exécutions
+/// identiques au bit près donnent deux fichiers identiques, et la première ligne qui diffère localise l'étage non reproductible.
+/// Sans la variable : aucun effet (un test de variable d'environnement par appel).
+mod hashlog {
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+
+    static LOG: OnceLock<Option<Mutex<std::io::BufWriter<std::fs::File>>>> = OnceLock::new();
+
+    fn log() -> &'static Option<Mutex<std::io::BufWriter<std::fs::File>>> {
+        LOG.get_or_init(|| {
+            std::env::var_os("GYROXIDE_HASH_LOG").map(|p| {
+                Mutex::new(std::io::BufWriter::new(
+                    std::fs::File::create(p).expect("GYROXIDE_HASH_LOG"),
+                ))
+            })
+        })
+    }
+
+    pub fn enabled() -> bool {
+        log().is_some()
+    }
+
+    pub fn fnv_bits(bits: impl Iterator<Item = u64>) -> u64 {
+        let mut h = 0xcbf29ce484222325u64;
+        for b in bits {
+            for byte in b.to_le_bytes() {
+                h ^= u64::from(byte);
+                h = h.wrapping_mul(0x100000001b3);
+            }
+        }
+        h
+    }
+
+    pub fn rows(tag: &str, step: usize, rows: &[[f64; 3]]) {
+        if let Some(l) = log() {
+            let h = fnv_bits(rows.iter().flatten().map(|v| v.to_bits()));
+            let mut f = l.lock().unwrap();
+            writeln!(f, "{tag} step={step} {h:016x}").unwrap();
+            f.flush().unwrap();
+        }
+    }
+
+    pub fn event(msg: &str) {
+        if let Some(l) = log() {
+            let mut f = l.lock().unwrap();
+            writeln!(f, "{msg}").unwrap();
+            f.flush().unwrap();
+        }
+    }
+}
 pub mod elastic;
 pub mod setup;
 pub mod trace;
@@ -274,7 +327,11 @@ impl Simulation {
     pub fn total_force(&self, x: &[[f64; 3]]) -> Vec<[f64; 3]> {
         let xv = V3::from_rows(x, &self.device);
         let (force, _) = self.compute_force(&xv, &self.thickness_at(self.t), false);
-        force.to_rows()
+        let out = force.to_rows();
+        if hashlog::enabled() {
+            hashlog::rows("total_force", self.step, &out);
+        }
+        out
     }
 
     /// Rebuilds the contact proximity lists if the surface moved enough.
@@ -521,13 +578,17 @@ impl Simulation {
             });
         }
         let kv = d.neg();
-        match &self.dirichlet {
+        let out = match &self.dirichlet {
             Some((free, _)) => kv
                 .mul(free)
                 .add(&v_in.mul(&free.clone().neg().add_scalar(1.0)))
                 .to_rows(),
             None => kv.to_rows(),
+        };
+        if hashlog::enabled() {
+            hashlog::rows("k_mul", self.step, &out);
         }
+        out
     }
 
     pub fn dt(&self) -> f64 {
@@ -541,6 +602,9 @@ impl Simulation {
     /// Advances one time step.
     pub fn step(&mut self) {
         self.advance(false);
+        if hashlog::enabled() {
+            hashlog::rows("step", self.step, &self.x.to_rows());
+        }
     }
 
     /// Advances one step and returns the state *before* the update, with the
@@ -581,6 +645,9 @@ impl Simulation {
             return;
         }
         let x = self.x.to_rows();
+        if hashlog::enabled() {
+            hashlog::rows("rebuild_x", self.step, &x);
+        }
         let a = self.params.dynamics.mesh_spacing;
         let pairs = contact::build_pairs(
             &self.mesh,
@@ -589,7 +656,15 @@ impl Simulation {
             8.0 * a,
             self.params.proximity_skin(),
         );
-        self.pairs = contact::upload_pairs(&self.mesh, &self.host.gr, &pairs, &self.device);
+        if hashlog::enabled() {
+            let h = hashlog::fnv_bits(pairs.iter().flat_map(|&(a, b)| [u64::from(a), u64::from(b)]));
+            hashlog::event(&format!("rebuild_pairs step={} n={} {h:016x}", self.step, pairs.len()));
+        }
+        let ordered_sum = self.params.contact.deterministic_sum;
+        self.pairs = contact::upload_pairs(&self.mesh, &self.host.gr, &pairs, &self.device).map(|mut p| {
+            p.ordered_sum = ordered_sum;
+            p
+        });
         self.x_surf_old = Some(self.x.select(&self.pre.surface_nodes));
         self.n_rebuilds += 1;
     }

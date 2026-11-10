@@ -2096,6 +2096,74 @@ fn main() {
     let sigma = flag("--shift", 1e-3) * ray.abs();
     p.sigma = sigma;
     let mut x = p.equilibrium(&theta, &xs, flag("--relax0", relax as f64) as usize);
+    if let Some(n) = opt("--check-repro").map(|v| v.to_string_lossy().parse::<usize>().unwrap()) {
+        // E40 : reproductibilité au bit de chaque étage de la résolution, dans ce processus (n répétitions) ; à lancer dans deux processus
+        // et à comparer les sommes de contrôle. Puis arrêt.
+        let fnv = |rows: &[[f64; 3]]| -> u64 {
+            let mut h = 0xcbf29ce484222325u64;
+            for v in rows.iter().flatten() {
+                for b in v.to_bits().to_le_bytes() {
+                    h ^= u64::from(b);
+                    h = h.wrapping_mul(0x100000001b3);
+                }
+            }
+            h
+        };
+        let report = |nom: &str, hs: Vec<u64>| {
+            let distinct: std::collections::BTreeSet<u64> = hs.iter().copied().collect();
+            println!(
+                "REPRO {nom}: {} valeur(s) distincte(s) sur {}, première {:016x}",
+                distinct.len(),
+                hs.len(),
+                hs[0]
+            );
+        };
+        let s_ = p.growth(&theta);
+        p.sim.set_state(&x, &p.v0.clone(), &s_);
+        p.sim.set_fixed_growth(Some(&s_));
+        p.sim.refresh_contact();
+        report("x de départ", vec![fnv(&x)]);
+        if n == 0 {
+            return;
+        }
+        report("total_force", (0..n).map(|_| fnv(&p.sim.total_force(&x))).collect());
+        let mut a = 12345u64;
+        let v: Vec<[f64; 3]> = x
+            .iter()
+            .map(|_| {
+                [0, 1, 2].map(|_| {
+                    a = a.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    ((a >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 1e-3
+                })
+            })
+            .collect();
+        report("k_mul", (0..n).map(|_| fnv(&p.k_mul(&x, &v))).collect());
+        let f0 = p.sim.total_force(&x);
+        report(
+            "solve (CG de Newton)",
+            (0..n)
+                .map(|_| fnv(&p.solve(&x, &f0, p.sigma, p.newton_cg, !p.fd_k).0))
+                .collect(),
+        );
+        for steps in [1usize, 10, 50] {
+            let hs = (0..n)
+                .map(|_| {
+                    p.sim.set_state(&x, &p.v0.clone(), &s_);
+                    p.sim.set_fixed_growth(Some(&s_));
+                    for _ in 0..steps {
+                        p.sim.step();
+                    }
+                    fnv(&p.sim.positions())
+                })
+                .collect();
+            report(&format!("{steps} pas de relaxation"), hs);
+        }
+        report(
+            "équilibre (relax + Newton)",
+            (0..n).map(|_| fnv(&p.equilibrium(&theta, &x, p.relax))).collect(),
+        );
+        return;
+    }
     if args.iter().any(|a| a == "--stress") {
         // Stress at the equilibrium (with --theta-init theta_final.npy and the fitted state as
         // checkpoint: the fitted model), per tetrahedron: Cauchy stress (row-major, model units),

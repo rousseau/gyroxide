@@ -26,6 +26,9 @@ pub struct ContactPairs {
     /// role 0 = point, 1..3 = triangle vertices.
     pub ell: I1,
     pub ell_width: usize,
+    /// Sum the contributions of each node column by column, in a fixed order (see [`gather`]), instead of with the device's
+    /// `sum_dim` kernel, whose order of additions is not guaranteed to be the same from one run to the next (E40).
+    pub ordered_sum: bool,
 }
 
 /// Builds the candidate lists exactly like `createNNLtriangle`, except
@@ -96,7 +99,29 @@ pub fn upload_pairs(mesh: &TetMesh, gr: &[f64], pairs: &[(u32, u32)], device: &D
         active: floats(&active, device),
         ell: ints(&ell.idx, device),
         ell_width: ell.width,
+        ordered_sum: false,
     })
+}
+
+/// Sums the per-slot contributions `cols` (four blocks of `n_pairs` values, then one zero for the padding slots) into the nodes
+/// through the ELL table of `pairs`.
+///
+/// With `pairs.ordered_sum == false` the sum is the device's `sum_dim`; with `true` it is a chain of additions column by column, left
+/// to right, so that the order of the `f32` additions of every node is fixed by the program and two runs give the same bits.
+pub fn gather(mut cols: Vec<T1>, pairs: &ContactPairs, n_nodes: usize) -> T1 {
+    let device = cols[0].device();
+    cols.push(T1::zeros([1], &device));
+    let table = T1::cat(cols, 0)
+        .select(0, pairs.ell.clone())
+        .reshape([n_nodes, pairs.ell_width]);
+    if !pairs.ordered_sum {
+        return table.sum_dim(1).reshape([n_nodes]);
+    }
+    let mut acc = table.clone().narrow(1, 0, 1);
+    for k in 1..pairs.ell_width {
+        acc = acc + table.clone().narrow(1, k, 1);
+    }
+    acc.reshape([n_nodes])
 }
 
 /// Penalty forces on all nodes [N] for the current positions.
@@ -115,7 +140,6 @@ pub fn penalty_forces(pairs: &ContactPairs, x: &V3, n_nodes: usize, hc: f64, kc:
     let fdn = fn_.dot(&ntri);
     let reflected = fn_.sub(&ntri.mul(&(fdn.clone() * 2.0)));
     let fn_ = fn_.where_(&fdn.lower_elem(0.0), &reflected).mul(&gate);
-    let device = x.x.device();
     let mut out = [vec![], vec![], vec![]];
     let parts = [fn_.clone(), fn_.mul(&u).neg(), fn_.mul(&v).neg(), fn_.mul(&w).neg()];
     for part in parts {
@@ -123,16 +147,12 @@ pub fn penalty_forces(pairs: &ContactPairs, x: &V3, n_nodes: usize, hc: f64, kc:
         out[1].push(part.y);
         out[2].push(part.z);
     }
-    let gather = |mut cols: Vec<T1>| -> T1 {
-        cols.push(T1::zeros([1], &device));
-        T1::cat(cols, 0)
-            .select(0, pairs.ell.clone())
-            .reshape([n_nodes, pairs.ell_width])
-            .sum_dim(1)
-            .reshape([n_nodes])
-    };
     let [ox, oy, oz] = out;
-    V3::new(gather(ox), gather(oy), gather(oz))
+    V3::new(
+        gather(ox, pairs, n_nodes),
+        gather(oy, pairs, n_nodes),
+        gather(oz, pairs, n_nodes),
+    )
 }
 
 /// Gauss-Newton tangent of [`penalty_forces`] along `dx`: for each active pair, the
@@ -158,7 +178,6 @@ pub fn penalty_tangent(pairs: &ContactPairs, x: &V3, dx: &V3, n_nodes: usize, hc
         .add(&dx.select(&pairs.tri[2]).mul(&w));
     let drc = n.dot(&dq.sub(&dx.select(&pairs.point)));
     let df = n.mul(&(drc * gate * (kc * a * a / hc)));
-    let device = x.x.device();
     let mut out = [vec![], vec![], vec![]];
     let parts = [df.clone(), df.mul(&u).neg(), df.mul(&v).neg(), df.mul(&w).neg()];
     for part in parts {
@@ -166,16 +185,12 @@ pub fn penalty_tangent(pairs: &ContactPairs, x: &V3, dx: &V3, n_nodes: usize, hc
         out[1].push(part.y);
         out[2].push(part.z);
     }
-    let gather = |mut cols: Vec<T1>| -> T1 {
-        cols.push(T1::zeros([1], &device));
-        T1::cat(cols, 0)
-            .select(0, pairs.ell.clone())
-            .reshape([n_nodes, pairs.ell_width])
-            .sum_dim(1)
-            .reshape([n_nodes])
-    };
     let [ox, oy, oz] = out;
-    V3::new(gather(ox), gather(oy), gather(oz))
+    V3::new(
+        gather(ox, pairs, n_nodes),
+        gather(oy, pairs, n_nodes),
+        gather(oz, pairs, n_nodes),
+    )
 }
 
 /// Tangent of [`midplane_force`] along `dy`, with the side flags frozen at `y`.

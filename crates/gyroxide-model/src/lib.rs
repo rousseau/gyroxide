@@ -102,6 +102,10 @@ pub struct Contact {
     /// reference codes; `true` uses the restoring sign. See docs/model.md.
     #[serde(default)]
     pub midplane_restoring: bool,
+    /// Sum the contact forces of each node in a fixed order (column by column) instead of with the device's reduction kernel, so
+    /// that two runs give the same bits (E40). Off by default: the historical behaviour is unchanged.
+    #[serde(default)]
+    pub deterministic_sum: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
