@@ -1022,6 +1022,53 @@ sur l'écart rigide et de +3 à +7 % sur la corrélation, et celle du bras mesur
 sur l'écart rigide (tableau précédent) ; l'effet sur la conclusion de l'article (estimation contre persistance) n'est pas mesuré
 ici : la persistance n'a pas été refaite à 0,857.
 
+### Persistance équitable : état de référence sans contrainte (E35, porte, 10 novembre)
+
+**Ce qu'on veut.** Le bras « modèle réinitialisé sur l'atlas w−1 » : la géométrie de l'atlas à la semaine w−1 est l'état
+de référence sans contrainte (le modèle ne sait pas d'où elle vient), on lui applique une semaine de croissance
+(mesurée de w−1 à w, puis estimée) et on compare à l'atlas w ; il se lit face à la persistance simple (atlas w−1 comme
+prédiction de l'atlas w), à égalité d'information. Il faut pour cela un maillage tétraédrique dont la surface est celle
+de l'atlas w−1 (pial et substance blanche, mêmes 32 492 sommets que SG 21, correspondance sommet à sommet : les
+fichiers `fetal.week<w>.left.{pial,wm}.surf.vtk`), des tables nodales (a, H, cœur) pour la semaine w, et un état qui
+n'est pas contraint (sans contrainte = les contraintes élastiques sont nulles dans cet état).
+
+**Ce qui est commun aux deux options.** Pour chaque w−1 de 25 à 35 : surface pial = atlas w−1 ; surface blanche =
+`wm` de w−1 ; tables de la semaine : a(w) = croissance mesurée de la surface de w−1 à w (aire locale), H(w) = distance
+pial–blanc de l'atlas w, comme `tools/atlas_nodal_tables.py` mais relatives à w−1 et non à SG 21 ; la chaîne s'arrête
+après une semaine (un seul pas de croissance, pas de report de correction) ; mesure par `gyroxide eval` (écart rigide,
+corrélation, profondeur), SG 26 à 36, face à la persistance du même protocole.
+
+**Option A : maillage de SG 21 déplacé.** Les sommets de surface du maillage de référence (115 778 nœuds,
+610 828 tétraèdres) prennent les positions de l'atlas w−1 ; les nœuds intérieurs suivent par extension harmonique du
+déplacement (outil d'`atlas_core_tensors.py`, déjà employé). Cœur : le tenseur de la semaine w−1 → w mesuré sur les
+surfaces blanches, étendu de même. + Pas de remaillage, noeuds et tétraèdres identiques d'une semaine à l'autre,
+tables transportées sans interpolation, quelques minutes de préparation par semaine. − Les tétraèdres sont ceux de
+SG 21 déformés jusqu'à SG 35 : l'extension harmonique ne garantit aucun tétraèdre non retourné, et les tétraèdres
+déformés par un facteur 2 à 3 portent des contraintes élastiques initiales ; il faudrait compter les éléments retournés
+et relâcher l'état (`--relax0`) avant de mesurer, ce qui revient à imposer une contrainte (le « sans contrainte » n'est
+alors vrai qu'au sens du maillage).
+
+**Option B : remaillage par semaine.** Un maillage TetGen (`gyroxide mesh`) par semaine w−1, depuis les surfaces pial et
+blanche de l'atlas, de même résolution cible (environ 610 000 tétraèdres) ; tables a, H et cœur interpolées sur ce
+maillage depuis les sommets de surface (même correspondance), nœuds intérieurs par plus proche sommet de surface comme
+`adjoint_prep.py`. + L'état de référence est exactement sans contrainte (X0 est le maillage) ; les tétraèdres sont
+sains. − Onze maillages à produire et à valider (TetGen, environ 20 à 40 min chacun, non mesuré ici), des tables
+interpolées plutôt que transportées, un maillage différent d'une semaine à l'autre : le bras ne se compare plus
+nœud à nœud au reste de la chaîne (la comparaison à l'atlas, elle, est sur les mêmes sommets de surface).
+
+**Recommandation : B**, parce que « sans contrainte » est la définition de l'étape et que A la contredit au premier
+élément retourné ; A reste utilisable comme vérification rapide sur une ou deux semaines (SG 26 et 30) pour mesurer
+l'écart entre les deux constructions. Cœur dans les deux cas : le tenseur mesuré de la semaine (cohérent avec la chaîne
+mesurée) ; un cœur neutre (U = I) est une troisième variante possible mais ôte au modèle l'information de la poussée
+du cœur, que la persistance simple n'a pas non plus : à trancher si François veut le bras le plus « pauvre ».
+Coût attendu après décision : B, environ une demi-journée de maillage et de préparation (non mesurée), puis une
+semaine de croissance par w (de 7 min à 5 h selon la semaine, comme les semaines de la chaîne estimée), la chaîne
+estimée à un seul pas, à refaire par rapport au seuil de gain d'E33 (RMS 0,1 %, p95 0,5 %, corrélation 1,5 %, profondeur
+1,3 %).
+
+**Question pour François** (dans le fichier de l'étape E35) : option A, B (recommandée), ou A puis B ; cœur mesuré
+(recommandé) ou neutre.
+
 ### Reste à faire pour P02
 
 - Tâche 3 (rapport μ_g/μ_w) : faite (bras mesuré à 0,5 / 0,857 / 1 ; chaîne estimée à 0,857 ; variabilité de SG 32 → 33).
