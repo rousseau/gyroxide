@@ -356,6 +356,43 @@ est dense, la plus petite valeur propre converge lentement quand le maillage s'a
 meilleur (inverse itération avec préconditionneur, ou factorisation creuse de K, que le dépôt n'a pas) pour conclure
 à la résolution de travail ; non fait. Cas non balayés : μ_f/μ_s = 20 et 100 (la même fonction `scan`).
 
+### Indépendance au solveur (tâche 4, E36, 10 novembre)
+
+**Explicite contre quasi statique, SG 21 → 24.** Chaîne explicite de `gyroxide run` (hémisphère `w21_left_610k_s`,
+configuration `mu_test/mu2_s.toml`, 8 769 pas par semaine, GPU wgpu f32) sur trois semaines, avec trois réglages :
+référence (pas = 0,025 sqrt(ρ a²/K), amortissement 0,5), pas / 2 (17 538 pas par semaine) et amortissement × 2 (1,0).
+Équilibres quasi statiques de la chaîne `remodel_a0` (Newton, `adjoint_week`, mêmes tables) en regard. Écart de position
+des sommets de surface, en mm (moyenne / RMS / p95 / max), fin de semaine :
+
+| SG | pas / 2 contre référence | amortissement × 2 contre référence | référence contre quasi statique |
+|---|---|---|---|
+| 22 | 0,0005 / 0,0006 / 0,0012 / 0,0019 | 0,016 / 0,017 / 0,023 / 0,032 | 0,044 / 0,047 / 0,075 / 0,097 |
+| 23 | 0,0007 / 0,0008 / 0,0014 / 0,0020 | 0,055 / 0,058 / 0,086 / 0,113 | 0,150 / 0,165 / 0,280 / 0,358 |
+| 24 | 0,0009 / 0,0010 / 0,0018 / 0,0024 | 0,121 / 0,128 / 0,200 / 0,260 | 0,346 / 0,386 / 0,651 / 0,825 |
+
+Le pas est sans effet (1 µm à SG 24, soit 0,3 % de l'écart au quasi statique). L'amortissement double l'écart au
+quasi statique de +30 % (SG 24 : RMS 0,386 → 0,498 mm) : l'explicite est en retard sur l'équilibre, et d'autant plus que
+l'amortissement est grand ; le retard grandit avec la croissance (0,05, 0,16, 0,39 mm) et non avec le pas. Tableau de
+bord à SG 24 (`gyroxide eval`) : écart rigide aux sommets 0,43 mm (référence et pas / 2, identiques à la précision
+affichée), 0,53 mm (amortissement × 2), 0,20 mm (quasi statique) ; corrélation de courbure 0,950 dans les quatre cas ;
+profondeur ×0,949 / ×0,949 / ×0,945 / ×0,948. **L'écart de l'explicite au quasi statique (0,39 mm RMS à SG 24) tient
+à l'amortissement, pas à la discrétisation en temps ; les métriques de plissement n'en dépendent pas** (à SG 24, avant
+les plis profonds : des semaines plus tardives, où le retard peut se reporter sur l'instabilité, ne sont pas testées).
+
+**f32 contre f64.** Même configuration, hémisphère entier (3 M de tétraèdres), 2 001 pas depuis SG 21 (t = 0,0152 de la
+chaîne, soit 0,23 semaine), wgpu f32 (GPU) contre `--backend ndarray` (CPU f64, 47 min). Écart de position (mm) :
+
+| pas | tous les nœuds, RMS / max | région de 20 mm autour du nœud le plus déplacé, RMS / max | déplacement f64, RMS / max |
+|---|---|---|---|
+| 1 000 | 4,6e-5 / 2,1e-4 | 3,8e-5 / 2,0e-4 | 0,006 / 0,013 |
+| 2 000 | 7,8e-5 / 3,2e-4 | 6,4e-5 / 3,2e-4 | 0,018 / 0,037 |
+
+L'écart f32 / f64 vaut 0,4 % du déplacement (RMS) et croît avec le nombre de pas (×1,7 de 1 000 à 2 000). **Limite** : une
+fenêtre de 0,23 semaine en début de chaîne, sans pli ; elle ne dit rien de l'amplification de l'écart quand les plis
+s'installent (SG 26 et après), où le bruit d'exécution de la chaîne estimée (E33, 1 à 2 % sur la corrélation et la
+profondeur) est de toute façon plus grand. Les calculs complets en f64 (8 769 pas par semaine à 1,4 s par pas) coûtent
+3,4 h par semaine : hors de portée d'un lancement.
+
 ### Gradients de l'adjoint en f64 (`crates/gyroxide-cli/tests/adjoint_gradients.rs`, dans la CI, 4 s)
 
 `adjoint_week` choisit son dispositif par `--backend wgpu|ndarray` (défaut `wgpu`, f32, inchangé) ; `ndarray` est le CPU
@@ -398,6 +435,5 @@ vérifie aussi l'exemple, dont quatre lints de style sont autorisés en tête de
 - Tâche 3 : convergence en maillage de l'hémisphère (remaillage TetGen SG 21 à 0,3 / 0,6 / 1,6 M tétraèdres, au moins
   3 éléments dans l'épaisseur corticale, tables nodales transportées, chaîne de référence SG 21 → 30 par maillage, soit
   de 3 à 30 h par maillage).
-- Tâche 4 : indépendance au solveur (explicite à pas / 2 et amortissement × 2 contre quasi statique, SG 21 → 24 ;
-  f32 contre f64 sur une région).
+- Tâche 4 : faite sur SG 21 → 24 et 0,23 semaine en f64 (ci-dessus) ; f32 contre f64 sur les semaines à plis non testé.
 - Tâche 5 : faite, voir « Gradients de l'adjoint en f64 » ci-dessus.
