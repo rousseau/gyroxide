@@ -1044,7 +1044,7 @@ déplacement (outil d'`atlas_core_tensors.py`, déjà employé). Cœur : le tens
 surfaces blanches, étendu de même. + Pas de remaillage, noeuds et tétraèdres identiques d'une semaine à l'autre,
 tables transportées sans interpolation, quelques minutes de préparation par semaine. − Les tétraèdres sont ceux de
 SG 21 déformés jusqu'à SG 35 : l'extension harmonique ne garantit aucun tétraèdre non retourné, et les tétraèdres
-déformés par un facteur 2 à 3 portent des contraintes élastiques initiales ; il faudrait compter les éléments retournés
+fortement déformés portent des contraintes élastiques initiales (déformation non mesurée ici) ; il faudrait compter les éléments retournés
 et relâcher l'état (`--relax0`) avant de mesurer, ce qui revient à imposer une contrainte (le « sans contrainte » n'est
 alors vrai qu'au sens du maillage).
 
