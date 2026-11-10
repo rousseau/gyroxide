@@ -439,8 +439,8 @@ période 5 en x et en z, 150 sondes), égale au produit par différences finies 
 positive tant que la structure est stable : la factorisation de Cholesky creuse (`sp_cholesky`) réussit, puis échoue à
 la croissance critique (pivot non positif) ; la bissection se fait sur ce test (16 pas, s_c à 1e-5 de s_th), sans
 valeur propre à estimer. Sur le maillage grossier elle redonne les valeurs de Lanczos (s_c = 0,0266 contre 0,0265 pour
-la transition nette, 0,0643 contre 0,0643 pour la loi du code, μ_f/μ_s = 50, λ_th) en 4 s, et plus de 100 fois plus
-vite à 6 éléments par H, où Lanczos n'avait pas convergé en 800 pas. Test de CI :
+la transition nette, 0,0643 contre 0,0643 pour la loi du code, μ_f/μ_s = 50, λ_th) en 4 s ; à 6 éléments par H, où Lanczos n'avait pas
+convergé en 800 pas, la bissection creuse donne s_c = 0,0303 (transition nette) en 10 s environ. Test de CI :
 `assemblage_creux_et_croissance_critique` (4 s). Balayage : `balayage_creux` et `fine_nette` (ignorés, 21 min et 9 min).
 Cinq longueurs d'onde (0,8 à 1,25 λ_th), parabole par moindres carrés en ln λ ; la longueur d'onde λ* et la déformation
 critique ε_c = s_c / (1 + s_c) sont lues au minimum, face à la théorie (Allen ; Chen-Hutchinson ; Cao-Hutchinson, voir
@@ -486,9 +486,9 @@ Théorie : λ = 11,20 / 15,18 / 19,11 H et ε_c = 0,0786 / 0,0429 / 0,0270 pour 
   qui raidit la surface du substrat (7 fois μ_s à 0,12 H sous le film), ce que le film mince net de la théorie ne
   contient pas ; ce n'est pas une erreur du code, mais le critère de 5 % ne s'applique qu'à un bicouche net.
 - **Résolution de travail proposée** : pour que la résolution tienne le critère sur le bicouche net, 12 éléments par H
-  suffisent pour la longueur d'onde (≤ 2 %) et il en faut 24 pour la déformation critique ; l'hémisphère à 610 000
-  tétraèdres a environ 3 éléments par H dans le cortex (non mesuré ici, voir la tâche 3), soit −40 % sur la déformation
-  critique d'un bicouche net : les pliages de l'hémisphère ne sont donc pas résolus au sens de ce critère.
+  suffisent pour la longueur d'onde (≤ 2 %) et il en faut 24 pour la déformation critique ; si l'hémisphère à 610 000
+  tétraèdres n'a que 3 éléments par H dans le cortex (à mesurer : tâche 3), la déformation critique d'un bicouche net y
+  serait sous-estimée de 40 % : les plis ne seraient pas résolus au sens de ce critère.
   Pour la loi du code, l'écart restant (ε_c +17 %, λ* +7 %) est la signature de la transition graduelle, à
   comparer au bicouche net équivalent, pas à la formule.
 
