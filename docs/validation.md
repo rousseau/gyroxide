@@ -426,6 +426,43 @@ K (6 modes rigides) et la solution de l'adjoint y est mal posée (le décalage l
 ajustements de l'article utilisent `--absolute` ; l'erreur de leurs gradients (hémisphère entier, contact, plan médian)
 n'est pas mesurée ici, et on ne sait pas si ces contraintes lèvent la mal-position. `--rigid` (perte invariante) donne 1 ± 1e-5.
 
+**Cas réel (V2, 10 novembre, PGX, GPU f32 `wgpu`, `adjoint_week --check --check-steps 3`).** Hémisphère gauche entier (610 828 tétraèdres,
+115 778 nœuds), contact et plan médian actifs, SG 28 → 29 de la chaîne à μ_g/μ_w = 0,857 (`mu2_full_paper_r0857_carry_lbm29`),
+mêmes options que `tools/full_chain.sh` ; la différence finie est centrée le long de −g (pas h = 0,5 ; 1 ; 2 de 0,01 de
+croissance au plus). Rapport différence finie / adjoint (1 = adjoint exact ; sorties `out/V2/<variante>.log` sur la PGX) :
+
+| variante | h = 0,5 | h = 1 | h = 2 |
+|---|---|---|---|
+| A. `--absolute`, loi de champs c, k de la chaîne (+ a) | 1,005 | 0,959 | 1,149 |
+| B. `--rigid`, même loi | 1,004 | 0,937 | 1,108 |
+| E. `--absolute`, a seul | 1,039 | 1,040 | 1,072 |
+| F. `--absolute`, c par sommet | 1,156 | 1,050 | 1,092 |
+| G. `--absolute`, k par sommet | 1,360 | 1,347 | 1,327 |
+| H. `--absolute`, r par sommet | 1,231 | 1,175 | 1,195 |
+| C. `--absolute`, c, k, r par sommet (+ a) | 1,284 | 1,271 | 1,277 |
+| D. `--rigid`, mêmes champs | 1,289 | 1,268 | 1,273 |
+
+Lecture :
+- **Le gradient de la chaîne (loi c, k) est juste à 0,5 % au plus petit pas** ; aux pas 1 et 2 le rapport varie de 0,94 à 1,15
+  sans tendance : bruit de la différence finie en f32 (la perte change de 1e-5 relatif) et non-linéarité, pas un biais de l'adjoint.
+- **`--absolute` contre `--rigid` : aucune différence** (A et B à 0,1 % près au plus petit pas ; C et D à 0,5 %). La perte
+  absolue n'est donc pas la cause de l'écart sur l'hémisphère : les modes rigides, que le contact et le plan médian
+  ancrent, ne dégradent pas l'adjoint ici (contrairement à la boule libre, 1 à 2 %).
+- **Les champs par sommet partis de zéro (c, k, r) ont un adjoint trop faible**, de façon stable en h : 5 à 16 % (c), 33 à 36 % (k),
+  18 à 23 % (r), 27 % ensemble ; a seul 4 à 7 %. La différence finie est toujours plus grande que l'adjoint.
+- **Écarté** : la raideur K de l'adjoint. Avec `--fd-k` (K par différences finies de la force totale, contact compris), l'adjoint
+  de k vaut −3,578e-2 contre −3,586e-2 avec le K exact (0,2 %) : la tangente de contact de Gauss-Newton suffit. (La différence
+  finie de la perte change avec `--fd-k` — Newton d'équilibre différent, |F| final 1,6e-5 — et n'est pas exploitable dans cette
+  variante.)
+- **Cause non établie.** Reste à examiner : le terme dF/dp du contact (nouvelles paires pendant la perturbation), la borne
+  `--field-band` et la limite de croissance (`--growth-band`, écrêtage de a), et le bruit f32 de la différence finie sur un
+  cas qui n'est pas à l'optimum (perte de départ 9e-4 contre 3,4e-4 avec la loi initialisée). Un contrôle en f64 sur le même
+  hémisphère (`--backend ndarray`) séparerait le bruit de l'erreur d'adjoint ; non fait (610 k tétraèdres sur le CPU).
+- **Perte des chaînes de référence** : `tools/full_chain.sh` (et `paper_chain.sh`) utilisent `--absolute` ; avec `LAW=1` la
+  chaîne ajuste a et la loi c, k (variante A : adjoint juste à 0,5 %). L'effet sur un ajustement d'une semaine, gradient faux
+  contre corrigé, **n'est pas chiffré** : aucun gradient corrigé n'existe tant que la cause est inconnue ; `--rigid` ne
+  change pas le gradient sur ce cas (A contre B).
+
 Le test n'est lancé qu'avec `--features autodiff` (l'exemple l'exige) : la CI passe `--features autodiff` à clippy (qui
 vérifie aussi l'exemple, dont quatre lints de style sont autorisés en tête de fichier) et aux tests.
 
