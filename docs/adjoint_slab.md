@@ -1022,6 +1022,36 @@ sur l'écart rigide et de +3 à +7 % sur la corrélation, et celle du bras mesur
 sur l'écart rigide (tableau précédent) ; l'effet sur la conclusion de l'article (estimation contre persistance) n'est pas mesuré
 ici : la persistance n'a pas été refaite à 0,857.
 
+### Table 1 à μ_g/μ_w = 0,857 : valeur de référence (E33, décision de François du 10 novembre)
+
+Décision : **μ_g/μ_w = 0,857 (loi d'origine) dans les trois bras**, les chiffres à 2 restent comme étude de sensibilité.
+Le bras « persistance » de la Table 1 (`gyroxide eval --persistence` : atlas w−1 aligné rigidement contre l'atlas w) ne
+fait intervenir aucun matériau : **il ne dépend pas de μ_g/μ_w et il n'y a rien à refaire pour lui** ; l'étape demandait
+de le refaire par `tools/full_chain.sh`, ce qui est le bras « persistance équitable » (modèle réinitialisé sur l'atlas
+w−1, E35, en attente d'une décision) et non cette ligne. Les deux autres bras à 0,857 existaient déjà (mesuré :
+`out/remodel_r0857`, estimé : `out/paper_r0857`, sélection `loss`) ; tableau complet dans
+`out/scorecard/t1_r0857/table.md` (et `.csv`, `.png`) sur la PGX. Écart rigide RMS aux sommets (mm), corrélation de
+courbure, profondeur de sillon du modèle (mm) ; la profondeur de l'atlas de la semaine est de 0,75 / 1,03 / 1,41 / 2,02 / 2,36 mm à
+SG 26 / 28 / 30 / 33 / 36 (`out/scorecard/t1/estimated_<SG>.json`) :
+
+| SG | persistance | estimée, 0,857 | estimée, 2 | mesurée, 0,857 | mesurée, 2 |
+|---|---|---|---|---|---|
+| 26 | 1,01 / 0,976 / 0,67 | 0,33 / 0,931 / 0,69 | 0,34 / 0,935 / 0,69 | 0,51 / 0,836 / 0,64 | 0,52 / 0,837 / 0,64 |
+| 28 | 1,00 / 0,962 / 0,88 | 0,65 / 0,901 / 0,89 | 0,69 / 0,910 / 0,91 | 1,15 / 0,653 / 0,72 | 1,19 / 0,657 / 0,74 |
+| 30 | 1,06 / 0,961 / 1,19 | 1,12 / 0,849 / 1,05 | 1,14 / 0,895 / 1,15 | 1,80 / 0,484 / 0,78 | 1,87 / 0,493 / 0,83 |
+| 33 | 0,82 / 0,964 / 1,85 | 1,74 / 0,845 / 1,31 | 1,83 / 0,845 / 1,41 | 2,41 / 0,354 / 0,87 | 2,53 / 0,369 / 0,99 |
+| 36 | 0,42 / 0,986 / 2,27 | 1,94 / 0,882 / 1,58 | 2,15 / 0,827 / 1,53 | 2,66 / 0,307 / 0,92 | 2,78 / 0,323 / 1,08 |
+
+Les « estimée, 2 » sont la référence du 9 novembre (chaîne publiée, sélection `rigid`) ; l'écart des deux sélections à SG 36
+est donné plus haut. **Conclusion estimation contre persistance à 0,857** : elle ne change pas par rapport à 2. Sur
+l'écart rigide, l'estimation bat la persistance à SG 26 et 28 (0,33 contre 1,01 ; 0,65 contre 1,00), est à égalité
+à SG 30 (1,12 contre 1,06, 1,14 à 2) et la persistance gagne à SG 33 et 36 (0,82 et 0,42 contre 1,74 et 1,94) ; sur la
+corrélation de courbure la persistance gagne à toutes les semaines (0,96 à 0,99 contre 0,85 à 0,93). Le changement de
+rapport déplace l'estimation de moins de 10 % (écart rigide) et ne change le classement à aucune semaine. La persistance
+simple prédit une semaine, l'estimation est une chaîne depuis SG 21 : la comparaison à égalité d'information est celle de
+la persistance équitable (E35). Seuil de variabilité d'E33 (écart rigide 0,1 %, corrélation 1,5 %, profondeur 1,3 %) :
+presque tous les écarts entre 0,857 et 2 le dépassent, surtout à SG 36 (−9,8 % sur l'écart rigide).
+
 ### Persistance équitable : état de référence sans contrainte (E35, porte, 10 novembre)
 
 **Ce qu'on veut.** Le bras « modèle réinitialisé sur l'atlas w−1 » : la géométrie de l'atlas à la semaine w−1 est l'état
