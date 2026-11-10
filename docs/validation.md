@@ -429,9 +429,72 @@ n'est pas mesurée ici, et on ne sait pas si ces contraintes lèvent la mal-posi
 Le test n'est lancé qu'avec `--features autodiff` (l'exemple l'exige) : la CI passe `--features autodiff` à clippy (qui
 vérifie aussi l'exemple, dont quatre lints de style sont autorisés en tête de fichier) et aux tests.
 
+### Bicouche refaite avec un solveur creux (tâche 2, E37, 10 novembre)
+
+**Méthode.** `faer` 0.24.4 (licence MIT ; les 79 paquets que cette dépendance ajoute au seul développement sont sous
+MIT, Apache-2.0, BSD-2-Clause ou CC0 ; épinglée `=0.24.4` en `[dev-dependencies]` de `gyroxide-sim`, absente du code
+livré) remplace Lanczos. La matrice K = −dF/dx est assemblée sur les degrés de liberté libres par sondes colorées
+(la force d'un nœud dépend des nœuds à deux mailles, la pression nodale moyenne J_a couplant les voisins des voisins :
+période 5 en x et en z, 150 sondes), égale au produit par différences finies à 4e-10 près et symétrisée. K est définie
+positive tant que la structure est stable : la factorisation de Cholesky creuse (`sp_cholesky`) réussit, puis échoue à
+la croissance critique (pivot non positif) ; la bissection se fait sur ce test (16 pas, s_c à 1e-5 de s_th), sans
+valeur propre à estimer. Sur le maillage grossier elle redonne les valeurs de Lanczos (s_c = 0,0266 contre 0,0265 pour
+la transition nette, 0,0643 contre 0,0643 pour la loi du code, μ_f/μ_s = 50, λ_th) en 4 s, et plus de 100 fois plus
+vite à 6 éléments par H, où Lanczos n'avait pas convergé en 800 pas. Test de CI :
+`assemblage_creux_et_croissance_critique` (4 s). Balayage : `balayage_creux` et `fine_nette` (ignorés, 21 min et 9 min).
+Cinq longueurs d'onde (0,8 à 1,25 λ_th), parabole par moindres carrés en ln λ ; la longueur d'onde λ* et la déformation
+critique ε_c = s_c / (1 + s_c) sont lues au minimum, face à la théorie (Allen ; Chen-Hutchinson ; Cao-Hutchinson, voir
+plus haut). Éléments par H : nombre de couches de tétraèdres dans le film (h_x = 1,5 / n_H).
+
+| μ_f/μ_s | transition | éléments par H | λ* (écart à la théorie) | ε_c (écart à la théorie) |
+|---|---|---|---|---|
+| 20 | nette | 3 | 12.22 H (+9.1 %) | 0.0629 (−20.0 %) |
+| 20 | nette | 6 | 11.46 H (+2.3 %) | 0.0642 (−18.3 %) |
+| 20 | nette | 12 | 11.37 H (+1.5 %) | 0.0743 (−5.5 %) |
+| 20 | du code | 3 | 13.12 H (+17.1 %) | 0.1045 (+32.9 %) |
+| 20 | du code | 6 | 12.34 H (+10.2 %) | 0.0949 (+20.7 %) |
+| 20 | du code | 12 | 12.07 H (+7.8 %) | 0.0915 (+16.4 %) |
+| 50 | nette | 3 | 16.28 H (+7.2 %) | 0.0258 (−39.8 %) |
+| 50 | nette | 6 | 15.36 H (+1.2 %) | 0.0294 (−31.3 %) |
+| 50 | nette | 12 | 15.37 H (+1.3 %) | 0.0387 (−9.7 %) |
+| 50 | nette | 24 | 15.27 H (+0.6 %) | 0.0430 (+0.3 %) |
+| 50 | du code | 3 | 17.65 H (+16.3 %) | 0.0588 (+37.2 %) |
+| 50 | du code | 6 | 16.64 H (+9.6 %) | 0.0537 (+25.3 %) |
+| 50 | du code | 12 | 16.27 H (+7.2 %) | 0.0514 (+20.0 %) |
+| 100 | nette | 3 | 20.25 H (+6.0 %) | 0.0130 (−52.0 %) |
+| 100 | nette | 6 | 18.62 H (−2.6 %) | 0.0140 (−48.2 %) |
+| 100 | nette | 12 | 19.32 H (+1.1 %) | 0.0226 (−16.5 %) |
+| 100 | du code | 3 | 22.26 H (+16.5 %) | 0.0367 (+35.8 %) |
+| 100 | du code | 6 | 20.86 H (+9.2 %) | 0.0344 (+27.2 %) |
+| 100 | du code | 12 | 20.40 H (+6.8 %) | 0.0328 (+21.4 %) |
+
+Théorie : λ = 11,20 / 15,18 / 19,11 H et ε_c = 0,0786 / 0,0429 / 0,0270 pour μ_f/μ_s = 20 / 50 / 100.
+
+**Lecture.**
+- **Transition nette (bicouche de la théorie) : le critère de 5 % est tenu, avec convergence en maillage.** La longueur
+  d'onde est à 1 à 2 % de la théorie dès 12 éléments par H pour les trois rapports (à 6 par H : +2,3 %, +1,2 %, −2,6 %).
+  La déformation critique converge de bas en haut avec le maillage (μ_f/μ_s = 50 : −39,8, −31,3, −9,7, **+0,3 %** à 3, 6,
+  12, 24 par H) : la transition nette mesure 0,04 H, plus fine que la maille jusqu'à 12 par H (h_z = 0,083 H) ; elle est
+  résolue à 24 par H. Les rapports 20 et 100 sont à 12 par H comme le 50 (−5,5 % et −16,5 %), sans la finesse de 24 par H
+  (non calculée : coût de 10 à 30 min chacun) ; leur écart suit la même courbe, mais l'atteindre à 5 % n'est pas montré.
+- **Loi du code (sigmoïde de 0,4 H) : le critère de 5 % n'est pas tenu, et la cause n'est pas la discrétisation.**
+  Les deux grandeurs convergent avec le maillage vers une valeur qui n'est pas celle de la théorie : λ* à +17, +16, +17 %
+  (3 par H), +7 à +10 % (6), +6,8 à +7,8 % (12) ; ε_c à +33 à +37 % (3 par H), +20 à +25 % (6), +16 à +21 % (12). À
+  μ_f/μ_s = 50, s_c = 0,0643 → 0,0573 → 0,0545 (3, 6, 12 par H) : l'écart entre pas se divise par 2,5, soit un ordre
+  d'environ 1,3, et l'extrapolation de Richardson donne s_c ≈ 0,053, soit ε_c ≈ +17 % de la théorie. La cause est la loi de
+  croissance : la transition graduelle (10 à 90 % sur 0,4 H) donne au premier tiers de la couche un module intermédiaire
+  qui raidit la surface du substrat (7 fois μ_s à 0,12 H sous le film), ce que le film mince net de la théorie ne
+  contient pas ; ce n'est pas une erreur du code, mais le critère de 5 % ne s'applique qu'à un bicouche net.
+- **Résolution de travail proposée** : pour que la résolution tienne le critère sur le bicouche net, 12 éléments par H
+  suffisent pour la longueur d'onde (≤ 2 %) et il en faut 24 pour la déformation critique ; l'hémisphère à 610 000
+  tétraèdres a environ 3 éléments par H dans le cortex (non mesuré ici, voir la tâche 3), soit −40 % sur la déformation
+  critique d'un bicouche net : les pliages de l'hémisphère ne sont donc pas résolus au sens de ce critère.
+  Pour la loi du code, l'écart restant (ε_c +17 %, λ* +7 %) est la signature de la transition graduelle, à
+  comparer au bicouche net équivalent, pas à la formule.
+
 ### Reste à faire pour P03
 
-- Tâche 2 : solveur propre pour les maillages fins, et balayage de μ_f/μ_s (20, 50, 100).
+- Tâche 2 : faite (E37, ci-dessus) ; reste la finesse de 24 par H pour μ_f/μ_s = 20 et 100.
 - Tâche 3 : convergence en maillage de l'hémisphère (remaillage TetGen SG 21 à 0,3 / 0,6 / 1,6 M tétraèdres, au moins
   3 éléments dans l'épaisseur corticale, tables nodales transportées, chaîne de référence SG 21 → 30 par maillage, soit
   de 3 à 30 h par maillage).

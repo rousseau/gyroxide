@@ -18,6 +18,8 @@
 #![allow(clippy::needless_range_loop, clippy::type_complexity)]
 
 use burn::tensor::{Device, FloatDType};
+use faer::sparse::{SparseColMat, Triplet};
+use faer::{Mat, Side};
 use gyroxide_mesh::{topology::extract_boundary, TetMesh};
 use gyroxide_model::{GrowthMask, Params, Preset};
 use gyroxide_sim::algebra::{floats, to_f64, M3, V3};
@@ -231,6 +233,78 @@ impl Bilayer {
             }
         }
         d
+    }
+    /// Matrice creuse de K sur les degrés de liberté libres, par sondes colorées. La force d'un nœud dépend des nœuds
+    /// à deux mailles (la pression nodale moyenne J_a couple les voisins des voisins) : deux nœuds de même couleur
+    /// (période 5 en x et en z, y différent) n'ont aucune ligne commune, une sonde par couleur et composante donne donc
+    /// leurs colonnes entières (150 sondes, chacune deux évaluations de la force).
+    fn assemble(&self, x: &[[f64; 3]], s: f64, nz: usize) -> (SparseColMat<usize, f64>, Vec<[usize; 3]>) {
+        let n = x.len();
+        let mut free = vec![[usize::MAX; 3]; n];
+        let mut nfree = 0;
+        for (i, f) in self.fixed.iter().enumerate() {
+            for k in 0..3 {
+                if !f[k] {
+                    free[i][k] = nfree;
+                    nfree += 1;
+                }
+            }
+        }
+        let cell = |idx: usize| {
+            let (ij, k) = (idx / nz, idx % nz);
+            (ij / 2, ij % 2, k)
+        };
+        let nx = n / (2 * nz);
+        let color = |idx: usize| {
+            let (i, j, k) = cell(idx);
+            (i % 5) * 10 + j * 5 + k % 5
+        };
+        let mut triplets = Vec::new();
+        for c in 0..50 {
+            for comp in 0..3 {
+                let cols: Vec<usize> = (0..n)
+                    .filter(|&i| color(i) == c && free[i][comp] != usize::MAX)
+                    .collect();
+                if cols.is_empty() {
+                    continue;
+                }
+                let mut v = vec![[0.0; 3]; n];
+                for &j in &cols {
+                    v[j][comp] = 1.0;
+                }
+                let kv = self.kmul(x, s, &v);
+                for &j in &cols {
+                    let (ij, jj, kj) = cell(j);
+                    for di in -2i64..=2 {
+                        for dj in -1i64..=1 {
+                            for dk in -2i64..=2 {
+                                let (ii, jn, kn) = (ij as i64 + di, jj as i64 + dj, kj as i64 + dk);
+                                if ii < 0 || ii >= nx as i64 || !(0..2).contains(&jn) || kn < 0 || kn >= nz as i64 {
+                                    continue;
+                                }
+                                let row = ((ii as usize) * 2 + jn as usize) * nz + kn as usize;
+                                for r in 0..3 {
+                                    if free[row][r] != usize::MAX && kv[row][r] != 0.0 {
+                                        triplets.push(Triplet::new(free[row][r], free[j][comp], kv[row][r]));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Symétrisation : K_sym = (K + K^T) / 2 (la différence finie centrée est symétrique à 1e-10 près).
+        let sym: Vec<Triplet<usize, usize, f64>> = triplets
+            .iter()
+            .flat_map(|t| {
+                [
+                    Triplet::new(t.row, t.col, 0.5 * t.val),
+                    Triplet::new(t.col, t.row, 0.5 * t.val),
+                ]
+            })
+            .collect();
+        (SparseColMat::try_new_from_triplets(nfree, nfree, &sym).unwrap(), free)
     }
     /// Equilibre par Newton-Krylov (CG sur K), depuis `x`.
     fn equilibrium(&self, mut x: Vec<[f64; 3]>, s: f64) -> Vec<[f64; 3]> {
@@ -464,6 +538,49 @@ fn measure(r: f64, length: f64, hx: f64, nh: usize, depth: f64, lanczos: usize, 
     }
 }
 
+/// Croissance critique par factorisation creuse : K est définie positive tant que la structure est stable, la
+/// factorisation de Cholesky de `faer` (dépendance de développement) réussit alors ; à la croissance critique la plus
+/// petite valeur propre passe par zéro et elle échoue (pivot non positif). Bissection sur ce test, sans Lanczos.
+fn measure_sparse(r: f64, length: f64, hx: f64, nh: usize, depth: f64, sharp: bool, steps: usize) -> Result {
+    let h = 1.0;
+    let th = theory(r, 5.0, h);
+    let nx = (length / hx).round() as usize;
+    let xs: Vec<f64> = (0..=nx).map(|i| length * i as f64 / nx as f64).collect();
+    let zs = z_levels(h, nh, depth, 1.0);
+    let col = build(r, &[0.0, length / nx as f64], &zs, h, sharp);
+    let long = build(r, &xs, &zs, h, sharp);
+    let nz = zs.len();
+    let s_th = th.strain / (1.0 - th.strain);
+    let mut x_col = col.mesh.nodes.clone();
+    let mut stable = |s: f64| -> bool {
+        x_col = col.equilibrium(x_col.clone(), s);
+        let uz: Vec<f64> = (0..nz).map(|k| x_col[k][2] - col.mesh.nodes[k][2]).collect();
+        let x: Vec<[f64; 3]> = long
+            .mesh
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(idx, p)| [p[0], p[1], p[2] + uz[idx % nz]])
+            .collect();
+        let (k, _) = long.assemble(&x, s, nz);
+        k.sp_cholesky(Side::Lower).is_ok()
+    };
+    let (mut lo, mut hi) = (0.4 * s_th, 2.0 * s_th);
+    assert!(stable(lo), "déjà instable à {lo}");
+    assert!(!stable(hi), "encore stable à {hi}");
+    for _ in 0..steps {
+        let mid = 0.5 * (lo + hi);
+        if stable(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Result {
+        s_crit: 0.5 * (lo + hi),
+    }
+}
+
 /// Croissance critique du mode n = 1 (longueur d'onde 2 L) pour trois longueurs d'onde autour de la théorie ; renvoie
 /// (longueur d'onde du minimum par ajustement parabolique de s_c(lambda), s_c minimale).
 fn scan(r: f64, sharp: bool) -> (f64, f64) {
@@ -512,4 +629,145 @@ fn flambage_bicouche() {
     );
     // Transition de la loi du code : mesure rapportée, pas de seuil (la théorie est celle du bicouche net).
     let _ = scan(50.0, false);
+}
+
+/// Balayage creux : s_c pour cinq longueurs d'onde (0,8 à 1,25 lambda_th), ajustement par les moindres carrés d'une
+/// parabole en ln(lambda), minimum -> (lambda*, s_c min).
+fn scan_sparse(r: f64, sharp: bool, nh: usize, hx: f64) -> (f64, f64, Vec<f64>) {
+    let th = theory(r, 5.0, 1.0);
+    let fs = [0.8, 0.9, 1.0, 1.12, 1.25];
+    let sc: Vec<f64> = fs
+        .iter()
+        .map(|&f| measure_sparse(r, 0.5 * f * th.wavelength, hx, nh, 0.8 * th.wavelength, sharp, 16).s_crit)
+        .collect();
+    let x: Vec<f64> = fs.iter().map(|f: &f64| f.ln()).collect();
+    // normales : [1 x x^2] c = s
+    let mut a = [[0.0f64; 3]; 3];
+    let mut b = [0.0f64; 3];
+    for (xi, si) in x.iter().zip(&sc) {
+        let p = [1.0, *xi, xi * xi];
+        for i in 0..3 {
+            b[i] += p[i] * si;
+            for j in 0..3 {
+                a[i][j] += p[i] * p[j];
+            }
+        }
+    }
+    // résolution 3x3 (Cramer)
+    let det = |m: [[f64; 3]; 3]| {
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    };
+    let d = det(a);
+    let coef: Vec<f64> = (0..3)
+        .map(|k| {
+            let mut m = a;
+            for i in 0..3 {
+                m[i][k] = b[i];
+            }
+            det(m) / d
+        })
+        .collect();
+    let xm = -coef[1] / (2.0 * coef[2]);
+    let smin = coef[0] + coef[1] * xm + coef[2] * xm * xm;
+    (th.wavelength * xm.exp(), smin, sc)
+}
+
+fn report(r: f64, sharp: bool, nh: usize, hx: f64) {
+    let th = theory(r, 5.0, 1.0);
+    let t = std::time::Instant::now();
+    let (lam, smin, sc) = scan_sparse(r, sharp, nh, hx);
+    let eps = smin / (1.0 + smin);
+    eprintln!(
+        "mu_f/mu_s = {r}, transition {}, {nh} par H (h_x = {hx} H) : s_c = {:.5} ; {:.5} ; {:.5} ; {:.5} ; {:.5} -> lambda* = {:.2} H (théorie {:.2}, {:+.1} %), eps_c = {:.4} (théorie {:.4}, {:+.1} %) [{:.0}s]",
+        if sharp { "nette" } else { "du code" },
+        sc[0], sc[1], sc[2], sc[3], sc[4],
+        lam, th.wavelength, 100.0 * (lam / th.wavelength - 1.0),
+        eps, th.strain, 100.0 * (eps / th.strain - 1.0),
+        t.elapsed().as_secs_f64()
+    );
+}
+
+/// Balayage de la tâche 2 refaite (E36/E37) : `cargo test --release -p gyroxide-sim --test bilayer balayage_creux -- --ignored --nocapture`.
+#[test]
+#[ignore = "long"]
+fn balayage_creux() {
+    for &(nh, hx) in &[(3usize, 0.5f64), (6, 0.25), (12, 0.125)] {
+        for r in [20.0, 50.0, 100.0] {
+            for sharp in [true, false] {
+                report(r, sharp, nh, hx);
+            }
+        }
+    }
+}
+
+/// Une finesse de plus pour la transition nette (E37) : `... fine_nette -- --ignored --nocapture`.
+#[test]
+#[ignore = "long"]
+fn fine_nette() {
+    report(50.0, true, 24, 0.0625);
+}
+
+/// Test de CI (4 s) du solveur creux : K assemblée par sondes colorées égale le produit par différences finies, et la
+/// croissance critique du maillage grossier (transition nette, mu_f / mu_s = 50, lambda_th, 3 éléments par H) retrouve
+/// la valeur de l'ancienne mesure par Lanczos (0,0265 ; 0,0266 avec la bissection creuse).
+#[test]
+fn assemblage_creux_et_croissance_critique() {
+    let th = theory(50.0, 5.0, 1.0);
+    let (length, hx, nh, depth) = (0.5 * th.wavelength, 0.5, 3usize, 0.8 * th.wavelength);
+    let nx = (length / hx).round() as usize;
+    let xs: Vec<f64> = (0..=nx).map(|i| length * i as f64 / nx as f64).collect();
+    let zs = z_levels(1.0, nh, depth, 1.0);
+    let col = build(50.0, &[0.0, length / nx as f64], &zs, 1.0, true);
+    let long = build(50.0, &xs, &zs, 1.0, true);
+    let nz = zs.len();
+    let s = 0.02;
+    let x_col = col.equilibrium(col.mesh.nodes.clone(), s);
+    let uz: Vec<f64> = (0..nz).map(|k| x_col[k][2] - col.mesh.nodes[k][2]).collect();
+    let x: Vec<[f64; 3]> = long
+        .mesh
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(idx, p)| [p[0], p[1], p[2] + uz[idx % nz]])
+        .collect();
+    let (k, free) = long.assemble(&x, s, nz);
+    let mut v = vec![[0.0; 3]; x.len()];
+    for (i, r) in v.iter_mut().enumerate() {
+        for c in 0..3 {
+            r[c] = (((i * 7 + c * 13) % 17) as f64 / 8.0) - 1.0;
+        }
+    }
+    long.mask(&mut v);
+    let mut kv = long.kmul(&x, s, &v);
+    long.mask(&mut kv);
+    let mut vf = Mat::<f64>::zeros(k.nrows(), 1);
+    for (i, f) in free.iter().enumerate() {
+        for c in 0..3 {
+            if f[c] != usize::MAX {
+                vf[(f[c], 0)] = v[i][c];
+            }
+        }
+    }
+    let w = &k * &vf;
+    let (mut err, mut nrm) = (0.0f64, 0.0f64);
+    for (i, f) in free.iter().enumerate() {
+        for c in 0..3 {
+            if f[c] != usize::MAX {
+                err = err.max((w[(f[c], 0)] - kv[i][c]).abs());
+                nrm = nrm.max(kv[i][c].abs());
+            }
+        }
+    }
+    assert!(
+        err < 1e-8 * nrm,
+        "K creuse contre K v par différences finies : {err:e} (échelle {nrm:e})"
+    );
+    assert!(k.sp_cholesky(Side::Lower).is_ok(), "K définie positive à s = {s}");
+    let r = measure_sparse(50.0, length, hx, nh, depth, true, 12);
+    assert!(
+        (r.s_crit / 0.0266 - 1.0).abs() < 0.02,
+        "croissance critique {} (Lanczos : 0,0265)",
+        r.s_crit
+    );
 }

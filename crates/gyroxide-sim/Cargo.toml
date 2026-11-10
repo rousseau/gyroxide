@@ -12,3 +12,4 @@ burn.workspace = true
 
 [dev-dependencies]
 burn = { workspace = true, features = ["ndarray"] }
+faer = "=0.24.4"
