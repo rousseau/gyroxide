@@ -7,6 +7,10 @@
 //!         [--multiscale "k1:n1,k2:n2,..."] [--min-growth a] [--carry]
 //!         [--alpha a --measured a_table.npy] [--fi-weight g]
 //!         [--absolute | --rigid] [--mm-per-unit u] [--tol-mm t] [--pull-target t.npy --pull-k k] [--shift s] [--diag] [--fd-k]
+//!         [--check-steps n]   (--check: number of finite-difference steps, 1 to 3, default 3)
+//!         [--cg-tol r]   (relative residual of the CG solves, default 1e-4)
+//!         [--newton-rel r]   (relative |F| tolerance of the equilibrium Newton, default 1e-3)
+//!         [--backend wgpu|ndarray]   (default wgpu, f32 ; ndarray: CPU in f64)
 //!
 //! Multi-resolution (coarse to fine) loss, --multiscale "200:4,50:4,10:4,0:4": n1 L-BFGS
 //! iterations on the shape loss of the smoothed surfaces S^k1 x vs S^k1 y (S: neighbour
@@ -66,7 +70,14 @@
 //! Gradient: K lambda = dL/dx (K = -dF/dx, CG with finite-difference products of the total
 //! force), then dL/ds = lambda . dF/ds by one reverse-mode pass of the regular elastic
 //! branch (Burn autodiff). Optimiser: L-BFGS with Armijo backtracking.
-use burn::tensor::{Device, DeviceKind, Tensor, TensorData};
+// Research tool, linted in CI since the gradient test (`--features autodiff`): style lints of the old code are allowed.
+#![allow(
+    clippy::needless_range_loop,
+    clippy::type_complexity,
+    clippy::neg_cmp_op_on_partial_ord,
+    clippy::chunks_exact_to_as_chunks
+)]
+use burn::tensor::{Device, DeviceKind, FloatDType, Tensor, TensorData};
 use gyroxide_mesh::{netgen, vtk};
 use gyroxide_model::{NodalTable, Params, Schedule};
 use gyroxide_sim::algebra::{to_f64, V3};
@@ -161,8 +172,11 @@ struct Problem {
     fd_k: bool,
     /// Levenberg-Marquardt fallback of the equilibrium Newton (--lm).
     lm: bool,
-    /// Absolute tolerance on |F| of the Newton iterations of the equilibrium.
+    /// Absolute tolerance on |F| of the Newton iterations of the equilibrium, and the relative one (--newton-rel).
     force_tol: f64,
+    newton_rel: f64,
+    /// Relative residual of the CG solves (--cg-tol, default 1e-4).
+    cg_tol: f64,
 }
 
 fn colour_nodes(n: usize, tets: &[[u32; 4]]) -> Vec<Vec<usize>> {
@@ -731,7 +745,7 @@ impl Problem {
                     sigma = (sigma / 3.0).max(self.sigma);
                 }
             }
-            if !accepted || rn < (1e-3 * r0).max(self.force_tol) {
+            if !accepted || rn < (self.newton_rel * r0).max(self.force_tol) {
                 break;
             }
         }
@@ -1423,7 +1437,7 @@ impl Problem {
         let mut rr = b2;
         let mut it = 0;
         let (mut best, mut best_rr) = (lam.clone(), rr);
-        while it < iters && rr > 1e-8 * b2 {
+        while it < iters && rr > self.cg_tol * self.cg_tol * b2 {
             let mut kp = if exact { self.k_mul(x, &p) } else { self.k_mul_fd(x, &p) };
             axpy(&mut kp, sigma, &p);
             project(&mut kp);
@@ -1740,13 +1754,19 @@ fn main() {
     let (knots, a_path, a_scale) = (knots.clone(), a_path.clone(), *a_scale);
     let mesh = netgen::read(mesh_path).unwrap();
     let t0 = Instant::now();
-    let mut sim = Simulation::new(mesh.clone(), params.clone(), Device::wgpu(DeviceKind::DefaultDevice)).unwrap();
-    let mut ad = Simulation::new(
-        mesh.clone(),
-        params.clone(),
-        Device::wgpu(DeviceKind::DefaultDevice).autodiff(),
-    )
-    .unwrap();
+    // --backend wgpu (default, f32) | ndarray (CPU, f64: the oracle of the gradient test, tests/adjoint_gradients.rs).
+    let device = match opt("--backend").map(|b| b.to_string_lossy().into_owned()).as_deref() {
+        None | Some("wgpu") => Device::wgpu(DeviceKind::DefaultDevice),
+        Some("ndarray") => {
+            #[allow(deprecated)] // burn-ndarray is deprecated since Burn 0.22 (Device::flex() replaces it)
+            let mut d = Device::ndarray();
+            d.configure(FloatDType::F64).expect("NdArray in f64");
+            d
+        }
+        Some(b) => panic!("--backend {b}: wgpu or ndarray expected"),
+    };
+    let mut sim = Simulation::new(mesh.clone(), params.clone(), device.clone()).unwrap();
+    let mut ad = Simulation::new(mesh.clone(), params.clone(), device.autodiff()).unwrap();
     if let Schedule::Nodal { a, h, core, .. } = &params.schedule {
         let table = || {
             let t = NodalTable::new(
@@ -1916,6 +1936,8 @@ fn main() {
         fd_k: args.iter().any(|a| a == "--fd-k"),
         lm: args.iter().any(|a| a == "--lm"),
         force_tol: flag("--force-tol", 1e-5),
+        newton_rel: flag("--newton-rel", 1e-3),
+        cg_tol: flag("--cg-tol", 1e-4),
     };
     println!("{} colours for the block-Jacobi preconditioner", p.colours.len());
     if p.thick_mult {
@@ -2853,7 +2875,7 @@ fn main() {
             .iter()
             .map(|v| -0.01 * flag("--check-scale", 1.0) * v / gmax)
             .collect();
-        for h in [0.5, 1.0, 2.0] {
+        for h in [0.5, 1.0, 2.0].into_iter().take(flag("--check-steps", 3.0) as usize) {
             let tp: Vec<f64> = theta.iter().zip(&dir).map(|(a, d)| a + h * d).collect();
             let tm: Vec<f64> = theta.iter().zip(&dir).map(|(a, d)| a - h * d).collect();
             let xp = p.equilibrium(&tp, &x, 2 * relax);
@@ -2869,7 +2891,7 @@ fn main() {
             let fd = (lp - lm) / (2.0 * h);
             let an: f64 = g.iter().zip(&dir).map(|(a, b)| a * b).sum();
             println!(
-                "check h = {h}: finite difference {fd:.4e}, adjoint {an:.4e}, ratio {:.3}; |F| {:.2e} -> {:.2e}",
+                "check h = {h}: finite difference {fd:.6e}, adjoint {an:.6e}, ratio {:.6}; |F| {:.2e} -> {:.2e}",
                 fd / an,
                 p.last_residual.0,
                 p.last_residual.1

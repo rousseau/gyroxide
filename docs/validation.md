@@ -356,6 +356,42 @@ est dense, la plus petite valeur propre converge lentement quand le maillage s'a
 meilleur (inverse itération avec préconditionneur, ou factorisation creuse de K, que le dépôt n'a pas) pour conclure
 à la résolution de travail ; non fait. Cas non balayés : μ_f/μ_s = 20 et 100 (la même fonction `scan`).
 
+### Gradients de l'adjoint en f64 (`crates/gyroxide-cli/tests/adjoint_gradients.rs`, dans la CI, 4 s)
+
+`adjoint_week` choisit son dispositif par `--backend wgpu|ndarray` (défaut `wgpu`, f32, inchangé) ; `ndarray` est le CPU
+en f64. Trois options de précision ajoutées, de défaut inchangé : `--newton-rel` (tolérance relative de |F| du Newton
+d'équilibre, 1e-3), `--cg-tol` (résidu relatif des CG, 1e-4) et `--check-steps` (nombre de pas de `--check`, 3). Le test
+bâtit une boule synthétique (251 nœuds, 816 tétraèdres, nœuds de surface en tête, tables a, h et tenseur du cœur,
+point de contrôle par `gyroxide run --backend ndarray`, cible, arêtes, faces), lance l'exemple avec `--check` et exige
+que l'adjoint égale la différence finie centrée de la perte totale (équilibre recalculé à |F| < 1e-11 à chaque point) :
+
+| terme de perte (seul) ou champ | rapport adjoint / différence finie, h = 0,5 | tolérance |
+|---|---|---|
+| distance des sommets (`--rigid`), a | 1,000004 (h = 1 : 1,000015 ; h = 2 : 1,000061) | 2e-4 |
+| indice de plissement (`--fi-weight`) | 0,999987 | 2e-4 |
+| aires (`--w-area`) | 1,000010 | 2e-4 |
+| retour vers la croissance mesurée (`--alpha`) | 1,000004 | 2e-4 |
+| champs c, k, r ensemble, régularisation des arêtes (`--beta`) | 0,999997 | 2e-4 |
+| champs c, k, r séparément, et c multiplicatif (`--thick-mult`) | 1,000000 à 1,000004 | 2e-4 |
+| normales (`--w-normal`) | 1,0004 | 5e-3 |
+| laplacien (`--w-lap`) | 1,0019 (0,9992 sur la boule à 6 cubes) | 5e-3 |
+
+Normales et laplacien ne sont pas invariants par rotation et la boule libre a un mode de rotation mou. Hypothèse, non
+démontrée : l'équilibre y dérive (bruit d'arrondi amplifié), ce que l'adjoint ne voit pas ; l'écart du laplacien varie
+de 1e-5 à 1e-3 d'une exécution à l'autre sur la boule à 6 cubes, d'où leur tolérance de 5e-3. Sensibilité du test : avec un décalage de K (`--shift`) de 1e-2 au lieu de 1e-12, les
+rapports passent à 1,006 (indice de plissement) jusqu'à 1,059 (normales) : une régression de l'adjoint de l'ordre du
+pour cent est vue par chaque test.
+
+**Trouvaille.** Avec la perte `--absolute` (positions brutes, sans retrait du mouvement rigide), l'adjoint de la boule
+libre est faux de 1 à 2 % : 1,009 avec le décalage de K par défaut (1e-3 du Rayleigh), 1,016 sans décalage. La perte
+absolue n'est pas invariante par translation : son gradient par rapport aux positions a une composante dans le noyau de
+K (6 modes rigides) et la solution de l'adjoint y est mal posée (le décalage la régularise, au prix de ce biais). Les
+ajustements de l'article utilisent `--absolute` ; l'erreur de leurs gradients (hémisphère entier, contact, plan médian)
+n'est pas mesurée ici, et on ne sait pas si ces contraintes lèvent la mal-position. `--rigid` (perte invariante) donne 1 ± 1e-5.
+
+Le test n'est lancé qu'avec `--features autodiff` (l'exemple l'exige) : la CI passe `--features autodiff` à clippy (qui
+vérifie aussi l'exemple, dont quatre lints de style sont autorisés en tête de fichier) et aux tests.
+
 ### Reste à faire pour P03
 
 - Tâche 2 : solveur propre pour les maillages fins, et balayage de μ_f/μ_s (20, 50, 100).
@@ -364,6 +400,4 @@ meilleur (inverse itération avec préconditionneur, ou factorisation creuse de 
   de 3 à 30 h par maillage).
 - Tâche 4 : indépendance au solveur (explicite à pas / 2 et amortissement × 2 contre quasi statique, SG 21 → 24 ;
   f32 contre f64 sur une région).
-- Tâche 5 : `adjoint_week --diag` en f64 comme test de non-régression : l'exemple fixe le dispositif wgpu (f32) dans
-  son code (`Device::wgpu(...)`, ligne 1743) et exige un point de contrôle, un dossier `prep/` et des tables ; un
-  test de CI demande un petit cas synthétique complet (boule, cible, masque) et un choix de dispositif f64.
+- Tâche 5 : faite, voir « Gradients de l'adjoint en f64 » ci-dessus.
