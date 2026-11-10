@@ -289,8 +289,7 @@ Pour rendre les briques importables sans effet de bord, sans changer aucune déf
 
 ## Vérification et convergence (P03, branche `l1-verification`, 9 novembre 2026)
 
-Première tranche : tâches 1 et 2 de P03. Tâches 3 (convergence en maillage de l'hémisphère), 4 (indépendance au
-solveur) et 5 (gradients de l'adjoint) non faites ; voir la fin de la section.
+Première tranche : tâches 1 et 2 de P03 ; les tâches 3 (convergence en maillage de l'hémisphère, E38), 4 (indépendance au solveur, E36) et 5 (gradients de l'adjoint) ont été ajoutées ensuite ; voir la fin de la section.
 
 ### Tests en f64 (`crates/gyroxide-sim/tests/verification.rs`, dans la CI, 2,3 s)
 
@@ -529,11 +528,112 @@ Théorie : λ = 11,20 / 15,18 / 19,11 H et ε_c = 0,0786 / 0,0429 / 0,0270 pour 
   Pour la loi du code, l'écart restant (ε_c +17 %, λ* +7 %) est la signature de la transition graduelle, à
   comparer au bicouche net équivalent, pas à la formule.
 
+### Convergence en maillage sur l'hémisphère (tâche 3, E38, 10 novembre 2026)
+
+**Dispositif.** Surface fixe : les 32 492 sommets de l'atlas dHCP de SG 21, hémisphère gauche (`-Y` de TetGen : la surface n'est pas remaillée) ;
+seul le volume change, par `tools/mesh_family.py` (volume maximal TetGen), qui transporte aussi les tables nodales (a, H, cœur) vers
+chaque maillage et prépare les cibles de chaque semaine. Trois maillages (après scission des tétraèdres à quatre nœuds de surface,
+qualité par `tools/mesh_quality.py`) :
+
+| maillage | volume max TetGen | nœuds | tétraèdres | angle dièdre min | tétraèdres corticaux | épaisseur / arête (médiane ; décile bas) |
+|---|---|---|---|---|---|---|
+| g | 1e-5 | 67 561 | 320 563 | 2,87° | 184 535 | 2,27 ; 1,06 |
+| m | 3e-6 | 116 068 | 632 276 | 3,30° | 226 383 | 2,34 ; 1,18 |
+| f | 1e-6 | 269 621 | 1 617 269 | 6,89° | 418 937 | 3,02 ; 1,69 |
+
+Aucun tétraèdre sous 5° d'angle dièdre (0,01 % sous 10° partout). **La condition « au moins 3 éléments dans l'épaisseur corticale » n'est tenue
+que par f, et en médiane** (décile bas 1,69) ; g et m n'ont que 2,3 éléments en médiane. Les maillages ne sont pas emboîtés (TetGen les recrée) ; pas h = N^(−1/3) (rapports
+h_g/h_m = 1,25 et h_m/h_f = 1,37).
+
+**Chaîne.** Pour chaque maillage, la chaîne de référence à croissance **mesurée** de SG 21 à SG 30 (`tools/remodel_chain.py --alpha 0`,
+μ_g/μ_w = 0,857 comme la référence d'E33, configuration de `tools/mesh_family.py`), puis `gyroxide eval` de chaque semaine (`tools/convergence_chain.sh g m f`,
+journaux et tableaux de bord sous `out/E38/<maillage>/`, non versionnés). Aucun élément retourné, sur aucun maillage ni aucune semaine. Lecture :
+`tools/convergence_table.py`. **Écart relatif** entre deux maillages = |a − b| / |b| (b : le plus fin) ; pour les écarts rigides, la valeur
+est la RMS en mm. **Richardson** : ordre p observé sur les trois maillages (seulement si la suite est monotone), limite
+M∞ = M_f − (M_m − M_f) h_f^p / (h_m^p − h_f^p). La colonne « réf. 610 k » est le tableau de bord de la chaîne de référence existante
+(`out/scorecard/sens_r0857`, maillage de 610 k tétraèdres, mêmes réglages).
+
+Pas h = N^(−1/3) : g 0.01461, m 0.01165, f 0.00852 ; rapports h_g/h_m = 1.254, h_m/h_f = 1.368.
+
+### SG 26
+
+| métrique | g (0,32 M) | m (0,63 M) | f (1,62 M) | écart g/m | écart m/f | ordre p | limite (Richardson) | écart f/limite | réf. 610 k | écart m/réf. |
+|---|---|---|---|---|---|---|---|---|---|---|
+| RMS S200 (mm) | 0.2995 | 0.3066 | 0.3210 | 2.32 % | 4.49 % | non monotone | — | — | 0.2959 | 3.61 % |
+| RMS S50 (mm) | 0.4071 | 0.4132 | 0.4272 | 1.49 % | 3.27 % | non monotone | — | — | 0.4035 | 2.41 % |
+| RMS sommets (mm) | 0.5172 | 0.5220 | 0.5346 | 0.92 % | 2.36 % | non monotone | — | — | 0.5132 | 1.71 % |
+| corrélation de courbure | 0.8355 | 0.8361 | 0.8357 | 0.07 % | 0.05 % | non monotone | — | — | 0.8358 | 0.03 % |
+| profondeur des plis / atlas | 0.8399 | 0.8403 | 0.8418 | 0.04 % | 0.18 % | non monotone | — | — | 0.8452 | 0.57 % |
+| aire / atlas | 0.9520 | 0.9503 | 0.9487 | 0.17 % | 0.17 % | 1.23 | 0.9452 | 0.37 % | 0.9590 | 0.91 % |
+| IG / atlas | 0.9772 | 0.9775 | 0.9777 | 0.03 % | 0.02 % | 2.89 | 0.9778 | 0.01 % | 0.9775 | 0.00 % |
+| indice de plissement / atlas | 0.9718 | 0.9721 | 0.9724 | 0.04 % | 0.03 % | 2.41 | 0.9727 | 0.03 % | 0.9723 | 0.02 % |
+| épaisseur / atlas | 1.0385 | 1.0417 | 1.0440 | 0.30 % | 0.22 % | 2.41 | 1.0460 | 0.20 % | 1.0418 | 0.01 % |
+| puissance de courbure 4-8 mm / atlas | 0.7776 | 0.7801 | 0.7823 | 0.32 % | 0.29 % | 1.66 | 0.7856 | 0.42 % | 0.7771 | 0.38 % |
+
+### SG 28
+
+| métrique | g (0,32 M) | m (0,63 M) | f (1,62 M) | écart g/m | écart m/f | ordre p | limite (Richardson) | écart f/limite | réf. 610 k | écart m/réf. |
+|---|---|---|---|---|---|---|---|---|---|---|
+| RMS S200 (mm) | 0.6887 | 0.6949 | 0.7050 | 0.89 % | 1.43 % | non monotone | — | — | 0.6957 | 0.12 % |
+| RMS S50 (mm) | 0.9197 | 0.9263 | 0.9387 | 0.71 % | 1.32 % | non monotone | — | — | 0.9255 | 0.09 % |
+| RMS sommets (mm) | 1.1447 | 1.1501 | 1.1624 | 0.47 % | 1.06 % | non monotone | — | — | 1.1479 | 0.19 % |
+| corrélation de courbure | 0.6509 | 0.6526 | 0.6523 | 0.25 % | 0.04 % | non monotone | — | — | 0.6527 | 0.02 % |
+| profondeur des plis / atlas | 0.6928 | 0.6959 | 0.6969 | 0.43 % | 0.16 % | 5.14 | 0.6972 | 0.04 % | 0.7004 | 0.65 % |
+| aire / atlas | 0.8893 | 0.8871 | 0.8848 | 0.25 % | 0.26 % | 1.14 | 0.8795 | 0.60 % | 0.8926 | 0.62 % |
+| IG / atlas | 0.9377 | 0.9381 | 0.9381 | 0.05 % | 0.00 % | non monotone | — | — | 0.9381 | 0.01 % |
+| indice de plissement / atlas | 0.9242 | 0.9250 | 0.9255 | 0.08 % | 0.05 % | 2.96 | 0.9258 | 0.03 % | 0.9254 | 0.04 % |
+| épaisseur / atlas | 1.1002 | 1.1056 | 1.1095 | 0.49 % | 0.35 % | 2.47 | 1.1128 | 0.30 % | 1.1054 | 0.02 % |
+| puissance de courbure 4-8 mm / atlas | 0.5495 | 0.5531 | 0.5546 | 0.64 % | 0.27 % | 4.56 | 0.5551 | 0.09 % | 0.5534 | 0.05 % |
+
+### SG 30
+
+| métrique | g (0,32 M) | m (0,63 M) | f (1,62 M) | écart g/m | écart m/f | ordre p | limite (Richardson) | écart f/limite | réf. 610 k | écart m/réf. |
+|---|---|---|---|---|---|---|---|---|---|---|
+| RMS S200 (mm) | 1.0627 | 1.0592 | 1.0644 | 0.33 % | 0.49 % | non monotone | — | — | 1.0856 | 2.42 % |
+| RMS S50 (mm) | 1.4142 | 1.4135 | 1.4233 | 0.05 % | 0.69 % | non monotone | — | — | 1.4371 | 1.64 % |
+| RMS sommets (mm) | 1.7798 | 1.7794 | 1.7903 | 0.03 % | 0.61 % | non monotone | — | — | 1.7999 | 1.14 % |
+| corrélation de courbure | 0.4813 | 0.4836 | 0.4829 | 0.46 % | 0.13 % | non monotone | — | — | 0.4839 | 0.08 % |
+| profondeur des plis / atlas | 0.5494 | 0.5539 | 0.5534 | 0.81 % | 0.09 % | non monotone | — | — | 0.5547 | 0.13 % |
+| aire / atlas | 0.8163 | 0.8141 | 0.8115 | 0.28 % | 0.31 % | 0.80 | 0.8027 | 1.10 % | 0.8113 | 0.34 % |
+| IG / atlas | 0.8783 | 0.8792 | 0.8793 | 0.09 % | 0.02 % | non monotone | — | — | 0.8789 | 0.03 % |
+| indice de plissement / atlas | 0.8583 | 0.8596 | 0.8604 | 0.15 % | 0.09 % | 3.35 | 0.8608 | 0.05 % | 0.8602 | 0.06 % |
+| épaisseur / atlas | 1.1691 | 1.1776 | 1.1840 | 0.72 % | 0.54 % | 2.29 | 1.1901 | 0.52 % | 1.1770 | 0.05 % |
+| puissance de courbure 4-8 mm / atlas | 0.3701 | 0.3748 | 0.3764 | 1.25 % | 0.40 % | 5.62 | 0.3767 | 0.08 % | 0.3761 | 0.34 % |
+
+Plus grand écart m/f d'une métrique globale, par semaine : SG 26 : 4.49 % (RMS S200 (mm)) ; SG 28 : 1.43 % (RMS S200 (mm)) ; SG 30 : 0.69 % (RMS S50 (mm)).
+
+**Lecture.**
+- **Critère (moins de 2 % entre les deux maillages les plus fins pour les métriques globales).** Entre m et f, le plus grand écart d'une métrique
+  globale (les trois écarts rigides RMS, la corrélation de courbure, la profondeur, l'aire, l'IG, l'indice de plissement et l'épaisseur) est de
+  **0,69 % à SG 30** (RMS S50) et **1,43 % à SG 28** (RMS S200) : **tenu à SG 28 et 30**. **À SG 26 il n'est pas tenu** pour les trois écarts rigides (S200 4,49 %,
+  S50 3,27 %, sommets 2,36 %) : les autres métriques y sont à 0,22 % ou moins. En valeur absolue, ces écarts sont de 0,014 mm (S200 : 0,3066 → 0,3210 mm), contre
+  un écart au modèle de 0,3 mm : la valeur relative est grande parce que la grandeur est petite. À SG 22 et 24 la même chose, plus marquée en relatif (18,9 % de
+  0,025 mm ; 10,5 % de 0,12 mm). Les écarts rigides **augmentent régulièrement avec la finesse** (g < m < f de SG 22 à SG 28, non monotone à SG 30) : le maillage fin s'écarte
+  un peu plus de l'atlas, il ne s'en rapproche pas. Les autres métriques varient de moins de 1,3 % entre g et m et de moins de 0,6 % entre m et f à partir de SG 26.
+- **Ordre de convergence.** Pour les métriques monotones, l'ordre observé va de 0,8 à 5,6 (aire : 0,8 à 1,2 ; épaisseur : 2,1 à 2,5 ; indice de plissement : 2,2 à 3,4 ; puissance de courbure 4-8 mm à SG 28 et 30 : 4,6 et 5,6) ;
+  la plupart des écarts rigides et la corrélation de courbure ne sont pas monotones aux semaines à plis. **Il n'y a pas de convergence nette à un ordre attendu (1 à 2
+  pour des éléments linéaires)** : les écarts entre maillages sont faibles mais l'extrapolation de Richardson n'est pas fiable (trois maillages non emboîtés, remaillés
+  indépendamment par TetGen, donc une part de bruit de maillage ; les « limites » ci-dessus ne sont qu'indicatives). La meilleure lecture est : à SG 28 et 30, f est à
+  1,1 % au plus de la limite extrapolée pour les métriques monotones.
+- **Chaîne de référence.** Le maillage m (632 k) est à 3,6 % (S200), 2,4 % (S50) et 1,7 % (sommets) de la chaîne de référence de 610 k à SG 26, à 0,91 % au plus pour
+  les autres métriques à SG 26, à 0,65 % au plus à SG 28 et à 2,4 % au plus à SG 30 : la référence se comporte comme m, aux écarts de maillage près.
+- **Indicateur interne.** L'étirement élastique médian du cœur à SG 30 (journal des chaînes) vaut 0,186 (g), 0,084 (m), 0,070 (f) : g n'est pas convergé à l'intérieur, m et f
+  diffèrent de 17 % (cet indicateur n'est pas une métrique du tableau de bord, il n'entre pas dans le critère).
+
+**Résolution de travail proposée (à valider).** Le maillage **m (≈ 0,6 M tétraèdres)** suffit à moins de 1,5 % de f pour toutes les métriques globales à SG 28 et SG 30 (les semaines
+où les plis se forment) et reste au plus à 3,6 % de la référence de 610 k ; g (≈ 0,3 M) est à 6,4 % de m (S200 à SG 24) et 2,3 % (SG 26) pour les écarts rigides et n'est pas assez fin
+à l'intérieur. **Réserve** : à SG 26, m n'est pas à 2 % de f pour les écarts rigides (jusqu'à 4,5 %, soit 0,014 mm) ; une étude de plis fins avant SG 28 devrait utiliser f
+ou l'écart m/f comme barre d'erreur.
+
+**Limites.** (1) La surface reste celle de l'atlas : seule la finesse intérieure varie, et les plis du modèle ne naissent pas d'un remaillage de surface. Un maillage de surface plus fin
+(plus de 32 492 sommets) n'est pas testé. (2) Seul f a, en médiane, 3 éléments dans l'épaisseur corticale. (3) Une seule exécution par maillage : le bruit d'exécution de la chaîne (non-déterminisme
+du contact GPU, E33 ; ≤ 0,001 mm à itération égale sur une semaine ajustée) n'a pas été mesuré sur ces chaînes à croissance imposée, et les écarts sous 0,1 % ne sont pas interprétables.
+(4) SG 21 → 30 seulement, hémisphère gauche, croissance mesurée (pas de chaîne estimée). (5) `tools/week_reset.py` (E35) lisse a et H sur 20 passes, la référence sur 200 : les tables nodales de ces
+trois maillages sont celles de `tools/mesh_family.py` (200 passes).
+
 ### Reste à faire pour P03
 
 - Tâche 2 : faite (E37, ci-dessus) ; reste la finesse de 24 par H pour μ_f/μ_s = 20 et 100.
-- Tâche 3 : convergence en maillage de l'hémisphère (remaillage TetGen SG 21 à 0,3 / 0,6 / 1,6 M tétraèdres, au moins
-  3 éléments dans l'épaisseur corticale, tables nodales transportées, chaîne de référence SG 21 → 30 par maillage, soit
-  de 3 à 30 h par maillage).
+- Tâche 3 : faite (E38, ci-dessus) : critère de 2 % tenu à SG 28 et 30, non tenu à SG 26 pour les écarts rigides (jusqu'à 4,5 % de 0,3 mm) ; résolution de travail m (≈ 0,6 M) proposée.
 - Tâche 4 : faite sur SG 21 → 24 et 0,23 semaine en f64 (ci-dessus) ; f32 contre f64 sur les semaines à plis non testé.
 - Tâche 5 : faite, voir « Gradients de l'adjoint en f64 » ci-dessus.
