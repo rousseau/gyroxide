@@ -298,14 +298,17 @@ solveur) et 5 (gradients de l'adjoint) non faites ; voir la fin de la section.
   0,90 ; 0,15], [−0,20 ; 0,10 ; 1,20]] (J = 1,135) et croissance anisotrope uniforme G = I + 0,6 T, positions x =
   F_el G X. Forces nulles aux nœuds intérieurs (< 1e−13 de l'échelle des forces de bord), somme des forces nulle
   (1e−12), contrainte de Cauchy égale dans tous les tétraèdres à μ J^(−5/3) dev B + K (J − 1) I analytique, J exact à
-  3e−15, énergie totale égale à W V₀ analytique. **Écart constaté de 2e−10 (relatif) sur la contrainte et de 2e−8 sur
-  l'énergie**, et non l'arrondi : l'exposant 2/3 de `powf_scalar(2.0 / 3.0)` (`elastic.rs`, `pow_j23`, `force_tangent`)
-  est arrondi en f32 (0,666 666 69), même sur le dispositif f64. Vérifié : avec cet exposant la contrainte analytique
-  redonne 0,727 632 449 97 comme le code, contre 0,727 632 450 10 avec 2/3 exact. Sans conséquence pour l'oracle de
-  CI (le test a 1e−9 et 1e−7), mais l'oracle f64 n'est exact qu'à 2e−10 ; une correction possible : `exp(ln J · 2/3)`
-  en facteur scalaire f64 (non faite : elle changerait les résultats au dernier chiffre).
+  3e−15, énergie totale égale à W V₀ analytique. **Exposant 2/3 corrigé (10 novembre, E36)** : `powf_scalar(2.0 /
+  3.0)` (`elastic.rs`, `pow_j23`, `force_tangent`, branche inversée) arrondissait l'exposant en f32 (0,666 666 69),
+  même sur le dispositif f64 ; il est remplacé par `exp(ln x · 2/3)` (fonction `pow23`). **Écart relatif au patch test :
+  2e−10 → 4e−15 sur la contrainte** (arrondi), **2e−8 → moins de 1e−13 sur l'énergie** (seuils du test resserrés à
+  1e−13). Effet sur un run court (boule générée de 1 680 tétraèdres, 2 000 pas, sortie au pas 1 000 ; ancien et
+  nouveau binaire comparés) : positions **à 1,3e−10 près** (relatif, ndarray f64, le 10ᵉ chiffre, comme attendu) ; **à
+  1,2e−7 près en wgpu f32**, de l'ordre de l'arrondi f32 (un exposant f32 sur dispositif f32 n'est pas faux, seule
+  l'évaluation change). Les diagnostics imprimés (cinq chiffres) sont identiques. Les résultats publiés ne sont pas
+  refaits : ils sont en f32 sur GPU, l'écart est de l'ordre du bruit d'exécution mesuré (E33).
 - **Force = −gradient de l'énergie** (différences finies centrées, maillage perturbé, G anisotrope, 18 composantes) :
-  écart relatif **3,4e−8** (même exposant). La pression nodale J̄ du code C est donc cohérente avec l'énergie.
+  écart relatif **1,8e−10** (3,4e−8 avant la correction de l'exposant ; seuil du test resserré à 1e−8). La pression nodale J̄ du code C est donc cohérente avec l'énergie.
 - **Solution manufacturée** (cube, u = 0,05 (sin πX sin πY, sin πY sin πZ, sin πZ sin πX), μ = 1, K = 5, u imposé au
   bord, force volumique = −Div P calculée sur la solution exacte, équilibre par Newton-Krylov sur la tangente
   exacte, 4 itérations de Newton) :

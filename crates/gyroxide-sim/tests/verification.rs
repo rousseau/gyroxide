@@ -178,10 +178,8 @@ fn patch_test_homogeneous_deformation_and_growth() {
         for c in 0..3 {
             let s = to_f64(sigma.get(r, c));
             let worst = s.iter().fold(0.0f64, |m, v| m.max((v - want[r][c]).abs()));
-            // 1e-9 et non l'arrondi : l'exposant 2/3 de `powf_scalar` est arrondi en f32 (6,67e-1 à 2e-8 près), d'où
-            // un écart relatif de 2e-10 sur sigma, constaté ; J, lui, est exact à 3e-15 (voir docs/validation.md).
             assert!(
-                worst < 1e-9 * want[r][c].abs().max(1.0),
+                worst < 1e-13 * want[r][c].abs().max(1.0),
                 "sigma[{r}][{c}] : écart {worst:e} (attendu {})",
                 want[r][c]
             );
@@ -195,9 +193,8 @@ fn patch_test_homogeneous_deformation_and_growth() {
     let v0 = det(&g); // cube de côté 1 grandi par G
     let (ue, ninv) = out.energy.expect("énergie demandée");
     let (ue, ninv) = (to_f64(ue)[0], to_f64(ninv)[0]);
-    // 1e-7 : même exposant 2/3 arrondi en f32 (2e-8 relatif sur W, constaté).
     assert!(
-        (ue - w * v0).abs() < 1e-7 * (w * v0).abs(),
+        (ue - w * v0).abs() < 1e-13 * (w * v0).abs(),
         "énergie {ue} contre {}",
         w * v0
     );
@@ -264,8 +261,8 @@ fn force_is_energy_gradient() {
     }
     let rel = (num / den).sqrt();
     eprintln!("force contre -grad(énergie) : écart relatif {rel:.3e}");
-    // Mesuré : 3e-8 (limité par l'exposant 2/3 arrondi en f32 et par les différences finies).
-    assert!(rel < 1e-6, "écart relatif force / gradient : {rel:e}");
+    // Mesuré : 1,8e-10 (limité par les différences finies) ; 3,4e-8 avant l'exposant 2/3 exact en f64.
+    assert!(rel < 1e-8, "écart relatif force / gradient : {rel:e}");
 }
 
 // ---- Solution manufacturée -------------------------------------------------------------------------------------
