@@ -1105,3 +1105,57 @@ estimée à un seul pas, à refaire par rapport au seuil de gain d'E33 (RMS 0,1 
   Reste la décision sur la valeur unique du rapport dans les trois bras (voir ci-dessus).
 - Tâche 4 : maillage SG 21 de l'hémisphère droit et refaire la chaîne et la Table 1.
 - Tâche 5 : bras de persistance équitable (mode de `tools/full_chain.sh`, SG 26 à 36).
+
+## Plis secondaires : diagnostic (P05, E12, 11 novembre 2026, première tranche)
+
+**Mesure commune.** `tools/band_error.py` : pour chaque bande dyadique de longueur d'onde (courbure moyenne filtrée à
+l'échelle s moins à 2s par diffusion de la chaleur, s = 1, 2, 4, 8, 16 mm ; définition de `tools/fold_standard.py`, chaque
+courbure filtrée sur sa propre géométrie), sur le cortex et sommet à sommet (même triangulation que l'atlas) :
+rapport de puissance modèle / atlas, **erreur relative** rms(B_m − B_a) / rms(B_a), corrélation des deux champs de bande.
+L'erreur quadratique se décompose exactement en amplitude et motif : erreur² = (1 − r)² + 2 r (1 − corr), avec r = ‖B_m‖ / ‖B_a‖
+(le rapport de puissance est r²). Un pli de bonne amplitude mal placé a r = 1, corr = 0, erreur² = 2. La numérotation B4 / B5 / B6
+de SpAnGy n'est pas reprise (`slam` n'est pas installé et sa définition en fréquences propres n'a pas été retrouvée) : les
+« plis secondaires » sont ici les bandes 8–16 et 4–8 mm, comme dans les tableaux antérieurs (« puissance de courbure 4–8 mm »).
+Sorties : `out/E12/bandes.json` et `bandes_*.log` sur la PGX.
+
+**Chaînes de référence, bande 4–8 mm** (cibles `data/full/prep/w<SG>`, itérés des tableaux de bord `out/scorecard/t1` à μ_g/μ_w = 2 et
+`t1_r0857` à 0,857) :
+
+| SG | arm | puissance modèle / atlas | erreur relative | corrélation | erreur² : amplitude | erreur² : motif |
+|---|---|---|---|---|---|---|
+| 30 | estimée, 2 | 0,69 | 0,44 | 0,90 | 0,028 | 0,172 |
+| 30 | estimée, 0,857 | 0,58 | 0,50 | 0,87 | 0,057 | 0,202 |
+| 33 | estimée, 2 | 0,57 | 0,57 | 0,82 | 0,061 | 0,269 |
+| 33 | estimée, 0,857 | 0,49 | 0,59 | 0,81 | 0,091 | 0,262 |
+| 36 | estimée, 2 | 0,51 | 0,61 | 0,79 | 0,082 | 0,297 |
+| 36 | estimée, 0,857 | 0,50 | 0,56 | 0,83 | 0,085 | 0,239 |
+| 30 | mesurée, 0,857 | 0,38 | 0,75 | 0,67 | 0,150 | 0,409 |
+| 36 | mesurée, 2 | 0,32 | 0,90 | 0,46 | 0,191 | 0,611 |
+| 36 | mesurée, 0,857 | 0,25 | 0,90 | 0,45 | 0,253 | 0,552 |
+
+Les rapports de puissance retrouvent ceux de `fold_standard.py` (0,50 à SG 36, 4–8 mm). La bande 8–16 mm (SG 36, estimée) : puissance 0,60 à 0,65,
+erreur 0,50 à 0,51, corrélation 0,86 à 0,87 (amplitude 0,037 à 0,050, motif 0,206 à 0,227).
+
+**Lecture.**
+- **Le déficit de puissance des plis secondaires n'est pas la plus grande part de l'erreur de bande.** À SG 36 (4–8 mm), l'erreur² vaut
+  0,31 à 0,38 de la puissance de l'atlas, dont 22 à 26 % seulement viennent de l'amplitude et 74 à 78 % du **motif** (corrélation 0,79 à 0,83 : les
+  plis secondaires du modèle sont, en partie, ailleurs que ceux de l'atlas). Même un modèle qui retrouverait toute la puissance de la bande garderait,
+  à corrélation égale, une erreur² de 2 (1 − corr) = 0,34 à 0,42, c'est-à-dire plus que l'erreur actuelle.
+- **Chaque hypothèse qui ne vise que l'amplitude (relâcher la régularisation, profondeur des pas, matériau, coût) plafonne donc à environ un quart de
+  l'erreur de la bande 4–8 mm** ; pour dépasser la moitié il faut qu'une hypothèse change le *placement* des plis (cible, instabilités secondaires,
+  hypothèses 1 et 5), pas seulement leur profondeur.
+- **L'ajustement fait déjà l'essentiel du chemin** : sans ajustement (croissance mesurée), l'erreur² à SG 36 est 0,81 (corrélation 0,45 à 0,46) ; la chaîne estimée
+  la ramène à 0,31 à 0,38, soit −54 à −62 %.
+- **Hypothèse 4 (matériau), chaînes estimées à 2 contre 0,857 : effet de signe variable.** Erreur de 0,61 → 0,56 à SG 36 (erreur² −17 %), mais 0,44 → 0,50 à SG 30
+  (+29 %) et 0,57 → 0,59 à SG 33 (+7 %) ; la puissance à SG 36 est la même (0,50 / 0,51). Aucun des deux ne s'approche de la moitié de l'erreur. (Les seuils de gain d'E33
+  portent sur d'autres métriques ; une seule chaîne par rapport, étendue de la chaîne entière non mesurée.)
+- **Hypothèse 2 (résolution), sans nouveau calcul** (E38, `docs/validation.md` de la branche `l1-verification`) : la puissance de courbure 4–8 mm rapportée à l'atlas diffère de 0,40 % entre les maillages
+  m et f à SG 30 (0,3748 contre 0,3764 ; g / m : 1,25 %) et de 0,27 % à SG 28 : la finesse du volume n'explique pas le déficit. Limite : chaîne mesurée jusqu'à SG 30, surface de l'atlas fixe, donc
+  pas d'information sur la finesse de la **surface** ni sur SG 33–36.
+- **Hypothèses 3 et 4 sur la région frontale, déjà mesurées** (section « Plis secondaires (SG 33) » plus haut) : β de 1e-4 à 1e-2 et μ_g/μ_w de 2 à 5 laissent la profondeur à 2,19–2,27 mm
+  (atlas 2,56) : un palier que ces réglages ne déplacent pas.
+
+**Reste à faire (autres tranches).** Hypothèse 1 (cible : sujets individuels de la cohorte, Garage), 3 (relâcher la bande ±50 % de a, `--growth-band`, les modes lisses de c et k, les niveaux
+multi-échelles ; sur l'hémisphère), 5 (perturbations aléatoires, déflation), 6 (perte par bandes spectrales), 7 (bruit de reproductibilité de la perte, équilibres plus précis : à mesurer sur machine au
+repos, le non-déterminisme du contact dépend de la charge, voir P03), et la tâche 4 du prompt (balayage de H, μ_w/μ_g sur l'hémisphère) à SG 33–36. La mesure par bande de l'erreur doit y être appliquée
+avant et après chaque test ; elle ne rend pas compte de la profondeur des sillons, seulement de la courbure.
