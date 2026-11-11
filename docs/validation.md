@@ -625,6 +625,9 @@ où les plis se forment) et reste au plus à 3,6 % de la référence de 610 k ; 
 à l'intérieur. **Réserve** : à SG 26, m n'est pas à 2 % de f pour les écarts rigides (jusqu'à 4,5 %, soit 0,014 mm) ; une étude de plis fins avant SG 28 devrait utiliser f
 ou l'écart m/f comme barre d'erreur.
 
+**Décision de François (10 novembre 2026).** Résolution de travail : **m (≈ 0,63 M tétraèdres) et f (≈ 1,62 M)**, f servant de barre d'erreur
+(écart m/f) **avant SG 28**, là où m n'est pas à 2 % de f pour les écarts rigides (SG 26 : jusqu'à 4,5 %). g (≈ 0,3 M) n'est pas retenu.
+
 **Limites.** (1) La surface reste celle de l'atlas : seule la finesse intérieure varie, et les plis du modèle ne naissent pas d'un remaillage de surface. Un maillage de surface plus fin
 (plus de 32 492 sommets) n'est pas testé. (2) Seul f a, en médiane, 3 éléments dans l'épaisseur corticale. (3) Une seule exécution par maillage : le bruit d'exécution de la chaîne (non-déterminisme
 du contact GPU, E33 ; ≤ 0,001 mm à itération égale sur une semaine ajustée) n'a pas été mesuré sur ces chaînes à croissance imposée, et les écarts sous 0,1 % ne sont pas interprétables.
