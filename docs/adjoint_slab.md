@@ -934,6 +934,54 @@ non-déterminisme du contact soit traité (étape à part, après P03).
   n'y est pas actif. Pour trancher : rejouer plus de quatre itérations sans contact (il n'y a que quatre), ou rendre
   l'accumulation du contact déterministe et refaire la comparaison.
 
+**Traitement du non-déterminisme (E40, 10-11 novembre 2026, option `contact.deterministic_sum`, défaut `false`).**
+Banc : SG 32 → 33, mêmes entrées que `tools/variabilite_sg33.sh`, `tools/determinisme_contact.sh <sortie> <niveaux>
+<historique|deterministe>`, comparaison au bit près par `tools/comparer_runs.py`, sorties `out/E40/` (non versionnées).
+
+- **Le défaut est reproduit en 4 itérations** : deux exécutions avec le contact historique diffèrent dès `x_1` (2,6e-7),
+  jusqu'à 7,7e-4 sur `x_4`, avec une perte différente à l'itération 2 (3,215237 contre 3,215240).
+- **L'ordre d'addition du contact n'est pas la cause (seule).** Sur une maille de 270 000 paires (exemple
+  `contact_determinisme`), `penalty_forces`, `penalty_tangent` et la table ELL (`sum_dim`) sont identiques au bit entre
+  3 processus et 10 répétitions, et `sum_dim` donne les mêmes bits que la chaîne d'additions colonne par colonne
+  (`deterministic_sum`, implémentée comme option). Cette option ne change donc pas les bits sur cette maille.
+- **Une autre source subsiste, rare et dépendante de la charge.** Chasse sur 36 processus (9 tours de 4 en parallèle,
+  relaxation initiale et Newton, journal de somme de contrôle de chaque pas avec `GYROXIDE_HASH_LOG` : pas, force totale,
+  K·v, listes de contact) : **34 journaux sur 36 sont identiques au bit**. Les deux autres appartiennent au même tour,
+  pendant qu'un autre calcul tournait sur la machine : l'un diffère à un seul pas de relaxation (`step=907`, le pas 908
+  est redevenu identique : lecture transitoire), l'autre à partir du 6e produit K·v de la phase Newton (listes de contact
+  et premiers K·v identiques ; les produits scalaires du CG sont des sommes séquentielles sur l'hôte), après quoi le CG
+  suit un autre chemin. Dans un processus, `total_force` appelée trois fois au même point donne deux valeurs distinctes
+  (le premier appel diffère des suivants, même valeur dans tous les processus). Lecture : **non-déterminisme du
+  backend GPU (synchronisation ou lecture asynchrone), pas un arrondi de l'accumulation du contact ; hypothèse, non
+  démontrée** (pas de test minimal qui le déclenche sur demande).
+- **L'option ne change pas les bits** (conséquence du point précédent) : `det_a` et `hist_a` (niveaux `10:2,0:2`,
+  4 itérations) sont identiques au bit sur tous les fichiers (`x_0` à `x_4`, `theta`) et sur la perte. Elle ne supprime
+  pas non plus la divergence : sur ces mêmes niveaux, `hist_b` diffère de `hist_a` dès `x_1` (2,6e-7) et `det_b` de
+  `det_a` à l'itération 2 (3,218540 contre 3,215237 ; `x_2` : 5,7e-4). Sur quatre exécutions de `10:4` (niveau 10, 4
+  itérations ; `det_c` à `det_f`) : `det_c` et `det_f` sont identiques au bit (perte 3,220106 ; 3,215237 ; 3,208265 ;
+  3,201371 ; `x_1` à `x_4`), `det_d` et `det_e` diffèrent à l'itération 3 (3,208245 et 3,208262, écart de `x_3` jusqu'à
+  7e-4 face à `det_c`), toutes deux lancées pendant qu'un autre calcul tournait. **4 itérations : identiques au bit
+  dans 2 cas sur 4 (niveaux 10:4), 2 sur 4 (niveaux 10:2,0:2).**
+- **Avec l'option, 30 itérations** (`out/E40/30it/det_a`, `det_b`) : **identiques au bit sur les itérations 1 à 5**
+  (`x_0` à `x_5`, `theta_1` à `theta_6` ; la perte des itérations 1 à 4 est aussi celle de `det_c` et `det_f`), puis la perte diffère au sixième chiffre à l'itération 6 (3,196869 contre
+  3,196870), l'écart de `x` est de 3e-6 à l'itération 6 ; `det_b` rejette alors le pas 1 aux itérations 7 à 9, arrête
+  le premier niveau à l'itération 9 (itéré 5 restauré), alors que `det_a` poursuit jusqu'aux 30 itérations
+  (`theta_final` : écart max 0,96). **Critère « deux exécutions identiques au bit sur 30 itérations » non tenu** :
+  le même schéma que E33 (même départ, bifurcation à l'itération 6 à 8, chemin différent ensuite).
+- **Coût de l'option** : non mesurable à la précision utile, parce que les durées dépendent de la charge de la
+  machine. Itérations 1 et 2 des exécutions de 4 itérations : 46-48 s (historique, `hist_a`, `hist_b`) contre
+  46-60 s (option, `det_a`, `det_b`) ; `det_b` à 30 itérations : 42-44 s par itération sur les cinq premières. Pas
+  de surcoût net mesurable (46 à 60 s contre 46 à 48 s sur deux itérations, bruit de charge compris) ; les itérations à 100-250 s sont celles où un autre calcul partageait le GPU.
+
+**Conclusion.** L'accumulation du contact n'est pas la source principale du non-déterminisme entre exécutions : elle est
+déterministe en soi (somme ELL = somme colonne par colonne) et l'option ne l'a pas supprimé. La source restante est
+rare (2 processus sur 36) et corrélée à la charge de la machine ; sa localisation est le backend GPU (K·v ou
+force totale), non démontrée. **Le seuil de gain de la section précédente reste donc valable** (l'étendue mesurée sur
+trois répétitions) et l'option reste à `false` : le défaut n'est pas changé, à François de décider de la passer
+à `true` (sans effet sur les bits ni sur la reproductibilité à ce stade). Pistes : forcer une synchronisation
+(`sync`) après chaque lancement de noyau pour tester l'hypothèse de la course ; exécuter seul sur la machine (aucun autre
+calcul GPU) pour séparer l'effet de la charge.
+
 ### Sensibilité au rapport μ_g/μ_w, croissance mesurée (E33, tranche 1)
 
 Le rapport de la référence est μ_g/μ_w = 2 (`mu_gray = 1`, `mu_white = 0,5`). Étude sur le seul bras mesuré

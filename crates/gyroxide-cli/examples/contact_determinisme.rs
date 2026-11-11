@@ -7,6 +7,7 @@
 //!   - `gather_ordered` : la même, avec la somme colonne par colonne (`ordered_sum`) ;
 //!   - `forces_sum_dim` / `forces_ordered` : `penalty_forces` complète, des deux façons ;
 //!   - `tangent_sum_dim` / `tangent_ordered` : `penalty_tangent` (produit K·v de la partie contact), des deux façons.
+//!
 //! Chaque ligne donne le nombre de valeurs distinctes de la somme de contrôle sur les `reps` répétitions du processus, et la somme de
 //! contrôle (FNV-1a des bits en `f64` des valeurs lues) de la première répétition.
 
