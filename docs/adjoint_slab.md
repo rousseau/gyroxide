@@ -1125,3 +1125,46 @@ par sommet trop faible de 5 à 36 % (V2, enquête V3), le non-déterminisme du c
 niveau lissé k = 10.
 **Non fait** : tâche 2 (sensibilités et Sobol : l'exemple `adjoint_week` n'a pas de sortie de sensibilité aux scalaires
 μ_w/μ_g, K, H, β ; à écrire), tâche 3 (attend V3).
+
+### Pourquoi l'inversion synthétique ne descendait pas, et sensibilités aux scalaires (E46, 12 novembre)
+
+Départ synthétique de SG 29 (cible de `out/E11/syn1/prep`, croissance mesurée comme point de départ, hémisphère gauche, maillage 610 k, GPU f32) ;
+`adjoint_week --check` avec `CHECK_HS` (V4 : pas, différence finie centrée de la perte contre l'adjoint, direction −g normalisée à 0,01 h de variation
+maximale) ; `out/E46/*.log` sur la PGX.
+
+**Cause de la non-descente : l'état de départ n'est pas un équilibre (V4), ni l'adjoint, ni le contact, ni la raideur de la perte.** Sans correction,
+l'itération de Newton cale au départ (|F| = 5,4e-5, tolérance 1e-5, aucun nœud sur le plan médian au lieu de 19 à l'équilibre) et la perte de départ vaut
+10,2205 alors que celle de l'équilibre convergé vaut 10,3821 : la perte **le long de −g est au-dessus de celle du départ de 0,28 pour h = 0,05, 0,25 pour
+h = 0,156, 0,22 pour h = 0,31, 0,14 pour h = 0,6** (E11 : +0,27 au premier pas), alors que la pente de l'adjoint annonce une baisse. Aucun pas de la recherche
+linéaire ne peut être accepté. Avec `--newton-kick 5` (V4), le départ est convergé (19 nœuds sur le plan, |F| = 9,9e-6) et la perte baisse le long de −g :
+
+| h (pas de la recherche linéaire à h = 5, 2,5, 1,25, 0,62, 0,31, 0,16) | 0,156 | 0,3125 | 0,625 | 1,25 | 2,5 | 5 |
+|---|---|---|---|---|---|---|
+| champs libres (a, c, k), variation de la perte | −0,030 | −0,066 | −0,145 | −0,302 | −0,618 | −1,238 |
+| variation annoncée par l'adjoint (pente × h) | −0,036 | −0,073 | −0,146 | −0,292 | −0,583 | −1,166 |
+| rapport différence finie centrée / adjoint | 1,000 | 1,084 | 1,086 | 1,086 | 1,108 | 1,123 |
+| loi (a + c, k) , variation de la perte | +0,003 | −0,000 | −0,007 | −0,022 | −0,051 | −0,115 |
+| rapport différence finie centrée / adjoint | 1,011 | 1,004 | 1,002 | 1,004 | 1,122 | 1,122 |
+
+Contrôles (champs libres, mêmes pas) : plan médian et contact coupés (`cfg_nc_nomid`) : base 10,3859, rapport 1,000 / 1,001 / 1,002 à h = 0,05 / 0,156 / 0,31, 1,086 à 0,62 ;
+contact coupé, plan médian gardé : base 10,3825, 1,001 / 1,000 / 1,083 : **le contact et le plan médian n'y changent rien une fois l'état convergé**. L'adjoint
+(champs libres) est à 0,1 % de la différence finie jusqu'à h = 0,156 ; pour la loi il est à 1 % (pas jusqu'à 1,25, h = 0,05 : bruit, voir ci-dessous).
+**Bruit de convergence** : le Newton s'arrête à |F| ≈ 1e-5 ; la perte au point de départ est celle d'un état à ce résidu, et les perturbations en voient un
+autre : saut de +0,0067 (0,07 %) entre le départ et ±h pour la loi, dont la pente est petite (−2,3e-2 par unité de h) : la recherche linéaire de la loi, aux
+petits pas, peut encore refuser un pas dont la baisse annoncée est de l'ordre de ce bruit (0,004 au pas 1/32). Non testé : `--force-tol` plus petit.
+
+**Sensibilités locales aux scalaires** (`adjoint_week --sensitivity`, tâche 2) : dL/d ln p au départ (perte 10,3821), par l'adjoint (λ · ∂F/∂p, ∂F/∂p par
+différence centrée de la force à x fixé, linéaire en μ et en K donc sans erreur de pas) contre la différence finie de la perte à l'équilibre recalculé :
+
+| scalaire | dL/d ln p (adjoint) | différence finie (pas relatif 2 % ; 5 %) | rapport |
+|---|---|---|---|
+| μ_w/μ_g (1,167) | +1,601 | +1,592 ; +1,593 | 0,994 ; 0,995 |
+| K (5) | −1,223 | −1,218 ; −1,227 | 0,997 ; 1,003 |
+| H, échelle de l'épaississement (c uniforme : H → H exp δ) | −3,042 | −2,994 (δ = 5e-4) ; −3,050 (1e-3) ; −1,755 (3e-3) | 0,984 ; 1,003 ; 0,577 |
+
+(contact coupé : mêmes valeurs à 0,1 %). La perte baisse quand H augmente ou K augmente, et monte avec μ_w/μ_g ; en variation relative, **H pèse environ 2 fois
+plus que μ_w/μ_g et 2,5 fois plus que K**. La réponse à H n'est linéaire que sur δ < 2e-3 (le rapport tombe à 0,58 à δ = 3e-3, 0,79 à 0,01 et 0,72 à 0,03 dans un premier essai : coude de la
+perte) : les sensibilités locales à H ne s'extrapolent pas. Sous `--newton-kick 5` (nécessaire : sans lui l'état calé fausse l'adjoint, V4).
+β (poids de la régularisation des arêtes) n'agit sur la perte que par l'écart des champs à leur départ : sa sensibilité est exactement zéro à ce départ
+(champs nuls) ; elle se calcule au point ajusté (dL/dβ = ½ Σ arêtes (Δ(θ − θ0))²), qui n'existe pas encore ici (l'inversion de E11 ne descendait pas).
+

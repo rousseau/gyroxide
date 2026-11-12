@@ -66,6 +66,13 @@
 //! Gradient: K lambda = dL/dx (K = -dF/dx, CG with finite-difference products of the total
 //! force), then dL/ds = lambda . dF/ds by one reverse-mode pass of the regular elastic
 //! branch (Burn autodiff). Optimiser: L-BFGS with Armijo backtracking.
+// Research tool, linted in CI since the gradient test (`--features autodiff`): style lints of the old code are allowed.
+#![allow(
+    clippy::needless_range_loop,
+    clippy::type_complexity,
+    clippy::neg_cmp_op_on_partial_ord,
+    clippy::chunks_exact_to_as_chunks
+)]
 use burn::tensor::{Device, DeviceKind, Tensor, TensorData};
 use gyroxide_mesh::{netgen, vtk};
 use gyroxide_model::{NodalTable, Params, Schedule};
@@ -133,6 +140,8 @@ struct Problem {
     pre_inv: Vec<[[f64; 3]; 3]>,
     /// Orthonormal vectors projected out of the CG solves (deflated unstable modes).
     deflate: Vec<Vec<[f64; 3]>>,
+    /// Full Newton steps taken when none lowers |F| (kink of the midplane force; 0 = off).
+    newton_kick: usize,
     /// Dirichlet nodes (sub-mesh cut): no loss gradient and no adjoint there.
     fixed: Vec<bool>,
     /// Geometric loss terms (face normals, Laplacian coordinates, face areas), if any.
@@ -689,6 +698,8 @@ impl Problem {
         // and the step retried; it eases back after each accepted step.
         let mut sigma = self.sigma;
         let mut raised = 0;
+        let mut kicks = 0;
+        let mut best = (x.clone(), f.clone(), rn);
         for _ in 0..self.newton {
             // Already converged (e.g. the reference of a line search, from the accepted state): a
             // Newton step on a residual at round-off level only moves the soft modes.
@@ -725,6 +736,26 @@ impl Problem {
                 raised += 1;
                 continue;
             }
+            if !accepted && kicks < self.newton_kick {
+                // V4: no step lowers |F| (the active set of the midplane force at x differs from the one at
+                // the solution: the tangent is that of a kink): take the full step anyway, which changes the
+                // active set, and keep the best iterate seen.
+                kicks += 1;
+                if rn < best.2 {
+                    best = (x.clone(), f.clone(), rn);
+                }
+                let xt: Vec<[f64; 3]> = x
+                    .iter()
+                    .zip(&delta)
+                    .map(|(a, b)| [0, 1, 2].map(|d| a[d] + b[d]))
+                    .collect();
+                self.sim.set_state(&xt, &self.v0, &s);
+                self.sim.refresh_contact();
+                let ft = self.sim.total_force(&xt);
+                let rt = norm(&ft);
+                (x, f, rn) = (xt, ft, rt);
+                continue;
+            }
             if accepted {
                 raised = 0; // at most 6 raises in a row, not per solve
                 if sigma > self.sigma {
@@ -735,6 +766,10 @@ impl Problem {
                 break;
             }
         }
+        if kicks > 0 && best.2 < rn {
+            (x, f, rn) = best;
+        }
+        let _ = &f;
         self.last_residual = (r0, rn);
         self.sim.set_state(&x, &self.v0, &s);
         self.sim.refresh_contact();
@@ -1898,6 +1933,7 @@ fn main() {
         colours: colour_nodes(mesh.n_nodes(), &mesh.tets),
         pre_inv: Vec::new(),
         deflate: Vec::new(),
+        newton_kick: flag("--newton-kick", 0.0) as usize,
         fixed: dirichlet_mask.clone(),
         geo: None,
         w_vertex: flag("--w-vertex", 1.0),
@@ -2739,6 +2775,122 @@ fn main() {
         tg.elapsed().as_secs_f64()
     );
 
+    if args.iter().any(|a| a == "--sensitivity") || opt("--eval-points").is_some() {
+        // E46: sensitivity of the equilibrium loss to the scalars of the model (the shear ratio mu_w / mu_g, the
+        // bulk modulus K, the thickness scale H as a uniform shift of the thickening correction c, which
+        // `--thick-mult` makes multiplicative: 1 + c = (1 + c_measured) exp(delta)).
+        let dot = |a: &[[f64; 3]], b: &[[f64; 3]]| {
+            a.iter()
+                .zip(b)
+                .map(|(p, q)| p[0] * q[0] + p[1] * q[1] + p[2] * q[2])
+                .sum::<f64>()
+        };
+        let (mu_w0, mu_g0, k0) = (
+            p.sim.params.material.mu_white,
+            p.sim.params.material.mu_gray,
+            p.sim.params.material.bulk,
+        );
+        let l0 = {
+            let (a, b, _) = p.loss(&x, &theta);
+            a + b
+        };
+        let oc = p.field_offsets().0;
+        // Loss at the equilibrium for (mu_w / mu_g, K, delta of c), warm start from the base equilibrium.
+        let eval = |p: &mut Problem, ratio: f64, kb: f64, dc: f64| -> (f64, f64) {
+            p.sim.params.material.mu_white = ratio * mu_g0;
+            p.sim.params.material.bulk = kb;
+            let mut th = theta.clone();
+            if let Some(o) = oc {
+                th[o..o + p.na].iter_mut().for_each(|v| *v += dc);
+            }
+            let xe = p.equilibrium(&th, &x, 2 * relax);
+            let (a, b, _) = p.loss(&xe, &th);
+            let res = p.last_residual.1;
+            p.sim.params.material.mu_white = mu_w0;
+            p.sim.params.material.bulk = k0;
+            (a + b, res)
+        };
+        if let Some(path) = opt("--eval-points") {
+            // One "mu_w/mu_g K delta_c" per line; writes "loss residual" per line next to it.
+            let text = std::fs::read_to_string(&path).unwrap();
+            let mut out = String::new();
+            for (i, line) in text
+                .lines()
+                .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+                .enumerate()
+            {
+                let v: Vec<f64> = line.split_whitespace().map(|t| t.parse().unwrap()).collect();
+                let t0 = Instant::now();
+                let (l, res) = eval(&mut p, v[0], v[1], v[2]);
+                out += &format!("{l:.10e} {res:.3e}\n");
+                println!(
+                    "point {i}: {line} -> loss {l:.8e}, residual {res:.2e}, {:.1}s",
+                    t0.elapsed().as_secs_f64()
+                );
+                std::fs::write(path.with_extension("out"), &out).unwrap();
+            }
+            return;
+        }
+        let (lam, it, res) = p.adjoint(&x, &gx, sigma, cg);
+        println!(
+            "sensitivity: base loss {l0:.8e}; adjoint CG {it} it (residual {res:.1e}); mu_w/mu_g {:.4}, K {k0}",
+            mu_w0 / mu_g0
+        );
+        // d loss / d ln(scalar), by the adjoint: lambda . dF/dp p, with dF/dp by a central difference of the force at fixed x.
+        for rel in [0.02, 0.05] {
+            for name in ["mu_w", "K"] {
+                let force = |p: &mut Problem, f: f64| -> Vec<[f64; 3]> {
+                    if name == "mu_w" {
+                        p.sim.params.material.mu_white = mu_w0 * f;
+                    } else {
+                        p.sim.params.material.bulk = k0 * f;
+                    }
+                    let r = p.sim.total_force(&x);
+                    p.sim.params.material.mu_white = mu_w0;
+                    p.sim.params.material.bulk = k0;
+                    r
+                };
+                let (fp, fm) = (force(&mut p, 1.0 + rel), force(&mut p, 1.0 - rel));
+                let dfdlnp: Vec<[f64; 3]> = fp
+                    .iter()
+                    .zip(&fm)
+                    .map(|(a, b)| [0, 1, 2].map(|d| (a[d] - b[d]) / (2.0 * rel)))
+                    .collect();
+                let an = dot(&lam, &dfdlnp);
+                let (lp, _) = if name == "mu_w" {
+                    eval(&mut p, (mu_w0 / mu_g0) * (1.0 + rel), k0, 0.0)
+                } else {
+                    eval(&mut p, mu_w0 / mu_g0, k0 * (1.0 + rel), 0.0)
+                };
+                let (lm, _) = if name == "mu_w" {
+                    eval(&mut p, (mu_w0 / mu_g0) * (1.0 - rel), k0, 0.0)
+                } else {
+                    eval(&mut p, mu_w0 / mu_g0, k0 * (1.0 - rel), 0.0)
+                };
+                let fd = (lp - lm) / (2.0 * rel);
+                println!(
+                    "sensitivity {name} (relative step {rel}): dL/dln p adjoint {an:.6e}, finite difference {fd:.6e}, ratio {:.4}",
+                    fd / an
+                );
+            }
+        }
+        if let Some(o) = oc {
+            let an: f64 = g[o..o + p.na].iter().sum();
+            for e in [0.0005, 0.001, 0.003] {
+                let (lp, _) = eval(&mut p, mu_w0 / mu_g0, k0, e);
+                let (lm, _) = eval(&mut p, mu_w0 / mu_g0, k0, -e);
+                let fd = (lp - lm) / (2.0 * e);
+                println!(
+                    "sensitivity H (uniform shift {e} of c, dL/d ln H): adjoint {an:.6e}, finite difference {fd:.6e}, ratio {:.4}",
+                    fd / an
+                );
+            }
+        } else {
+            println!("sensitivity H: needs --fit-fields with c");
+        }
+        return;
+    }
+
     if args.iter().any(|a| a == "--diag") {
         // Link-by-link test of the adjoint at the start equilibrium.
         let dot = |a: &[[f64; 3]], b: &[[f64; 3]]| {
@@ -2867,7 +3019,53 @@ fn main() {
             .iter()
             .map(|v| -0.01 * flag("--check-scale", 1.0) * v / gmax)
             .collect();
-        for h in [0.5, 1.0, 2.0] {
+        // Active set of the midplane force at the base equilibrium (V4): nodes with a non-zero
+        // y force, offset |y - midplane| in units of the mesh spacing.
+        if let Some(mpy) = p.sim.params.contact.midplane {
+            let pr = &p.sim.params;
+            let (a, kb, hc) = (pr.dynamics.mesh_spacing, pr.material.bulk, pr.repulsive_skin());
+            let c = a * a * kb / hc;
+            let fy: Vec<f64> = p.sim.non_elastic_force(&x).iter().map(|r| r[1]).collect();
+            let mut off: Vec<f64> = fy.iter().filter(|v| **v != 0.0).map(|v| v.abs() / c / a).collect();
+            off.sort_by(|u, v| u.partial_cmp(v).unwrap());
+            let q = |f: f64| {
+                off.get(((off.len() as f64 - 1.0) * f) as usize)
+                    .copied()
+                    .unwrap_or(f64::NAN)
+            };
+            let ymax = x.iter().map(|r| r[1]).fold(f64::MIN, f64::max);
+            let ymin = x.iter().map(|r| r[1]).fold(f64::MAX, f64::min);
+            println!(
+                "midplane {mpy}: {} nodes with a force (of {}), offset/a: min {:.3e} p10 {:.3e} median {:.3e} p90 {:.3e} max {:.3e}; y range of the nodes [{ymin:.6}, {ymax:.8}]",
+                off.len(), x.len(), q(0.0), q(0.1), q(0.5), q(0.9), q(1.0)
+            );
+            println!(
+                "midplane: nodes with offset/a below 1e-4, 1e-3, 1e-2, 1e-1: {:?}",
+                [1e-4, 1e-3, 1e-2, 1e-1].map(|t| off.iter().filter(|v| **v < t).count())
+            );
+        }
+        let l0 = {
+            let xb = p.equilibrium(&theta, &x, 2 * relax);
+            let (a, b, _) = p.loss(&xb, &theta);
+            a + b
+        };
+        let l0b = {
+            let xb = p.equilibrium(&theta, &x, 2 * relax);
+            let (a, b, _) = p.loss(&xb, &theta);
+            a + b
+        };
+        println!(
+            "check base loss: {l0:.8e} (second evaluation {l0b:.8e}); residual {:?}",
+            p.last_residual
+        );
+        let hs: Vec<f64> = match std::env::var("CHECK_HS") {
+            Ok(v) => v.split(',').map(|t| t.parse().unwrap()).collect(),
+            Err(_) => [0.5, 1.0, 2.0]
+                .into_iter()
+                .take(flag("--check-steps", 3.0) as usize)
+                .collect(),
+        };
+        for h in hs {
             let tp: Vec<f64> = theta.iter().zip(&dir).map(|(a, d)| a + h * d).collect();
             let tm: Vec<f64> = theta.iter().zip(&dir).map(|(a, d)| a - h * d).collect();
             let xp = p.equilibrium(&tp, &x, 2 * relax);
@@ -2882,6 +3080,28 @@ fn main() {
             };
             let fd = (lp - lm) / (2.0 * h);
             let an: f64 = g.iter().zip(&dir).map(|(a, b)| a * b).sum();
+            if p.sim.params.contact.midplane.is_some() {
+                let act = |xs: &[[f64; 3]]| {
+                    let f = p.sim.non_elastic_force(xs);
+                    let n = f.iter().filter(|r| r[1] != 0.0).count();
+                    let m = f.iter().fold(0.0f64, |m, r| m.max(r[1].abs()));
+                    (n, m)
+                };
+                println!(
+                    "check-detail h = {h}: midplane nodes with a force (count, max |f_y|): base {:?}, +h {:?}, -h {:?}",
+                    act(&x),
+                    act(&xp),
+                    act(&xm)
+                );
+            }
+            println!("check-detail h = {h}: loss at +h {lp:.8e}, at -h {lm:.8e}");
+            println!(
+                "check-detail h = {h}: one-sided finite differences, forward {:.6e} (ratio {:.6}), backward {:.6e} (ratio {:.6})",
+                (lp - l0) / h,
+                (lp - l0) / h / an,
+                (l0 - lm) / h,
+                (l0 - lm) / h / an
+            );
             println!(
                 "check h = {h}: finite difference {fd:.4e}, adjoint {an:.4e}, ratio {:.3}; |F| {:.2e} -> {:.2e}",
                 fd / an,
