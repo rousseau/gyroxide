@@ -640,3 +640,18 @@ trois maillages sont celles de `tools/mesh_family.py` (200 passes).
 - Tâche 3 : faite (E38, ci-dessus) : critère de 2 % tenu à SG 28 et 30, non tenu à SG 26 pour les écarts rigides (jusqu'à 4,5 % de 0,3 mm) ; résolution de travail m (≈ 0,6 M) proposée.
 - Tâche 4 : faite sur SG 21 → 24 et 0,23 semaine en f64 (ci-dessus) ; f32 contre f64 sur les semaines à plis non testé.
 - Tâche 5 : faite, voir « Gradients de l'adjoint en f64 » ci-dessus.
+### Adjoint des champs par sommet : enquête (V3, 11-12 novembre)
+
+Même cas que V2 (hémisphère gauche, SG 28 → 29, μ_g/μ_w = 0,857, `--absolute`, `--check`, h = 0,5 ; 1 ; `out/V3/<variante>.log` sur la PGX). Rapport différence finie / adjoint :
+
+| variante | h = 0,5 | h = 1 | h = 2 |
+|---|---|---|---|
+| k par sommet, GPU f32, contact et plan médian actifs (V2, G) | 1,360 | 1,347 | 1,327 |
+| k par sommet, **f64** CPU (`--backend ndarray`) | 1,336 | 1,366 | — |
+| k par sommet, f32, **contact coupé** (plan médian gardé) | 1,340 | 1,341 | 1,325 |
+| k par sommet, f32, **contact et plan médian coupés** | **1,137** | 1,137 | 1,177 |
+| c, k, r par sommet, f64 | 1,243 | 1,273 | — |
+| c, k, r par sommet, f32, contact coupé | 1,252 | 1,271 | 1,268 |
+
+Lecture : (1) **ce n'est pas le f32** : le f64 donne le même écart (1,34 contre 1,36 ; 1,24 contre 1,28) ; (2) **ce n'est pas le contact** de proximité : le couper ne change rien (1,34) ; (3) **le plan médian explique la majeure partie** : le couper ramène k de 1,34 à 1,14, mais il reste **14 % non expliqués** ; (4) les bornes (`--field-band`, `--growth-band`) ne sont pas dans le chemin de `--check` (la projection n'est appliquée que dans la recherche linéaire de L-BFGS) : elles ne peuvent pas en être la cause (lecture du code, non testée par un run).
+Hypothèse sur le plan médian, **non démontrée** : `midplane_force` est affine par morceaux en y (force sur les nœuds de surface passés de l'autre côté du plan, côtés `low`/`high` gelés au départ) ; sa tangente (`midplane_tangent`) gèle l'ensemble actif du point de base, alors que la différence finie centrée en voit un autre quand des nœuds proches du plan (la paroi médiale en contient beaucoup) le traversent : un coude, non une erreur de gradient d'une fonction lisse. Test qui la trancherait : décaler le plan médian (ou n'activer la force que sur les nœuds loin du plan) ; différence finie unilatérale des deux côtés. **Aucune correction écrite** (la cause n'est pas démontrée) ; le défaut est inchangé.
