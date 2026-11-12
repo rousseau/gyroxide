@@ -655,3 +655,33 @@ Même cas que V2 (hémisphère gauche, SG 28 → 29, μ_g/μ_w = 0,857, `--absol
 
 Lecture : (1) **ce n'est pas le f32** : le f64 donne le même écart (1,34 contre 1,36 ; 1,24 contre 1,28) ; (2) **ce n'est pas le contact** de proximité : le couper ne change rien (1,34) ; (3) **le plan médian explique la majeure partie** : le couper ramène k de 1,34 à 1,14, mais il reste **14 % non expliqués** ; (4) les bornes (`--field-band`, `--growth-band`) ne sont pas dans le chemin de `--check` (la projection n'est appliquée que dans la recherche linéaire de L-BFGS) : elles ne peuvent pas en être la cause (lecture du code, non testée par un run).
 Hypothèse sur le plan médian, **non démontrée** : `midplane_force` est affine par morceaux en y (force sur les nœuds de surface passés de l'autre côté du plan, côtés `low`/`high` gelés au départ) ; sa tangente (`midplane_tangent`) gèle l'ensemble actif du point de base, alors que la différence finie centrée en voit un autre quand des nœuds proches du plan (la paroi médiale en contient beaucoup) le traversent : un coude, non une erreur de gradient d'une fonction lisse. Test qui la trancherait : décaler le plan médian (ou n'activer la force que sur les nœuds loin du plan) ; différence finie unilatérale des deux côtés. **Aucune correction écrite** (la cause n'est pas démontrée) ; le défaut est inchangé.
+
+### Adjoint des champs par sommet : le plan médian tranché (V4, 12 novembre)
+
+Même cas que V3 (hémisphère gauche, SG 28 → 29, k par sommet, GPU f32, contact coupé, plan médian à y = 0,3902, direction −g, différence finie centrée) ; `out/V4/<variante>.log` sur la PGX. `adjoint_week --check` écrit maintenant l'ensemble actif du plan médian (nombre de nœuds sur le plan, décalage au plan en unités de pas de maillage) à l'état de départ et à ±h, la perte aux trois points, et les différences finies unilatérales ; la variable `CHECK_HS` (liste de pas séparés par des virgules) remplace h = 0,5 ; 1 ; 2.
+
+**Ce que fait le plan médian.** L'état de départ n'est pas un équilibre : l'itération de Newton y **cale** à |F| = 4,9e-5 (tolérance 1e-5) avec **1 nœud** sur le plan (|f_y| = 2,2e-5, à 0,005 pas du plan), alors que les équilibres à ±h, atteints à |F| ≈ 1e-5, en ont **19** (|f_y| jusqu'à 1,3e-4, décalages de 0,0009 à 0,028 pas). Aucun pas de Newton ne fait baisser |F| : la tangente est celle d'un coude (ensemble actif de 1 nœud), que le vrai équilibre ne partage pas. La perte à cet état de départ est 4,4414 contre 4,4590 à l'équilibre convergé (saut de 0,017, 0,4 %, que la différence finie centrée annule et que l'adjoint, calculé à l'état calé, ne peut pas voir). Avec c, k, r le Newton cale de même, avec 0 nœud sur le plan (|F| = 5,4e-5).
+
+**Correction.** `--newton-kick N` (défaut 0, comportement inchangé) : quand aucun pas de la recherche linéaire ne fait baisser |F| (après les relèvements de σ), l'itération prend le pas de Newton complet quand même (ce qui change l'ensemble actif) jusqu'à N fois et rend l'itération de plus petit résidu. Avec `--newton-kick 5` : 19 nœuds sur le plan dès l'état de départ, résidu 9,8e-6, perte de départ 4,4582, sans rien d'autre.
+
+Rapport différence finie centrée / adjoint :
+
+| variante | h = 0,05 | h = 0,1 | h = 0,25 | h = 0,5 |
+|---|---|---|---|---|
+| k, état de V3 (Newton calé, 1 nœud) | 1,317 | | | 1,340 |
+| k, état reconvergé à la main (19 nœuds) | **0,99996** | 1,0021 | 1,0063 | 1,138 |
+| k, plan décalé de +0,01 (0 nœud sur le plan) | 1,0008 | 1,0019 | 1,0049 | 1,137 |
+| k, `--newton-kick 5` | **1,0005** | | 1,0048 | 1,137 |
+| k, config complète de V2 (contact actif), `--newton-kick 5` | 1,0005 | | 1,0047 | 1,137 |
+| c, k, r, sans correction (Newton calé, 0 nœud) | 1,189 | | 1,264 | 1,252 |
+| c, k, r, `--newton-kick 5` | **0,9991** | | 1,141 | 1,116 |
+
+Lecture.
+- **Le plan médian explique bien les 20 points de V3, mais pas comme un défaut de dérivabilité de l'adjoint** : l'adjoint est calculé à un état où le Newton a calé sur le coude. Reconverger l'état (à la main, ou par `--newton-kick`) ramène k de 1,34 à 1,14 à h = 0,5, comme couper le plan (1,137 en V3) ou le décaler de 0,01 (1,137) ; à h = 0,05 le rapport vaut 1,000 (écart de 0,04 % à 0,05 %) avec le plan en place.
+- **Les 14 % restants ne sont pas une erreur de l'adjoint** : sans plan sur le cas (plan décalé) comme avec, le rapport vaut 1,0008 à 1,0049 pour h ≤ 0,25 et saute à 1,137 entre h = 0,25 et h = 0,5, puis reste là (V3 : 1,137 à h = 1, 1,177 à h = 2) ; pour c, k, r : 0,9991 à h = 0,05, 1,14 à h = 0,25. Les pas de V2 et V3 (0,5 ; 1 ; 2) sont donc au-delà du domaine linéaire de la perte le long de −g ; ce qui y fait le coude n'est pas identifié (non recherché : ce n'est pas le plan médian, le contact, ni le f32). Écart de l'adjoint aux petits pas : 0,05 % (k) et 0,09 % (c, k, r) à h = 0,05, sous 0,6 % à h = 0,25 pour k.
+- **Différence finie unilatérale** : peu informative ici. Avec l'état reconverti, l'avant et l'arrière valent 0,90 et 1,38 à h = 0,5 (courbure) ; à h = 0,05 le bruit de convergence (résidu 1e-5) domine (−0,25 et 2,25). Le centré, qui élimine l'ordre 1, est le bon estimateur.
+- **« Ensemble actif gelé »** : `midplane_tangent` évalue les côtés à l'état où on l'appelle ; il n'est pas gelé à l'état de départ du Newton, et la tangente est juste là où le Newton a un état d'équilibre. Ce qui manquait est l'état.
+- **Sensibilité à `--shift`** (plan décalé, h = 0,5, CG à 1e-6) : 0,995 pour 1e-5 (CG non convergé, 600 itérations à 3e-3), 1,137 pour 1e-3, 1,62 pour 1e-2 ; la direction testée change avec σ, donc la valeur n'est pas une mesure de biais ; l'accord à h = 0,05 avec σ = 1e-3 montre que le biais de σ n'est pas la cause des écarts à grand pas.
+- Suites pour P04 : E11 (tâche 1, « aucun pas accepté », pas 1 à 1/32 refusés pour une décroissance attendue de 2,3e-2) est compatible avec ces sauts de 0,017 de la perte entre états calés et convergés ; à refaire avec `--newton-kick 5`. `--check` par défaut (h = 0,5 ; 1 ; 2) n'est plus un bon test de l'adjoint sur le cas réel : utiliser `CHECK_HS=0.05,0.25`.
+
+Contrôles : `cargo fmt --all --check`, `cargo clippy --all-targets --features autodiff -- -D warnings`, `cargo test --release --features autodiff -p gyroxide-cli --test adjoint_gradients` (8 tests verts, défaut inchangé). Non fait : test de non-régression avec nœuds sur le plan médian sur la boule synthétique (le plan y retient les nœuds à 1e-7 sous lui, aucun nœud n'a de force à l'équilibre : le test ne teste rien) ; vérification f64 du cas réel ; le Newton calé n'est pas expliqué plus avant que par le coude.

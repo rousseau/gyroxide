@@ -144,6 +144,8 @@ struct Problem {
     pre_inv: Vec<[[f64; 3]; 3]>,
     /// Orthonormal vectors projected out of the CG solves (deflated unstable modes).
     deflate: Vec<Vec<[f64; 3]>>,
+    /// Full Newton steps taken when none lowers |F| (kink of the midplane force; 0 = off).
+    newton_kick: usize,
     /// Dirichlet nodes (sub-mesh cut): no loss gradient and no adjoint there.
     fixed: Vec<bool>,
     /// Geometric loss terms (face normals, Laplacian coordinates, face areas), if any.
@@ -703,6 +705,8 @@ impl Problem {
         // and the step retried; it eases back after each accepted step.
         let mut sigma = self.sigma;
         let mut raised = 0;
+        let mut kicks = 0;
+        let mut best = (x.clone(), f.clone(), rn);
         for _ in 0..self.newton {
             // Already converged (e.g. the reference of a line search, from the accepted state): a
             // Newton step on a residual at round-off level only moves the soft modes.
@@ -739,6 +743,26 @@ impl Problem {
                 raised += 1;
                 continue;
             }
+            if !accepted && kicks < self.newton_kick {
+                // V4: no step lowers |F| (the active set of the midplane force at x differs from the one at
+                // the solution: the tangent is that of a kink): take the full step anyway, which changes the
+                // active set, and keep the best iterate seen.
+                kicks += 1;
+                if rn < best.2 {
+                    best = (x.clone(), f.clone(), rn);
+                }
+                let xt: Vec<[f64; 3]> = x
+                    .iter()
+                    .zip(&delta)
+                    .map(|(a, b)| [0, 1, 2].map(|d| a[d] + b[d]))
+                    .collect();
+                self.sim.set_state(&xt, &self.v0, &s);
+                self.sim.refresh_contact();
+                let ft = self.sim.total_force(&xt);
+                let rt = norm(&ft);
+                (x, f, rn) = (xt, ft, rt);
+                continue;
+            }
             if accepted {
                 raised = 0; // at most 6 raises in a row, not per solve
                 if sigma > self.sigma {
@@ -749,6 +773,10 @@ impl Problem {
                 break;
             }
         }
+        if kicks > 0 && best.2 < rn {
+            (x, f, rn) = best;
+        }
+        let _ = &f;
         self.last_residual = (r0, rn);
         self.sim.set_state(&x, &self.v0, &s);
         self.sim.refresh_contact();
@@ -1918,6 +1946,7 @@ fn main() {
         colours: colour_nodes(mesh.n_nodes(), &mesh.tets),
         pre_inv: Vec::new(),
         deflate: Vec::new(),
+        newton_kick: flag("--newton-kick", 0.0) as usize,
         fixed: dirichlet_mask.clone(),
         geo: None,
         w_vertex: flag("--w-vertex", 1.0),
@@ -2875,7 +2904,53 @@ fn main() {
             .iter()
             .map(|v| -0.01 * flag("--check-scale", 1.0) * v / gmax)
             .collect();
-        for h in [0.5, 1.0, 2.0].into_iter().take(flag("--check-steps", 3.0) as usize) {
+        // Active set of the midplane force at the base equilibrium (V4): nodes with a non-zero
+        // y force, offset |y - midplane| in units of the mesh spacing.
+        if let Some(mpy) = p.sim.params.contact.midplane {
+            let pr = &p.sim.params;
+            let (a, kb, hc) = (pr.dynamics.mesh_spacing, pr.material.bulk, pr.repulsive_skin());
+            let c = a * a * kb / hc;
+            let fy: Vec<f64> = p.sim.non_elastic_force(&x).iter().map(|r| r[1]).collect();
+            let mut off: Vec<f64> = fy.iter().filter(|v| **v != 0.0).map(|v| v.abs() / c / a).collect();
+            off.sort_by(|u, v| u.partial_cmp(v).unwrap());
+            let q = |f: f64| {
+                off.get(((off.len() as f64 - 1.0) * f) as usize)
+                    .copied()
+                    .unwrap_or(f64::NAN)
+            };
+            let ymax = x.iter().map(|r| r[1]).fold(f64::MIN, f64::max);
+            let ymin = x.iter().map(|r| r[1]).fold(f64::MAX, f64::min);
+            println!(
+                "midplane {mpy}: {} nodes with a force (of {}), offset/a: min {:.3e} p10 {:.3e} median {:.3e} p90 {:.3e} max {:.3e}; y range of the nodes [{ymin:.6}, {ymax:.8}]",
+                off.len(), x.len(), q(0.0), q(0.1), q(0.5), q(0.9), q(1.0)
+            );
+            println!(
+                "midplane: nodes with offset/a below 1e-4, 1e-3, 1e-2, 1e-1: {:?}",
+                [1e-4, 1e-3, 1e-2, 1e-1].map(|t| off.iter().filter(|v| **v < t).count())
+            );
+        }
+        let l0 = {
+            let xb = p.equilibrium(&theta, &x, 2 * relax);
+            let (a, b, _) = p.loss(&xb, &theta);
+            a + b
+        };
+        let l0b = {
+            let xb = p.equilibrium(&theta, &x, 2 * relax);
+            let (a, b, _) = p.loss(&xb, &theta);
+            a + b
+        };
+        println!(
+            "check base loss: {l0:.8e} (second evaluation {l0b:.8e}); residual {:?}",
+            p.last_residual
+        );
+        let hs: Vec<f64> = match std::env::var("CHECK_HS") {
+            Ok(v) => v.split(',').map(|t| t.parse().unwrap()).collect(),
+            Err(_) => [0.5, 1.0, 2.0]
+                .into_iter()
+                .take(flag("--check-steps", 3.0) as usize)
+                .collect(),
+        };
+        for h in hs {
             let tp: Vec<f64> = theta.iter().zip(&dir).map(|(a, d)| a + h * d).collect();
             let tm: Vec<f64> = theta.iter().zip(&dir).map(|(a, d)| a - h * d).collect();
             let xp = p.equilibrium(&tp, &x, 2 * relax);
@@ -2890,6 +2965,28 @@ fn main() {
             };
             let fd = (lp - lm) / (2.0 * h);
             let an: f64 = g.iter().zip(&dir).map(|(a, b)| a * b).sum();
+            if p.sim.params.contact.midplane.is_some() {
+                let act = |xs: &[[f64; 3]]| {
+                    let f = p.sim.non_elastic_force(xs);
+                    let n = f.iter().filter(|r| r[1] != 0.0).count();
+                    let m = f.iter().fold(0.0f64, |m, r| m.max(r[1].abs()));
+                    (n, m)
+                };
+                println!(
+                    "check-detail h = {h}: midplane nodes with a force (count, max |f_y|): base {:?}, +h {:?}, -h {:?}",
+                    act(&x),
+                    act(&xp),
+                    act(&xm)
+                );
+            }
+            println!("check-detail h = {h}: loss at +h {lp:.8e}, at -h {lm:.8e}");
+            println!(
+                "check-detail h = {h}: one-sided finite differences, forward {:.6e} (ratio {:.6}), backward {:.6e} (ratio {:.6})",
+                (lp - l0) / h,
+                (lp - l0) / h / an,
+                (l0 - lm) / h,
+                (l0 - lm) / h / an
+            );
             println!(
                 "check h = {h}: finite difference {fd:.6e}, adjoint {an:.6e}, ratio {:.6}; |F| {:.2e} -> {:.2e}",
                 fd / an,
