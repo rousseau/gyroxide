@@ -1105,3 +1105,23 @@ estimée à un seul pas, à refaire par rapport au seuil de gain d'E33 (RMS 0,1 
   Reste la décision sur la valeur unique du rapport dans les trois bras (voir ci-dessus).
 - Tâche 4 : maillage SG 21 de l'hémisphère droit et refaire la chaîne et la Table 1.
 - Tâche 5 : bras de persistance équitable (mode de `tools/full_chain.sh`, SG 26 à 36).
+
+## Identifiabilité et incertitude (P04, E11, première tranche : vérité synthétique à SG 29)
+
+**Protocole** (`tools/synthetic_truth.py`, sorties `out/E11/syn1/`) : vérité = a par sommet, c et k de la loi de `fit29_lbm`
+plus une perturbation lisse connue (30 % de l'écart type, S²⁰⁰ et S³⁰) ; équilibre de la vérité (`adjoint_week --stress`,
+|F| 4,1e-3 → 9,5e-6) ; cible lissée à la rugosité de l'atlas (arête 20,7 µm ; le modèle donne 18,1 µm sans lissage, donc
+k = 0) ; inversion depuis la croissance mesurée (état de départ `ckpt_w29_from_lbm29`), deux fois : `inv_law` (a + loi
+c, k, protocole habituel) et `inv_free` (a, c, k libres par sommet) ; erreur de récupération par bande de modes de
+Laplace-Beltrami (900 modes, jusqu'à 6,1 mm).
+
+**Résultat : l'inversion ne descend pas, dans les deux cas, dès la première itération.** Perte de départ 1,022e1
+(RMS absolu 1,08 mm) ; pas de recherche linéaire 1 à 1/32 refusés (perte 1,0489e1 à pas 1, puis non-décroissance) alors
+que la décroissance attendue est de 2,3e-2 (`inv_law`) et 2,6e-1 (`inv_free`) ; aucun pas accepté : la sortie est le
+point de départ, les coefficients de loi sont nuls, et **l'erreur de récupération vaut 1,00 dans toutes les bandes et pour
+tous les champs (corrélation 0, rapport 0)**. Ce n'est donc pas une mesure d'identifiabilité : la direction de descente
+n'en est pas une, ce que la perte seule ne permet pas d'attribuer. Candidats, non départagés ici : l'adjoint des champs
+par sommet trop faible de 5 à 36 % (V2, enquête V3), le non-déterminisme du contact (P03), la raideur de la perte à
+niveau lissé k = 10.
+**Non fait** : tâche 2 (sensibilités et Sobol : l'exemple `adjoint_week` n'a pas de sortie de sensibilité aux scalaires
+μ_w/μ_g, K, H, β ; à écrire), tâche 3 (attend V3).
