@@ -225,8 +225,18 @@ kind = "uniform"
 
 /// Lance `adjoint_week --check` avec les options données ; rend les trois rapports adjoint / différence finie.
 fn check(tag: &str, extra: &[&str], steps: usize) -> Vec<f64> {
+    check_hs(tag, extra, steps, None)
+}
+
+/// Comme `check`, avec `CHECK_HS` (liste de pas de différence finie séparés par des virgules) à la place des pas par
+/// défaut (h = 0,5 ; 1 ; 2) ; `steps` est alors le nombre de pas de la liste.
+fn check_hs(tag: &str, extra: &[&str], steps: usize, hs: Option<&str>) -> Vec<f64> {
     let case = build_case(tag);
-    let out = Command::new(example())
+    let mut command = Command::new(example());
+    if let Some(hs) = hs {
+        command.env("CHECK_HS", hs);
+    }
+    let out = command
         .args([
             &case.path("params.toml"),
             &case.path("ball.mesh"),
@@ -366,4 +376,33 @@ fn gradient_each_field_separately() {
         assert_ratios(&format!("champ-{fields}"), &["--rigid", "--fit-fields", fields]);
     }
     assert_ratios("champ-c-mult", &["--rigid", "--fit-fields", "c", "--thick-mult"]);
+}
+
+#[test]
+fn gradient_default_newton_kick_at_small_step() {
+    // V4 : `--newton-kick` vaut 5 par défaut (les équilibres où le Newton calait sur le coude du plan médian changent) ;
+    // le test de référence de l'adjoint est h = 0,05 (le coude de la perte rend h >= 0,5 non linéaire). Sur la boule, le
+    // Newton converge sans coude : le défaut ne change aucun équilibre, donc ni la perte ni le rapport par rapport à
+    // `--newton-kick 0`.
+    let fields = [
+        "--rigid",
+        "--fit-fields",
+        "c,k,r",
+        "--theta-init",
+        "{theta_init}",
+        "--beta",
+        "1e-2",
+    ];
+    let defaut = check_hs("kick-defaut", &fields, 2, Some("0.05,0.25"));
+    let mut sans = fields.to_vec();
+    sans.extend(["--newton-kick", "0"]);
+    let zero = check_hs("kick-zero", &sans, 2, Some("0.05,0.25"));
+    assert!((defaut[0] - 1.0).abs() < 2e-4, "h = 0,05 : rapport {defaut:?}");
+    assert!((defaut[1] - 1.0).abs() < 2e-3, "h = 0,25 : rapport {defaut:?}");
+    for (a, b) in defaut.iter().zip(&zero) {
+        assert!(
+            (a - b).abs() < 1e-9,
+            "le défaut change l'équilibre de la boule : {defaut:?} contre {zero:?}"
+        );
+    }
 }

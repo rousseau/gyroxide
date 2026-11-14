@@ -685,3 +685,10 @@ Lecture.
 - Suites pour P04 : E11 (tâche 1, « aucun pas accepté », pas 1 à 1/32 refusés pour une décroissance attendue de 2,3e-2) est compatible avec ces sauts de 0,017 de la perte entre états calés et convergés ; à refaire avec `--newton-kick 5`. `--check` par défaut (h = 0,5 ; 1 ; 2) n'est plus un bon test de l'adjoint sur le cas réel : utiliser `CHECK_HS=0.05,0.25`.
 
 Contrôles : `cargo fmt --all --check`, `cargo clippy --all-targets --features autodiff -- -D warnings`, `cargo test --release --features autodiff -p gyroxide-cli --test adjoint_gradients` (8 tests verts, défaut inchangé). Non fait : test de non-régression avec nœuds sur le plan médian sur la boule synthétique (le plan y retient les nœuds à 1e-7 sous lui, aucun nœud n'a de force à l'équilibre : le test ne teste rien) ; vérification f64 du cas réel ; le Newton calé n'est pas expliqué plus avant que par le coude.
+**Décision de François du 12 novembre (V4, suite) : `--newton-kick 5` est le défaut** de `adjoint_week` (`--newton-kick 0` rétablit l'ancien comportement). Effet sur les
+équilibres : seuls changent ceux où l'itération de Newton calait (aucun pas de la recherche linéaire ne baissait |F|) ; ceux qui convergent sans caler sont inchangés
+(le pas complet n'est pris qu'après échec de la recherche linéaire, et on garde l'itération de plus petit résidu). Sur le cas de V2 la perte de départ passe de 4,4414 à 4,4582 ;
+sur la boule synthétique des tests, rien ne change (test `gradient_default_newton_kick_at_small_step` : même rapport au 1e-9 avec le défaut et avec 0). Test de non-régression du gradient avec ce
+défaut : `CHECK_HS=0.05,0.25` (h = 0,05 : 1 ± 2e-4 ; h = 0,25 : 1 ± 2e-3), pas h ≥ 0,5 dont le coude de la perte (1,137) n'est pas une erreur de l'adjoint ; `--check` sans `CHECK_HS`
+(h = 0,5 ; 1 ; 2) reste le test de la boule, pas un test du cas réel. Non fait : test avec nœuds sur le plan (impossible sur la boule : le plan retient les nœuds à 1e-7 sous lui) ; le cas
+réel n'est pas rejoué ici (E11 tâche 1, étape à part).
