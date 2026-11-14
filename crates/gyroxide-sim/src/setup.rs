@@ -21,6 +21,7 @@ pub struct HostFields {
 }
 
 /// Device-resident constants.
+#[derive(Clone)]
 pub struct Precomputed {
     pub n_nodes: usize,
     pub n_tets: usize,

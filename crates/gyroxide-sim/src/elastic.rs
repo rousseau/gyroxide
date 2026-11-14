@@ -23,6 +23,13 @@ pub struct ElasticOutput {
     pub stress: Option<(M3, T1)>,
 }
 
+/// `x^(2/3)` for `x >= 0`, computed as `exp(ln x * 2/3)` in the precision of the backend. `powf_scalar(2.0 / 3.0)`
+/// rounds the exponent to f32 even on an f64 device (relative error 2e-8 on the exponent), which spoils the
+/// patch test at 2e-10 on the stress. Same domain as `powf_scalar` (NaN for `x < 0`, 0 for `x = 0`).
+fn pow23(x: T1) -> T1 {
+    (x.log() * (2.0 / 3.0)).exp()
+}
+
 /// Sums per-vertex tetrahedral contributions into nodes through the ELL
 /// incidence table (gather, deterministic, no atomics).
 pub fn gather_nodes(pre: &Precomputed, per_vertex: [T1; 4]) -> T1 {
@@ -249,7 +256,7 @@ pub fn force_tangent(
     let dkja = mean4(&djn) * (mat.bulk * (1.0 - beta)) + dj.clone() * (mat.bulk * beta);
     let b = f.matmul(&f.transpose());
     let db = df.matmul(&f.transpose()).add(&f.matmul(&df.transpose()));
-    let coef = mu / (j.clone() * j.clone().powf_scalar(2.0 / 3.0));
+    let coef = mu / (j.clone() * pow23(j.clone()));
     let dcoef = coef.clone() * dj.clone() / j.clone() * (-5.0 / 3.0);
     let dev_b = b.sub(&eye.mul_s(&(b.trace() / 3.0)));
     let ddev_b = db.sub(&eye.mul_s(&(db.trace() / 3.0)));
@@ -338,7 +345,7 @@ fn forces_impl(
 
     // --- Regular branch: sigma = mu/J^{5/3} dev(B) + K (Ja - 1) I,  P = J sigma F^{-T}.
     // J F^{-T} = adj(F)^T, so P = sigma' adj(F)^T without dividing by J again.
-    let pow_j23 = j.clone().powf_scalar(2.0 / 3.0);
+    let pow_j23 = pow23(j.clone());
     let coef = mu.clone() / (j.clone() * pow_j23.clone());
     let dev_b = b.sub(&eye.mul_s(&(tr_b.clone() / 3.0)));
     let sigma = dev_b.mul_s(&coef).add(&eye.mul_s(&kja));
@@ -541,9 +548,9 @@ pub fn inverted_branch(
     let (l2, l3) = (l[1].clone(), l[2].clone());
     let l2s = l2.clone() * l2.clone();
     let l3s = l3.clone() * l3.clone();
-    let pow23 = ((l2.clone() * l3.clone()) * eps).powf_scalar(2.0 / 3.0);
-    let m3 = mu.clone() / pow23 / 3.0; // mu / (3 pow23)
-    let m9 = m3.clone() / 3.0; // mu / (9 pow23)
+    let p23 = pow23((l2.clone() * l3.clone()) * eps);
+    let m3 = mu.clone() / p23 / 3.0; // mu / (3 p23)
+    let m9 = m3.clone() / 3.0; // mu / (9 p23)
     let dl1 = l1.clone() - eps;
     let pa = m3.clone() * (-(l2s.clone() + l3s.clone()) / eps + 2.0 * eps)
         + dl1.clone() * mat.k_inverted
