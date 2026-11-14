@@ -10,6 +10,7 @@
 //!         [--check-steps n]   (--check: number of finite-difference steps, 1 to 3, default 3)
 //!         [--cg-tol r]   (relative residual of the CG solves, default 1e-4)
 //!         [--newton-rel r]   (relative |F| tolerance of the equilibrium Newton, default 1e-3)
+//!         [--newton-kick N]  (full Newton steps taken when no step lowers |F|, on the kink of the midplane force; default 5, 0 = off; V4)
 //!         [--backend wgpu|ndarray]   (default wgpu, f32 ; ndarray: CPU in f64)
 //!
 //! Multi-resolution (coarse to fine) loss, --multiscale "200:4,50:4,10:4,0:4": n1 L-BFGS
@@ -144,7 +145,7 @@ struct Problem {
     pre_inv: Vec<[[f64; 3]; 3]>,
     /// Orthonormal vectors projected out of the CG solves (deflated unstable modes).
     deflate: Vec<Vec<[f64; 3]>>,
-    /// Full Newton steps taken when none lowers |F| (kink of the midplane force; 0 = off).
+    /// Full Newton steps taken when none lowers |F| (kink of the midplane force; --newton-kick, default 5, 0 = off).
     newton_kick: usize,
     /// Dirichlet nodes (sub-mesh cut): no loss gradient and no adjoint there.
     fixed: Vec<bool>,
@@ -1946,7 +1947,7 @@ fn main() {
         colours: colour_nodes(mesh.n_nodes(), &mesh.tets),
         pre_inv: Vec::new(),
         deflate: Vec::new(),
-        newton_kick: flag("--newton-kick", 0.0) as usize,
+        newton_kick: flag("--newton-kick", 5.0) as usize,
         fixed: dirichlet_mask.clone(),
         geo: None,
         w_vertex: flag("--w-vertex", 1.0),
