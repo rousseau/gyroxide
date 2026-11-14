@@ -37,6 +37,8 @@ def plan(n, seed=0):
 
 def indices(fa, fb, fab):
     """Premier ordre (Saltelli 2010) et total (Jansen) pour chaque facteur ; fab : liste de trois vecteurs."""
+    m = np.mean(np.concatenate([fa, fb]))  # centrer : sans cela, la moyenne de la perte (≫ son écart-type) noie S1
+    fa, fb, fab = fa - m, fb - m, [f - m for f in fab]
     v = np.var(np.concatenate([fa, fb]), ddof=1)
     s1 = [float(np.mean(fb * (f - fa)) / v) for f in fab]
     st = [float(0.5 * np.mean((fa - f) ** 2) / v) for f in fab]

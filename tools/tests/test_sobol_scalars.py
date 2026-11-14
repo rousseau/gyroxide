@@ -27,6 +27,15 @@ class TestSobol(unittest.TestCase):
         for got, want in zip(st, [0.5576, 0.4424, 0.2437]):
             self.assertAlmostEqual(got, want, delta=0.04)
 
+    def test_decalage(self):
+        # une moyenne grande devant l'écart-type ne doit rien changer (S1 centré ; E46 : perte 11,3 ± 0,37)
+        a, b, ab = sb.plan(1024)
+        f = lambda u: 100.0 + ishigami(u)  # noqa: E731
+        s1, st = sb.indices(f(a), f(b), [f(m) for m in ab])
+        s1b, stb = sb.indices(ishigami(a), ishigami(b), [ishigami(m) for m in ab])
+        self.assertTrue(np.allclose(s1, s1b, atol=1e-6))
+        self.assertTrue(np.allclose(st, stb, atol=1e-6))
+
     def test_plan(self):
         a, b, ab = sb.plan(16)
         self.assertEqual(a.shape, (16, 3))

@@ -1168,3 +1168,28 @@ perte) : les sensibilités locales à H ne s'extrapolent pas. Sous `--newton-kic
 β (poids de la régularisation des arêtes) n'agit sur la perte que par l'écart des champs à leur départ : sa sensibilité est exactement zéro à ce départ
 (champs nuls) ; elle se calcule au point ajusté (dL/dβ = ½ Σ arêtes (Δ(θ − θ0))²), qui n'existe pas encore ici (l'inversion de E11 ne descendait pas).
 
+**Sobol sur trois scalaires** (`tools/sobol_scalars.py`, `adjoint_week --eval-points`, `out/E46/sobol/`) : plan de Saltelli N = 128 (640 équilibres, `--newton-kick 5`,
+équilibre recalculé à chaque point depuis celui du départ), facteurs μ_w/μ_g dans 1,167 ± 30 %, K dans 5 ± 30 %, H par δ de c dans ±0,15 (H entre exp(−0,15) et
+exp(0,15)) ; **sur l'hémisphère de SG 29, pas sur `data/slab_cs`** (absent de cette machine, sa région n'est pas reconstructible) ; β exclu (sensibilité nulle au
+départ, voir plus haut). 606 équilibres sur 640 ont convergé (résidu < 1e-3) ; les 34 qui n'ont pas convergé sont à grand δ de c (75 % de convergence pour δ > 0,09,
+100 % sous 0,03) et à grand K (88 % au-dessus de 5,5) : le plan perd 25 lignes sur 128 et l'estimation s'appuie sur 103 lignes (les points écartés sont des
+épaississements forts : le résultat vaut pour la zone où l'équilibre se calcule).
+Perte moyenne 11,27, écart type 0,37 (de 9,18 à 12,18).
+
+| facteur | S1 (Saltelli, IC 95 % bootstrap) | ST (Jansen) | part de variance, régression linéaire (606 points) |
+|---|---|---|---|
+| μ_w/μ_g | 0,45 [0,19 ; 0,75] | 0,57 [0,45 ; 0,75] | 61 % (pente +0,47 par demi-largeur) |
+| K | 0,25 [0,04 ; 0,51] | 0,41 [0,32 ; 0,50] | 35 % (−0,36) |
+| H (δ de c) | −0,04 [−0,14 ; 0,06] | 0,11 [0,03 ; 0,21] | 0 % (−0,03) |
+
+Une régression linéaire à trois facteurs explique 93 % de la variance de la perte (95 % avec les termes quadratiques) : sur ces amplitudes **la perte à l'équilibre
+est presque additive en μ_w/μ_g et K, et ne dépend pas de H** (perte moyenne par tranche de δ : 11,24 ; 11,25 ; 11,29 ; 11,22 ; 11,32, soit ±0,05 sur un écart type
+de 0,37). Cela ne contredit pas la sensibilité locale à H (−3,04 par unité de ln H, la plus forte des trois) : celle-ci n'est linéaire que sur δ < 2e-3 (coude
+de la perte, rapports 0,58 à 3e-3 puis 0,72 à 0,03), et sur ±0,15 l'effet moyen disparaît. Lecture pour P04 : sur la perte seule, μ_w/μ_g et K se partagent la
+variance (et sont donc identifiables à partir d'elle, avec K moins bien) et l'échelle de H est invisible. Réserves : la somme des S1 (0,66) est sous la part linéaire (0,96) : écart non expliqué (les 103 lignes retenues ne sont pas un tirage uniforme, les
+épaississements forts en sont absents, et l'intervalle de chaque S1 est large) ; l'indice total de H (0,11) mêle interactions et bruit de
+convergence (|F| ≈ 1e-5, voir plus haut : 0,007 sur la perte, soit 3e-4 de la variance, trop petit pour l'expliquer seul : non départagé) ; le critère
+sondé est la perte à un seul niveau lissé (k = 10), pas l'erreur par bande des plis.
+**Correctif de l'outil** : le premier calcul de S1 n'était pas centré (la moyenne de la perte, 11,3, est trente fois son écart type : S1 sortait à +1,04 et +1,06,
+intervalles de ±5) ; centré, avec un test de décalage (`test_decalage`, Ishigami + 100).
+
