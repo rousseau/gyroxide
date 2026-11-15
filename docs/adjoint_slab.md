@@ -1193,3 +1193,41 @@ sondé est la perte à un seul niveau lissé (k = 10), pas l'erreur par bande de
 **Correctif de l'outil** : le premier calcul de S1 n'était pas centré (la moyenne de la perte, 11,3, est trente fois son écart type : S1 sortait à +1,04 et +1,06,
 intervalles de ±5) ; centré, avec un test de décalage (`test_decalage`, Ishigami + 100).
 
+
+### Vérité synthétique de SG 29, refaite avec `--newton-kick 5` (E11, 15 novembre)
+
+Même vérité, même cible et même départ que ci-dessus (`out/E11/syn1`), avec l'état de départ convergé (V4 : `--newton-kick 5`, fusionné dans la branche à `5be9133`) ;
+sorties dans `out/E11/syn2/` (PGX). **Contrôle du gradient au départ** (`CHECK_HS=0,05 ; 0,25`, champs libres) : différence finie centrée −0,2335 contre adjoint −0,2333, rapport
+**1,0009 (h = 0,05) et 1,0016 (h = 0,25)**. **L'inversion descend, dans les deux cas.**
+
+| | perte de forme | RMS absolu (k = 0) | itérations |
+|---|---|---|---|
+| départ | 10,38 | 1,176 mm | — |
+| `inv_law` (a + loi c, k) | 3,51 (arrêt à 60 itérations, la perte baissait encore de 0,11 par itération) | 0,653 mm | 60 |
+| `inv_free` (a, c, k libres par sommet) | 0,23 (13 pas refusés par la recherche linéaire avant l'arrêt) | 0,154 mm | 48 |
+
+Aucun élément retourné à l'équilibre ajusté. Erreur de récupération par bande de modes de Laplace-Beltrami (corrélation avec la vérité ; rapport = norme récupérée / norme vraie ;
+erreur relative), 900 modes jusqu'à 6,1 mm (`tools/synthetic_truth.py analyse`) :
+
+| champ | bande | `inv_law` corr / rapport / erreur | `inv_free` corr / rapport / erreur |
+|---|---|---|---|
+| a | lobes > 40 mm | 0,06 / 1,84 / 2,04 | −0,21 / 2,54 / 2,92 |
+| a | primaires 15–40 mm | 0,43 / 0,80 / 0,97 | 0,00 / 1,49 / 1,80 |
+| a | secondaires 6–15 mm | 0,67 / 0,61 / 0,75 | 0,56 / 1,19 / 1,04 |
+| c | lobes > 40 mm | 0,98 / 0,20 / 0,81 | 0,95 / 0,19 / 0,82 |
+| c | primaires | 0,95 / 0,20 / 0,81 | 0,91 / 0,25 / 0,78 |
+| c | secondaires | 0,96 / 0,25 / 0,77 | 0,90 / 0,41 / 0,65 |
+| k | lobes > 40 mm | 0,90 / 0,61 / 0,53 | 0,96 / 0,73 / 0,36 |
+| k | primaires | 0,94 / 0,48 / 0,57 | 0,91 / 0,60 / 0,52 |
+| k | secondaires | 0,93 / 0,45 / 0,60 | 0,82 / 0,83 / 0,57 |
+| c + k | lobes / primaires / secondaires | 0,80 / 0,94 / 0,98 ; rapport 0,30 | 0,92 / 0,95 / 0,92 ; rapport 0,40–0,51 |
+
+Lecture. (1) **Le motif de c et de k est retrouvé à toutes les échelles (corrélation 0,8 à 0,98) mais pas leur amplitude** : c n'est récupéré qu'à 19–41 % de la norme vraie
+(erreur relative 0,65–0,82), k à 45–83 %. La surface s'ajuste pourtant à 0,15 mm (`inv_free`) : une partie de l'écart se recopie dans un autre champ. (2) **a n'est pas
+identifié** : corrélation de −0,21 à 0,67, et inférieure à 0,1 aux grandes échelles (lobes, plis primaires) ; l'erreur relative dépasse 0,75 partout, avec un rapport
+supérieur à 1 pour les champs libres (a absorbe ce que c et k ne rendent pas : compensation entre champs, déjà vue sur les régions, conditionnement 22–29). (3) Les
+champs libres ajustent mieux la surface que la loi (perte 0,23 contre 3,5, mais avec 3 × 32 492 degrés de liberté contre 46 coefficients, et une loi arrêtée par le nombre d'itérations) sans mieux
+récupérer c ni k aux grandes échelles : l'ajustement de la surface n'implique pas la récupération des champs. (4) Limites : un seul tirage de la perturbation (30 % de l'écart
+type) ; `inv_law` non convergée ; départ à la croissance mesurée (pas à zéro) ; β = 1e-4 et bande ±50 inchangés (la réduction d'amplitude de c peut venir en partie de β : non testé). **Non fait : tâche 3
+(Laplace)** : elle exige des produits hessien-vecteur de la perte par rapport à θ (aucune sortie de ce genre dans `adjoint_week` : le `--lanczos` existant porte sur la raideur K, pas sur la hessienne de l'inversion) ;
+voir la question de l'étape.
