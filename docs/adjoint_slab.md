@@ -1159,3 +1159,22 @@ erreur 0,50 à 0,51, corrélation 0,86 à 0,87 (amplitude 0,037 à 0,050, motif 
 multi-échelles ; sur l'hémisphère), 5 (perturbations aléatoires, déflation), 6 (perte par bandes spectrales), 7 (bruit de reproductibilité de la perte, équilibres plus précis : à mesurer sur machine au
 repos, le non-déterminisme du contact dépend de la charge, voir P03), et la tâche 4 du prompt (balayage de H, μ_w/μ_g sur l'hémisphère) à SG 33–36. La mesure par bande de l'erreur doit y être appliquée
 avant et après chaque test ; elle ne rend pas compte de la profondeur des sillons, seulement de la courbure.
+
+### Hypothèse 5 (instabilités secondaires), perturbations lisses : un seul équilibre (E12, 15 novembre)
+
+`tools/h5_sweep.sh` (perturbations par `tools/h5_perturb.py`, bruit gaussien lissé par S¹⁰, échelle des plis secondaires) autour de l'état ajusté du SG 36 (chaîne estimée à μ_g/μ_w = 0,857,
+`out/paper_r0857/fit36_lbm`) ; un équilibre par exécution, sans itération de l'ajustement (`--multiscale 10:0,0:0`, `--newton-cg 600`, `--force-tol 5e-5`) ; mesure par `tools/band_error.py`
+(`out/E12/h5_bandes.txt`, `bandes_h5.json`). 18 exécutions plus la référence : croissance a × (1 + ε s) avec ε = 0,02 ; 0,05 ; 0,10 et géométrie des nœuds + σ s avec σ = 0,05 ; 0,1 ; 0,2 mm, 3 graines
+chacune. Les 19 exécutions ont convergé (première version du balayage corrigée le 14 novembre : `a` perturbé par `--theta-init`, σ ≤ 0,2 mm car σ = 0,3 mm retourne 80 éléments et le Newton ne descend plus).
+
+| bande | référence : puissance / erreur / corrélation | 18 perturbations : puissance | erreur | corrélation |
+|---|---|---|---|---|
+| 4–8 mm | 0,50 / 0,57 / 0,83 | 0,50–0,51 | 0,56–0,57 | 0,83 |
+| 8–16 mm | 0,60 / 0,50 / 0,87 | 0,60–0,61 | 0,50 | 0,86–0,87 |
+
+**Les perturbations retombent toutes sur le même équilibre** : l'erreur de bande et la puissance sont identiques à deux chiffres, quelle que soit l'amplitude (jusqu'à 10 % de variation de a, 0,2 mm sur la
+géométrie, soit environ 6e-3 unité de maillage) et la graine. Aucun équilibre distinct, a fortiori aucun meilleur que la référence, n'a été trouvé : pas de plis secondaires cachés dans une branche voisine
+accessible par de petites perturbations lisses. Limites : (1) l'amplitude géométrique est plafonnée à 0,2 mm par le retournement des éléments, et un bruit à l'échelle des plis secondaires (profondeur
+~1 mm) plus grand que cela n'est pas atteignable sans changer d'instrument ; (2) les perturbations sont lisses et petites : une branche d'équilibres éloignée (instabilité de flambage fort) n'est pas exclue ;
+(3) la perte de départ varie de 2,73 à 3,26 selon l'exécution alors que les métriques de bande sont identiques (non expliqué ; la perte à l'équilibre n'est pas comparée ici) ; (4) un seul état ajusté (SG 36).
+**Déflation (Newton déflaté, autres équilibres)** : non faite (code à écrire dans `adjoint_week`).
