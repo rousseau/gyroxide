@@ -12,6 +12,7 @@
 
 pub mod algebra;
 pub mod contact;
+pub mod deflation;
 pub mod elastic;
 pub mod setup;
 pub mod trace;

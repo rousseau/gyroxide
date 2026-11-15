@@ -70,6 +70,7 @@ use burn::tensor::{Device, DeviceKind, Tensor, TensorData};
 use gyroxide_mesh::{netgen, vtk};
 use gyroxide_model::{NodalTable, Params, Schedule};
 use gyroxide_sim::algebra::{to_f64, V3};
+use gyroxide_sim::deflation::Deflation;
 use gyroxide_sim::elastic::{forces_regular, Thickness};
 use gyroxide_sim::Simulation;
 use gyroxide_validate::npy;
@@ -133,6 +134,11 @@ struct Problem {
     pre_inv: Vec<[[f64; 3]; 3]>,
     /// Orthonormal vectors projected out of the CG solves (deflated unstable modes).
     deflate: Vec<Vec<[f64; 3]>>,
+    /// Equilibria already found (--defl-from a.npy,b.npy: x_0.npy of earlier runs), deflated out of the
+    /// equilibrium Newton (--defl-p, default 2; --defl-sigma, default 1; see gyroxide_sim::deflation).
+    defl: Deflation,
+    /// Cap (mm) on the largest node move of a deflated Newton step (--defl-step, default 0.5; 0 = none).
+    defl_step: f64,
     /// Dirichlet nodes (sub-mesh cut): no loss gradient and no adjoint there.
     fixed: Vec<bool>,
     /// Geometric loss terms (face normals, Laplacian coordinates, face areas), if any.
@@ -683,6 +689,8 @@ impl Problem {
         let mut f = self.sim.total_force(&x);
         let r0 = norm(&f);
         let mut rn = r0;
+        // Deflated residual M(x) |F(x)| (M = 1 without --defl-from) for the line search.
+        let mut gn = self.defl.factor(&x) * rn;
         self.last_newton = 0;
         // Levenberg-Marquardt fallback: when no step of the line search lowers |F| (negative
         // curvature cut the CG short, e.g. after a change of material), the shift is raised tenfold
@@ -703,19 +711,33 @@ impl Problem {
                     self.last_newton
                 );
             }
+            let mut tau = self.defl.tau(&x, &delta, 10.0);
+            if !self.defl.is_empty() && self.defl_step > 0.0 {
+                // The deflated step can be much longer than the plain one: cap the largest node move (mm) so that the
+                // iterate does not leave the elastic regime (inverted elements) in one step.
+                let big = delta
+                    .iter()
+                    .map(|v| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt())
+                    .fold(0.0, f64::max);
+                let move_mm = tau.abs() * big * self.mm;
+                if move_mm > self.defl_step {
+                    tau *= self.defl_step / move_mm;
+                }
+            }
             let mut accepted = false;
             for alpha in [1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125] {
                 let xt: Vec<[f64; 3]> = x
                     .iter()
                     .zip(&delta)
-                    .map(|(a, b)| [0, 1, 2].map(|d| a[d] + alpha * b[d]))
+                    .map(|(a, b)| [0, 1, 2].map(|d| a[d] + alpha * tau * b[d]))
                     .collect();
                 self.sim.set_state(&xt, &self.v0, &s);
                 self.sim.refresh_contact();
                 let ft = self.sim.total_force(&xt);
                 let rt = norm(&ft);
-                if rt < rn {
-                    (x, f, rn) = (xt, ft, rt);
+                let gt = self.defl.factor(&xt) * rt;
+                if gt < gn {
+                    (x, f, rn, gn) = (xt, ft, rt, gt);
                     accepted = true;
                     break;
                 }
@@ -731,7 +753,14 @@ impl Problem {
                     sigma = (sigma / 3.0).max(self.sigma);
                 }
             }
-            if !accepted || rn < (1e-3 * r0).max(self.force_tol) {
+            // With a deflated equilibrium the Newton runs to --force-tol: stopping at 1e-3 |F_0| could leave the
+            // iterate on the slope of the deflation bump.
+            let target = if self.defl.is_empty() {
+                (1e-3 * r0).max(self.force_tol)
+            } else {
+                self.force_tol
+            };
+            if !accepted || rn < target {
                 break;
             }
         }
@@ -1028,7 +1057,7 @@ impl Problem {
         let sy = self.smoothed(&self.target, k);
         let stats = |mut d: Vec<f64>| {
             let rms = (d.iter().map(|v| v * v).sum::<f64>() / d.len() as f64).sqrt();
-            d.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            d.sort_by(f64::total_cmp);
             let q = |f: f64| d[((d.len() - 1) as f64 * f).round() as usize];
             [rms, q(0.5), q(0.95), d[d.len() - 1]]
         };
@@ -1898,6 +1927,20 @@ fn main() {
         colours: colour_nodes(mesh.n_nodes(), &mesh.tets),
         pre_inv: Vec::new(),
         deflate: Vec::new(),
+        defl_step: flag("--defl-step", 0.5),
+        defl: Deflation {
+            known: opt("--defl-from")
+                .map(|l| {
+                    l.to_string_lossy()
+                        .split(',')
+                        .map(|f| read(Path::new(f)).chunks(3).map(|c| [c[0], c[1], c[2]]).collect())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            p: flag("--defl-p", 2.0),
+            sigma: flag("--defl-sigma", 1.0),
+            scale: flag("--mm-per-unit", 32.99),
+        },
         fixed: dirichlet_mask.clone(),
         geo: None,
         w_vertex: flag("--w-vertex", 1.0),
@@ -2606,7 +2649,7 @@ fn main() {
                 }
             }
             let mut order: Vec<usize> = (0..m).collect();
-            order.sort_by(|&a, &b| t[a][a].partial_cmp(&t[b][b]).unwrap());
+            order.sort_by(|&a, &b| t[a][a].total_cmp(&t[b][b]));
             let ev: Vec<f64> = order.iter().map(|&i| t[i][i]).collect();
             println!(
                 "lanczos {m}: smallest Ritz values {:?}",
