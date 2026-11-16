@@ -1230,3 +1230,44 @@ La bande 4–8 mm (puissance modèle / atlas, erreur relative, corrélation) :
 
 **Conclusion pour l'hypothèse 5 (instabilités secondaires) : aucun équilibre éloigné meilleur** (perturbations lisses : un seul équilibre ; déflation : deux autres, moins bons). La limite des plis secondaires du modèle ne vient pas
 d'un autre équilibre de la même croissance ajustée ; les hypothèses 1, 3 et 6 restent.
+
+### Hypothèse 1 (cible) : l'atlas sous-représente les plis de 4 à 16 mm (E48, 16 novembre 2026)
+
+`tools/band_sujets.py` : puissance de la courbure moyenne par bande dyadique (1–2 à 16–32 mm, définition de `tools/band_error.py`, pondération par la masse) et
+profondeur de plis (p95 − p5 de la profondeur le long des normales de la surface lissée, définition de `tools/full_eval.py`) de **43 hémisphères gauches individuels**
+(surfaces pial de `derivatives/surfoxide/surfoxide-dataset/multibounti43` sur Garage, un hémisphère par séance, 28 sujets de 35,4 à 37,5 SG et 15 de 30 à 33,7 SG, un échantillon
+régulier de la cohorte) contre l'atlas dHCP (pial, semaines 30 à 36) **au même âge** (interpolation linéaire entre semaines ; au-delà de 36 SG, l'atlas du SG 36 : 17 des 28 sujets
+sont entre 36 et 37,4 SG et le rapport y est un peu surestimé). Sorties nominatives sous `out/E48/` (hors git) ; aucun code sujet dans ce document.
+Sans correspondance sommet à sommet (maillages différents) : seules les puissances se comparent, pas la corrélation.
+
+**Résolution et lissage.** Les surfaces individuelles ont une arête de 0,61 mm (118 000 sommets), l'atlas 0,68 à 0,84 mm selon la semaine (32 492 sommets). Deux étapes de la mesure dépendent du
+maillage (les 2 passes de lissage S² de la courbure, les 30 passes de la profondeur) : le nombre de passes est multiplié par (arête de l'atlas à l'âge du sujet / arête du sujet)². **Contrôle de méthode** :
+l'atlas du SG 36 subdivisé (1 → 4, arête 0,41 mm, même surface) donne, avec ces passes rapportées (8 et 127), des puissances à 1 % de celles de l'atlas natif (4–8 mm : 0,0421 contre 0,0425 mm⁻¹ ; 8–16 :
+0,0193 contre 0,0195) et une profondeur à 3 % (2,33 contre 2,26 mm), alors que sans correction la profondeur tombe à 0,77 mm : la mesure « rapportée » tient la résolution, la « native » non (profondeur de ×0,77 à ×0,81).
+Zone de mesure : écart pial-substance blanche ≥ 0,6 mm (règle de `atlas_to_mesh.py`), pour les sujets comme pour l'atlas.
+
+**Rapport sujet / atlas** (puissance, mesure rapportée ; moyenne ± écart-type entre sujets, [min, max]) :
+
+| bande | 28 sujets de 35,4 à 37,5 SG | 11 sujets ≤ 36,0 SG | 15 sujets de 30 à 33,7 SG |
+|---|---|---|---|
+| 1–2 mm | 2,33 ± 0,19 [2,06 ; 2,70] | | 2,13 ± 0,24 [1,74 ; 2,60] |
+| 2–4 mm | 1,92 ± 0,12 [1,67 ; 2,11] | | 1,62 ± 0,14 [1,39 ; 1,80] |
+| **4–8 mm** | **2,13 ± 0,21 [1,74 ; 2,52]** | **2,05 ± 0,14 [1,78 ; 2,23]** | **1,68 ± 0,22 [1,36 ; 2,20]** |
+| **8–16 mm** | **2,10 ± 0,42 [1,50 ; 3,09]** | 1,87 ± 0,28 [1,50 ; 2,38] | 1,45 ± 0,51 [1,05 ; 3,09] |
+| 16–32 mm | 1,45 ± 0,55 [0,87 ; 3,03] | | 1,17 ± 0,29 [0,87 ; 2,06] |
+| profondeur de plis | 1,08 ± 0,02 [1,03 ; 1,12] (2,44 contre 2,25 mm) | | 1,04 ± 0,03 (1,78 contre 1,71 mm) |
+
+Tous les sujets dépassent l'atlas en 4–8 mm (minimum 1,74 à 35–37 SG, 1,36 à 30–33). Le rapport monte avec l'âge (4–8 mm : 1,57 à 30–32 SG, 1,84 à 32–34, 2,05 à 35,4–36, 2,18 au-delà, corrélation 0,78 sur les 43 hémisphères,
+en partie l'effet de l'atlas figé à 36 SG au-delà). La mesure native (sans correction de résolution) donne 1,96 ± 0,18 en 4–8 mm et 1,89 en 8–16 mm : même conclusion.
+
+**Lecture.**
+- **Oui : l'atlas sous-représente la bande 4–8 mm** (et 8–16 mm) d'un facteur 2,1 en puissance (1,45 en amplitude), avec une dispersion entre sujets de ±10 % (écart-type 0,21 sur 2,13) bien plus petite
+  que l'écart : un atlas moyen lisse les plis secondaires individuels, comme attendu. La profondeur de plis, dominée par les grandes échelles, ne diffère que de 8 %.
+- **Conséquence pour le modèle.** La puissance 4–8 mm du modèle est à 0,50 de l'atlas à SG 36 (E12) ; contre un sujet individuel moyen elle serait à 0,50 / 2,13 = **0,23** (amplitude 0,48), si les deux mesures
+  se comparent (le modèle est mesuré sur le maillage de l'atlas, avec la même définition que l'atlas natif ; non vérifié sur un état du modèle remaillé comme un sujet). Le déficit de puissance n'est donc **pas dû** à la cible
+  (le modèle est plus lisse que l'atlas lui-même) ; en revanche la cible est **limitante pour le jalon A** : même un modèle qui retrouverait toute la puissance de l'atlas en 4–8 mm resterait à ≈ 0,47 de la puissance d'un sujet,
+  et l'erreur de motif (74 à 78 % de l'erreur², E12) vient en plus d'un atlas qui ne contient pas les plis secondaires de chaque sujet.
+- **Limites.** (1) La puissance aux petites échelles des surfaces individuelles contient aussi la rugosité de la segmentation (voxels de 0,5 mm, pial extraite d'une SDF) : le rapport de 2,3 en 1–2 mm en est probablement
+  en partie un artefact. Le rapport de 2,1 en 4–8 mm n'est pas plus petit à ces échelles qu'à celles-ci (2,3 en 1–2 mm ; 1,9 en 2–4 mm), ce qui ne pointe pas du bruit seul (un bruit de segmentation pèserait surtout en 1–2 mm), mais le lissage
+  de surfoxide (« lissage » de son ROADMAP) n'a pas été isolé ici : **non vérifié**. (2) Un seul hémisphère par séance, un échantillon régulier de la cohorte (43 des 189 hémisphères gauches), pas de tirage au hasard ; pas de répétition
+  d'une même séance. (3) Au-delà de 36 SG l'atlas est celui du SG 36. (4) Pas de correspondance sommet à sommet : rien sur le placement des plis (corrélation) ; il faudrait recaler un sujet sur l'atlas (sphère de l'atlas).
