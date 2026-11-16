@@ -287,7 +287,7 @@ mod tests {
         );
         assert!(tau_pos > 0.0 && tau_pos <= 1.5 + 1e-12, "{tau_pos}");
         let tau_neg = d.tau(&state(e), &[[-e * 2.0, 0.0, 0.0], [0.0; 3], [0.0; 3], [0.0; 3]], 0.5);
-        assert!(tau_neg < 0.0 && tau_neg >= -0.5 - 1e-12, "{tau_neg}");
+        assert!((-0.5 - 1e-12..0.0).contains(&tau_neg), "{tau_neg}");
     }
 
     #[test]
@@ -311,7 +311,7 @@ mod tests {
                 d.tau(&state(e), &[[-e * c, 0.0, 0.0], [0.0; 3], [0.0; 3], [0.0; 3]], 7.0)
             })
             .collect();
-        assert!(taus.iter().any(|&t| t == 7.0), "pas de saturation à +max");
+        assert!(taus.contains(&7.0), "pas de saturation à +max");
         assert!(taus.iter().any(|&t| t == -7.0), "pas de saturation à -max");
         assert!(taus.iter().all(|&t| t.abs() <= 7.0));
     }

@@ -1177,4 +1177,56 @@ géométrie, soit environ 6e-3 unité de maillage) et la graine. Aucun équilibr
 accessible par de petites perturbations lisses. Limites : (1) l'amplitude géométrique est plafonnée à 0,2 mm par le retournement des éléments, et un bruit à l'échelle des plis secondaires (profondeur
 ~1 mm) plus grand que cela n'est pas atteignable sans changer d'instrument ; (2) les perturbations sont lisses et petites : une branche d'équilibres éloignée (instabilité de flambage fort) n'est pas exclue ;
 (3) la perte de départ varie de 2,73 à 3,26 selon l'exécution alors que les métriques de bande sont identiques (non expliqué ; la perte à l'équilibre n'est pas comparée ici) ; (4) un seul état ajusté (SG 36).
-**Déflation (Newton déflaté, autres équilibres)** : non faite (code à écrire dans `adjoint_week`).
+**Déflation (Newton déflaté, autres équilibres)** : voir la sous-section suivante (E47, 16 novembre).
+
+#### Déflation (Newton déflaté) : aucun équilibre éloigné meilleur (E47, 16 novembre 2026)
+
+**Instrument.** `gyroxide_sim::deflation` (option de `adjoint_week` : `--defl-from a.npy,b.npy`, `--defl-p` (2), `--defl-sigma` (1), `--defl-step` (0,5 mm)) :
+opérateur de déflation de Farrell M(x) = Σᵢ d(x, xᵢ)⁻ᵖ + σ, pas déflaté par Sherman-Morrison (τ = 1/(1 − ∇M·δ/M), borné à ±10). La distance se
+prend **au mouvement rigide près** : le modèle n'a pas de condition aux limites, translation et rotation sont des modes nuls, et sans cela la déflation s'échappe
+en translatant. Testé (11 tests, mutations à la main, survivants équivalents) sur un cas jouet à trois racines : une racine connue n'est plus retrouvée, toutes déflatées :
+échec propre. Les deux tris de `adjoint_week` ne paniquent plus sur NaN (`total_cmp`).
+
+**Campagne** (`tools/defl_campaign.py`, mêmes champs θ et même configuration que `base`, `out/E47/campagne.tsv`, journaux `out/E47/<tag>.log`). 9 tentatives
+déflatées plus un témoin sans déflation (t0_w35), chacune déflatant `base` et tous les équilibres distincts (≥ 0,1 mm rms après alignement rigide) trouvés avant.
+Départs : positions des états ajustés des SG 33 à 36 ou de la chaîne `ckpt_w36`, relaxation préalable de 3000 pas ou aucune, p ∈ {2, 3}, σ ∈ {1 ; 0,1}.
+
+| tentative | départ | relax. | p, σ | déflatés | perte | \|F\| final | éléments retournés | résultat | distance au plus proche (mm) |
+|---|---|---|---|---|---|---|---|---|---|
+| t0_w35 (témoin) | SG 35 | 3000 | sans | 0 | 2,9145 | 4,7e-5 | 0 | équilibre, hors `base` de 0,32 mm | 0,32 (`base`) |
+| d1 | SG 36 | 3000 | 2, 1 | 2 | 3,2613 | 1,4e-3 | 0 | non convergé | 0,03 |
+| d2 | SG 35 | 3000 | 2, 1 | 2 | 2,9176 | 3,5e-3 | 0 | non convergé | 0,10 |
+| **d3** | SG 34 | 3000 | 2, 1 | 2 | 2,7258 | 3,6e-5 | 0 | **équilibre distinct** | 0,46 (t0_w35) |
+| **d4** | SG 33 | 3000 | 2, 1 | 3 | 2,6015 | 3,1e-5 | 0 | **équilibre distinct** | 0,58 (d3) |
+| d5 | `ckpt_w36` | 3000 | 2, 1 | 4 | 2,0133 | 1,1e-3 | 0 | non convergé | 0,83 |
+| d6 | SG 36 | 3000 | 3, 0,1 | 4 | 3,3061 | 2,5e-2 | 4 | non convergé, 4 éléments retournés | 0,13 |
+| d7 | SG 35 | 3000 | 2, 0,1 | 4 | 2,9177 | 3,6e-3 | 0 | non convergé | 0,10 |
+| d8 | SG 36 | 0 | 2, 1 | 4 | 10,07 | 0,17 | 0 | diverge | 0,93 |
+| d9 | SG 35 | 0 | 2, 1 | 4 | 14,99 | 0,30 | 0 | diverge | 1,44 |
+
+**Mesure** (`tools/band_error.py` contre l'atlas du SG 36, `out/E47/bandes_defl.json` ; profondeur par `tools/full_eval.py 36`, p95 − p5 le long des normales, atlas 2,36 mm).
+La bande 4–8 mm (puissance modèle / atlas, erreur relative, corrélation) :
+
+| équilibre | 4–8 mm | 8–16 mm | écart rigide au cortex (mm) | profondeur (mm) |
+|---|---|---|---|---|
+| `base` (référence) | 0,50 / 0,57 / 0,83 | 0,60 / 0,50 / 0,87 | 1,95 | 1,57 |
+| t0_w35 (sans déflation) | 0,50 / 0,57 / 0,82 | 0,60 / 0,51 / 0,86 | 1,97 | 1,55 |
+| d3 | 0,50 / 0,59 / 0,81 | 0,60 / 0,53 / 0,85 | 2,13 | 1,51 |
+| d4 | 0,49 / 0,62 / 0,79 | 0,60 / 0,55 / 0,83 | 2,46 | 1,46 |
+
+**Lecture.**
+- **Aucun équilibre éloigné meilleur n'a été trouvé.** Les deux équilibres distincts (d3, d4) sont à 0,46 à 0,58 mm rms de leur plus proche voisin (le bruit de deux convergences du même état
+  est de 0,01 à 0,05 mm, mais t0_w35, qui converge depuis le SG 35, est déjà à 0,32 mm de `base` : la plaque est très peu contrainte, le « distinct » à ≥ 0,4 mm est modeste) ; ils sont **moins bons**
+  que la référence sur la bande 4–8 mm (erreur 0,59 et 0,62 contre 0,57, corrélation 0,81 et 0,79 contre 0,83), sur 8–16 mm, sur l'écart rigide (+9 % et +26 %) et sur la profondeur (−4 % et −7 %), à puissance égale (0,50
+  et 0,49). La différence est de l'ordre du seuil de gain d'E33 (profondeur 1,3 %, corrélation 1,5 %) pour d3 et au-delà pour d4 — **mais dans le mauvais sens**.
+  Les équilibres ne se placent pas mieux, ils se placent un peu moins bien : plus on s'éloigne de `base`, plus l'erreur augmente. L'hypothèse 5 n'explique donc rien de l'erreur 4–8 mm (0 %).
+- **Perte (non comparable à l'erreur de bande).** d3 et d4 ont une perte *plus basse* (2,73 et 2,60 contre 3,26 pour `base`) alors que leurs bandes sont moins bonnes. Cette perte est la perte de départ de
+  l'exécution, mesurée sur la configuration multi-niveaux, qui varie de 2,7 à 3,3 d'une exécution à l'autre pour des bandes identiques (note (3) ci-dessus, déjà vue en E12) : elle ne classe pas les équilibres.
+- **La déflation est utilisable, mais étroite.** Sur 9 tentatives déflatées, 2 convergent (|F| < 5e-5), 1 donne un état retourné (4 éléments), 4 s'arrêtent avec |F| de 1e-3 à 4e-3 (hors critère, mais jamais retournés : une plaque
+  peu contrainte, le Newton déflaté se traîne dans un paysage plat), 2 divergent sans relaxation préalable (|F| 0,17 et 0,30 : le Newton a besoin d'un départ presque en équilibre ; sans relaxation, la dynamique n'a pas rattrapé la croissance du SG 36).
+  Réussite : seuls les départs sur les états ajustés *antérieurs* (SG 34 et 33) convergent vers un autre équilibre ; les départs sur le SG 35 ou 36 ne convergent pas (d1, d2, d6, d7 : |F| final de 1e-3 à 2,5e-2, à 0,03–0,13 mm d'un équilibre connu).
+- **Limites.** (1) 2 équilibres distincts sur 10 tentatives (non exhaustif : une déflation de plus de 4 équilibres n'a pas convergé) ; (2) un seul état ajusté (SG 36 estimé à μ_g/μ_w = 0,857) ;
+  (3) distance mesurée au mouvement rigide près sur tous les nœuds, pas sur la seule surface ; (4) le critère « équilibre distinct » est un seuil (0,1 mm) choisi, sans loi ; (5) profondeur : p95 − p5, comme `full_eval.py`.
+
+**Conclusion pour l'hypothèse 5 (instabilités secondaires) : aucun équilibre éloigné meilleur** (perturbations lisses : un seul équilibre ; déflation : deux autres, moins bons). La limite des plis secondaires du modèle ne vient pas
+d'un autre équilibre de la même croissance ajustée ; les hypothèses 1, 3 et 6 restent.
