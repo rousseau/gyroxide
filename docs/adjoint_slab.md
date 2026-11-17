@@ -1271,3 +1271,29 @@ en partie l'effet de l'atlas figé à 36 SG au-delà). La mesure native (sans co
   en partie un artefact. Le rapport de 2,1 en 4–8 mm n'est pas plus petit à ces échelles qu'à celles-ci (2,3 en 1–2 mm ; 1,9 en 2–4 mm), ce qui ne pointe pas du bruit seul (un bruit de segmentation pèserait surtout en 1–2 mm), mais le lissage
   de surfoxide (« lissage » de son ROADMAP) n'a pas été isolé ici : **non vérifié**. (2) Un seul hémisphère par séance, un échantillon régulier de la cohorte (43 des 189 hémisphères gauches), pas de tirage au hasard ; pas de répétition
   d'une même séance. (3) Au-delà de 36 SG l'atlas est celui du SG 36. (4) Pas de correspondance sommet à sommet : rien sur le placement des plis (corrélation) ; il faudrait recaler un sujet sur l'atlas (sphère de l'atlas).
+
+### Conclusion de P05 : limite de la cible pour le jalon A (décision de François, 17 novembre 2026)
+
+**Pour le jalon A, l'atlas dHCP reste la cible, et le diagnostic des plis secondaires se conclut par « limite de la cible »** (critère de P05).
+Même un ajustement parfait de l'atlas laisse ≈ 0,47 de la puissance 4–8 mm d'un sujet individuel (hypothèse 1 : sujet / atlas 2,13 ± 0,21 à 36 SG,
+soit 1 / 2,13 = 0,47 ; le modèle, à 0,50 de l'atlas, serait à ≈ 0,23 d'un sujet). L'ajustement sur des sujets individuels n'est pas fait maintenant : il attend P08
+(cible individuelle : recalage sur la sphère de l'atlas ou maillage individuel).
+
+**Réserve gardée (limite 1 de l'hypothèse 1).** La puissance des surfaces individuelles aux petites échelles contient en partie la rugosité de la segmentation
+(pial extraite d'une SDF, voxels de 0,5 mm) ; le lissage de surfoxide n'a pas été isolé, donc le facteur 2,1 en 4–8 mm est un ordre de grandeur, pas une mesure exacte
+de la sous-représentation. Non vérifié.
+
+**Hypothèse → effet** (bande 4–8 mm, chaînes estimées ; « erreur » = erreur relative de la courbure par bande, définition de `tools/band_error.py`) :
+
+| hypothèse | résultat | effet sur l'erreur de bande |
+|---|---|---|
+| 1, cible (E48) | l'atlas sous-représente 4–8 et 8–16 mm d'un facteur 2,1 en puissance (43 hémisphères individuels) | **limite de la cible** : plafond de 0,47 de la puissance d'un sujet |
+| 2, résolution (E38) | puissance 4–8 mm à 0,4 % entre maillages m et f (SG 28 et 30) | nul (non testé au-delà de SG 30, ni pour la surface) |
+| 4, matériau (μ_g/μ_w 2 contre 0,857) | erreur 0,61 → 0,56 à SG 36, 0,44 → 0,50 à SG 30 | de signe variable, loin de la moitié |
+| 5, instabilités secondaires (E12, E47) | 19 perturbations lisses : un seul équilibre ; déflation : 2 équilibres distincts, aucun meilleur | aucun équilibre éloigné meilleur |
+| 3, relâcher bandes et régularisation | **non faite** | non requise par le critère |
+| 6, perte par bandes spectrales | **non faite** | non requise par le critère |
+| 7, bruit de la perte, équilibres plus précis | **non faite** (à mesurer machine au repos, voir P03) | non requise par le critère |
+
+Les hypothèses 3 et 6 restent non faites : le critère de P05 (cause de la moitié de l'erreur de B5, ou « limite de la cible ») est tenu par la seconde branche, la
+cible. Une hypothèse qui ne vise que l'amplitude plafonne de toute façon à environ un quart de l'erreur de bande (E12).
