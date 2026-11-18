@@ -2210,9 +2210,17 @@ fn main() {
     // Cumulative loss: weights w_s / L_s(start) for every level, first level active.
     let mut norm_levels: Vec<(usize, f64, Vec<[f64; 3]>)> = Vec::new();
     if cumulative {
-        for (&(k, _), &w) in levels.iter().zip(&weights) {
+        // --level-norm l1,l2,...: the start losses of the levels given explicitly (a run from a fitted point, --theta-init,
+        // must keep the normalisation of the inversion it continues: the log line "level k=..: start loss").
+        let given: Option<Vec<f64>> = opt("--level-norm").map(|v| {
+            v.to_string_lossy()
+                .split(',')
+                .map(|t| t.parse().expect("--level-norm: numbers"))
+                .collect()
+        });
+        for (li, (&(k, _), &w)) in levels.iter().zip(&weights).enumerate() {
             let t_hat = p.level_target(k);
-            let l0 = p.level_loss(&x, k, &t_hat).0;
+            let l0 = given.as_ref().map_or_else(|| p.level_loss(&x, k, &t_hat).0, |g| g[li]);
             println!("level k={k}: start loss {l0:.4e}, weight {w}");
             norm_levels.push((k, w / l0, t_hat));
         }
@@ -3025,6 +3033,235 @@ fn main() {
             surf(&dx),
             surf(&diff)
         );
+        return;
+    }
+
+    if let Some(mode) = opt("--hessvec") {
+        // P04 task 3 (E56): Hessian-vector products of the data misfit by central differences of adjoint
+        // gradients at theta (--theta-init: the fitted point), H_m v = [g(theta + s v) - g(theta - s v)] / 2s
+        // minus the exact Hessian of the regulariser (beta times the graph Laplacian, per block), s = eps / max|v|
+        // (--hv-eps, default 1e-3: the largest parameter change). Two equilibria and two adjoints per product.
+        //   --hessvec test      symmetry u.H_m w = w.H_m u on --hv-pairs (default 3) random smooth pairs, and independence of eps
+        //                       (--hv-eps2, default 4e-3) on one product; writes hv_test.json
+        //   --hessvec lanczos   Lanczos with full reorthogonalisation (--hv-iters steps, default 80);
+        //                       writes lanczos_alpha.npy, lanczos_beta.npy, lanczos_V.npy (steps x n), hv_base.json
+        assert!(p.law.is_empty() && !p.freeze_fields, "--hessvec: free fields only");
+        let mode = mode.to_string_lossy().into_owned();
+        if cumulative {
+            p.active = norm_levels.clone();
+        }
+        p.set_level(levels.last().unwrap().0);
+        let n = theta.len();
+        let na = p.na;
+        let (ls_b, lr_b) = {
+            let xb = p.equilibrium(&theta, &x, p.relax);
+            let (a, b, _) = p.loss(&xb, &theta);
+            (a, b)
+        };
+        println!(
+            "hessvec: n {n}, loss {ls_b:.8e}, reg {lr_b:.4e}, |F| {:?}",
+            p.last_residual
+        );
+        std::fs::write(
+            out.join("hv_base.json"),
+            format!(
+                "{{\"loss\": {ls_b:.10e}, \"reg\": {lr_b:.10e}, \"n_cortex\": {}, \"n\": {n}, \"na\": {na}, \"beta\": {}}}\n",
+                p.cortex.len(),
+                p.beta
+            ),
+        )
+        .unwrap();
+        let eps1 = flag("--hv-eps", 1e-3);
+        let eps2 = flag("--hv-eps2", 4e-3);
+        let nrm2 = |v: &[f64]| v.iter().map(|a| a * a).sum::<f64>().sqrt();
+        let dotv = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(u, v)| u * v).sum::<f64>();
+        // Hessian of the regulariser applied to v (graph Laplacian of every block, times beta).
+        let reg_hv = |p: &Problem, v: &[f64]| -> Vec<f64> {
+            let mut r = vec![0.0; v.len()];
+            for b in 0..v.len() / na {
+                let o = b * na;
+                for [i, j] in &p.edges {
+                    let d = p.beta * (v[o + *i] - v[o + *j]);
+                    r[o + *i] += d;
+                    r[o + *j] -= d;
+                }
+            }
+            r
+        };
+        // Gradient at the equilibrium of th, with the contact state there (midplane nodes with a force, contact pairs).
+        let grad_at = |p: &mut Problem, th: &[f64]| -> (Vec<f64>, usize, usize) {
+            let xe = p.equilibrium(th, &x, p.relax);
+            let (_, _, gxe) = p.loss(&xe, th);
+            let act = p.sim.non_elastic_force(&xe).iter().filter(|r| r[1] != 0.0).count();
+            (p.gradient(&xe, th, &gxe, sigma, cg).0, act, p.sim.n_contact_pairs())
+        };
+        let hm = |p: &mut Problem, v: &[f64], eps: f64| -> Vec<f64> {
+            let t0 = Instant::now();
+            let vmax = v.iter().fold(0.0f64, |m, a| m.max(a.abs()));
+            let s = eps / vmax;
+            let tp: Vec<f64> = theta.iter().zip(v).map(|(a, b)| a + s * b).collect();
+            let tm: Vec<f64> = theta.iter().zip(v).map(|(a, b)| a - s * b).collect();
+            let (gp, ap, cp) = grad_at(p, &tp);
+            let (gm, am, cm) = grad_at(p, &tm);
+            let rv = reg_hv(p, v);
+            let h: Vec<f64> = gp
+                .iter()
+                .zip(&gm)
+                .zip(&rv)
+                .map(|((a, b), r)| (a - b) / (2.0 * s) - r)
+                .collect();
+            println!(
+                "  product (eps {eps:.1e}, s {s:.2e}): |H_m v| {:.4e}, |v| {:.3e}, midplane nodes {ap} / {am}, contact pairs {cp} / {cm}, {:.0}s",
+                nrm2(&h),
+                nrm2(v),
+                t0.elapsed().as_secs_f64()
+            );
+            h
+        };
+        // Random smooth vector, blocks a, c, k, S^m of white noise.
+        let mut state = flag("--hv-seed", 12345.0) as u64 ^ 0x9E37_79B9_7F4A_7C15;
+        let mut rnd = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+        };
+        let smooth_m = flag("--hv-smooth", 20.0) as usize;
+        let mut random_vec = |p: &Problem| -> Vec<f64> {
+            let mut v = Vec::with_capacity(n);
+            for _ in 0..n / na {
+                let z: Vec<f64> = (0..na).map(|_| rnd()).collect();
+                let s = p.smooth_scalar(&z, smooth_m, false);
+                let m = s.iter().fold(0.0f64, |m, a| m.max(a.abs()));
+                v.extend(s.iter().map(|a| a / m));
+            }
+            v
+        };
+        if mode == "test" {
+            let mut rows = Vec::new();
+            for pair in 0..flag("--hv-pairs", 3.0) as usize {
+                let u = random_vec(&p);
+                let w = random_vec(&p);
+                let hu = hm(&mut p, &u, eps1);
+                let hw = hm(&mut p, &w, eps1);
+                let (a, b) = (dotv(&w, &hu), dotv(&u, &hw));
+                let sym = (a - b).abs() / a.abs().max(b.abs());
+                println!("symmetry pair {pair}: w.H u {a:.6e}, u.H w {b:.6e}, relative difference {sym:.3e}");
+                let mut row = format!("{{\"pair\": {pair}, \"wHu\": {a:.8e}, \"uHw\": {b:.8e}, \"sym\": {sym:.4e}");
+                if pair == 0 {
+                    let hu2 = hm(&mut p, &u, eps2);
+                    let d: Vec<f64> = hu.iter().zip(&hu2).map(|(a, b)| a - b).collect();
+                    let rel = nrm2(&d) / nrm2(&hu);
+                    let rq = (dotv(&u, &hu) - dotv(&u, &hu2)).abs() / dotv(&u, &hu).abs();
+                    println!(
+                        "eps independence (u): |H u(eps1) - H u(eps2)| / |H u(eps1)| {rel:.3e}; Rayleigh u.H u: {:.6e} vs {:.6e} (relative {rq:.3e})",
+                        dotv(&u, &hu),
+                        dotv(&u, &hu2)
+                    );
+                    row.push_str(&format!(
+                        ", \"eps1\": {eps1:e}, \"eps2\": {eps2:e}, \"eps_vec\": {rel:.4e}, \"eps_rayleigh\": {rq:.4e}"
+                    ));
+                }
+                row.push('}');
+                rows.push(row);
+            }
+            std::fs::write(out.join("hv_test.json"), format!("[{}]\n", rows.join(",\n"))).unwrap();
+            return;
+        }
+        if mode == "blocks" {
+            // 3 x 3 matrix M_ij = u_i . H_m u_j of one random smooth vector per block (a, c, k), each supported on its own
+            // block: M_ij against M_ji shows which block carries the asymmetry. Writes hv_blocks.json.
+            let nb = n / na;
+            let us: Vec<Vec<f64>> = (0..nb)
+                .map(|b| {
+                    let full = random_vec(&p);
+                    let mut u = vec![0.0; n];
+                    u[b * na..(b + 1) * na].copy_from_slice(&full[b * na..(b + 1) * na]);
+                    u
+                })
+                .collect();
+            let hus: Vec<Vec<f64>> = us.iter().map(|u| hm(&mut p, u, eps1)).collect();
+            let mut mat = vec![vec![0.0; nb]; nb];
+            for i in 0..nb {
+                for j in 0..nb {
+                    mat[i][j] = dotv(&us[i], &hus[j]);
+                }
+            }
+            for i in 0..nb {
+                println!("block matrix row {i}: {:?}", mat[i]);
+            }
+            for i in 0..nb {
+                for j in i + 1..nb {
+                    let (a, b) = (mat[i][j], mat[j][i]);
+                    println!(
+                        "block symmetry ({i},{j}): {a:.5e} vs {b:.5e}, relative difference {:.3e}",
+                        (a - b).abs() / a.abs().max(b.abs())
+                    );
+                }
+            }
+            std::fs::write(out.join("hv_blocks.json"), format!("{mat:?}\n")).unwrap();
+            return;
+        }
+        if mode == "within" {
+            // Symmetry inside each block: two random smooth vectors supported on the same block b,
+            // w.H_m u against u.H_m w (b = a, c, k). Writes hv_within.json.
+            let nb = n / na;
+            let mut rows = Vec::new();
+            for b in 0..nb {
+                let mut pick = |p: &Problem| {
+                    let full = random_vec(p);
+                    let mut u = vec![0.0; n];
+                    u[b * na..(b + 1) * na].copy_from_slice(&full[b * na..(b + 1) * na]);
+                    u
+                };
+                let (u, w) = (pick(&p), pick(&p));
+                let hu = hm(&mut p, &u, eps1);
+                let hw = hm(&mut p, &w, eps1);
+                let (x1, x2) = (dotv(&w, &hu), dotv(&u, &hw));
+                println!(
+                    "within block {b}: w.H u {x1:.5e}, u.H w {x2:.5e}, relative difference {:.3e}; u.H u {:.5e}, w.H w {:.5e}",
+                    (x1 - x2).abs() / x1.abs().max(x2.abs()),
+                    dotv(&u, &hu),
+                    dotv(&w, &hw)
+                );
+                rows.push(format!("[{b}, {x1:.6e}, {x2:.6e}]"));
+            }
+            std::fs::write(out.join("hv_within.json"), format!("[{}]\n", rows.join(", "))).unwrap();
+            return;
+        }
+        assert!(mode == "lanczos", "--hessvec test|blocks|within|lanczos");
+        let iters = flag("--hv-iters", 80.0) as usize;
+        let mut q = random_vec(&p);
+        let c0 = nrm2(&q);
+        q.iter_mut().for_each(|a| *a /= c0);
+        let (mut vs, mut alphas, mut betas): (Vec<Vec<f64>>, Vec<f64>, Vec<f64>) = (Vec::new(), Vec::new(), Vec::new());
+        for j in 0..iters {
+            let mut w = hm(&mut p, &q, eps1);
+            let alpha = dotv(&q, &w);
+            vs.push(q.clone());
+            for _ in 0..2 {
+                for v in &vs {
+                    let c = dotv(v, &w);
+                    w.iter_mut().zip(v).for_each(|(a, b)| *a -= c * b);
+                }
+            }
+            let beta = nrm2(&w);
+            alphas.push(alpha);
+            println!("lanczos {}: alpha {alpha:.5e}, beta {beta:.5e}", j + 1);
+            let stop = !(beta > 1e-12 * alpha.abs().max(1e-300));
+            if j + 1 == iters || j % 10 == 9 || stop {
+                let flat: Vec<f64> = vs.iter().flatten().copied().collect();
+                npy::write_f64(out.join("lanczos_V.npy"), &[vs.len(), n], &flat).unwrap();
+                npy::write_f64(out.join("lanczos_alpha.npy"), &[alphas.len()], &alphas).unwrap();
+                npy::write_f64(out.join("lanczos_beta.npy"), &[betas.len()], &betas).unwrap();
+            }
+            if stop {
+                break;
+            }
+            betas.push(beta);
+            q = w.iter().map(|a| a / beta).collect();
+        }
+        npy::write_f64(out.join("lanczos_beta.npy"), &[betas.len()], &betas).unwrap();
         return;
     }
 
