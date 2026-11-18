@@ -1303,3 +1303,21 @@ du manteau et l'épaisseur multiplicative `--thick-mult`), les changements de pa
 Conclusion de la tâche 3 à ce stade : **le test de symétrie à 5 % n'est pas tenu** pour la hessienne complète (a, c, k) ; Lanczos n'a pas été lancé (consigne : arrêt à ce point). `tools/laplace_posterior.py`
 (écart type a posteriori par bande, formule de Woodbury avec le Laplacien β pour a priori, étalonnage du bruit sur le résidu) est écrit mais **non validé** (un essai sur des données factices n'a pas fini en 30 min : factorisation
 et résolutions creuses lentes sous charge ; non relancé).
+
+#### Hessienne conditionnelle (c, k), a figé : test de symétrie (E56, 18 novembre)
+
+`--hv-blocks 1,2` (hessienne P H P, a figé) ; point `syn2`, ε = 4e-3, trois paires de vecteurs aléatoires dans l'espace (c, k)
+(`out/E56/ck_test/`, 106 à 240 s par produit sur la machine chargée). Le critère de l'étape est la différence relative des deux
+produits scalaires ; il est **non tenu**, et **l'indépendance en ε** ne l'est pas non plus :
+
+| paire | wᵀH u | uᵀH w | différence relative | différence absolue / (‖w‖ ‖H u‖) |
+|---|---|---|---|---|
+| 0 | 5,95 | 6,95 | 14,4 % | 0,10 % |
+| 1 | −0,092 | −0,252 | 63 % | 0,05 % |
+| 2 | −3,65 | −3,87 | 5,9 % | 0,02 % |
+
+Indépendance en ε (paire 0, ε = 4e-3 contre 8e-3) : écart de H u 9,3 % (cible 5 %), quotient de Rayleigh uᵀH u 1,4 %. Le critère
+« différence relative des produits scalaires » est mal conditionné pour des vecteurs aléatoires : ‖H u‖ vaut 5 à 16 pour
+‖u‖ ≈ 65, mais wᵀH u est presque nul (annulations), si bien que 0,16 à 1,0 d'asymétrie absolue paraît énorme alors qu'elle vaut
+0,02 à 0,26 % de ‖w‖ ‖H u‖. Ce n'est pas démontré suffisant : l'erreur de H u elle-même (9,3 % entre deux ε) est du même ordre que
+les directions à faible valeur propre, que Lanczos et l'incertitude lisent justement. Lanczos n'a pas été lancé (consigne).
