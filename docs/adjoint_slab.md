@@ -1231,3 +1231,32 @@ récupérer c ni k aux grandes échelles : l'ajustement de la surface n'implique
 type) ; `inv_law` non convergée ; départ à la croissance mesurée (pas à zéro) ; β = 1e-4 et bande ±50 inchangés (la réduction d'amplitude de c peut venir en partie de β : non testé). **Non fait : tâche 3
 (Laplace)** : elle exige des produits hessien-vecteur de la perte par rapport à θ (aucune sortie de ce genre dans `adjoint_week` : le `--lanczos` existant porte sur la raideur K, pas sur la hessienne de l'inversion) ;
 voir la question de l'étape.
+
+### Essai β = 1e-5 sur `inv_free` (E11, 18 novembre)
+
+Décision du 17 novembre : refaire `inv_free` de la section précédente, à l'identique (même vérité, cible, départ, `--newton-kick 5`), avec β = 1e-5 au lieu de 1e-4, pour voir si l'amplitude
+de c remonte. Sorties dans `out/E11/syn3/` (PGX), calcul de 1 h 18 après compilation.
+
+| | β = 1e-4 (`syn2`) | β = 1e-5 (`syn3`) |
+|---|---|---|
+| perte de forme finale | 0,23 | 0,45 |
+| RMS absolu (k = 0) | 0,154 mm | 0,191 mm |
+| itérations | 48 | 33 (« no decrease », 6 pas refusés) |
+
+Récupération (rapport des normes récupérée / vraie ; corrélation) :
+
+| champ | bande | `syn2` rapport / corr | `syn3` rapport / corr |
+|---|---|---|---|
+| c | lobes > 40 mm | 0,19 / 0,95 | 0,15 / 0,94 |
+| c | primaires 15–40 mm | 0,25 / 0,91 | 0,21 / 0,90 |
+| c | secondaires 6–15 mm | 0,41 / 0,90 | 0,36 / 0,89 |
+| k | lobes | 0,73 / 0,96 | 0,59 / 0,97 |
+| k | primaires | 0,60 / 0,91 | 0,52 / 0,88 |
+| k | secondaires | 0,78 / 0,82 | 0,78 / 0,82 |
+
+Lecture. **Diminuer β ne fait pas remonter l'amplitude de c** : elle baisse (rapport de 0,19–0,41 à 0,15–0,36), la corrélation reste à 0,89–0,94, et l'inversion s'arrête plus tôt
+avec une perte deux fois plus grande (la recherche linéaire échoue à l'itération 34 : pas accepté de 1 à 1/32 tous refusés, alors que la décroissance attendue est de 7,7e-2). La
+réduction d'amplitude de c n'est donc pas due à β, du moins dans cet intervalle ; elle vient de l'identifiabilité (la surface s'ajuste en recopiant l'écart dans d'autres champs, voir
+a). **Reproductibilité non mesurée** (un seul passage par réglage, pas de répétition de `syn2` ; le non-déterminisme du contact, P03, pourrait faire varier les chiffres) : l'écart de perte
+(×2) et le sens de l'écart d'amplitude vont dans le même sens que « β plus petit n'aide pas », mais les écarts de rapport (0,03 à 0,14) ne sont pas à interpréter comme un effet mesuré. **Point de
+départ retenu pour E56 (Laplace) : `syn2`** (meilleure perte, 0,23 contre 0,45).
