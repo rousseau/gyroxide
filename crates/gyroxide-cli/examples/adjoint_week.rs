@@ -3043,6 +3043,8 @@ fn main() {
         // (--hv-eps, default 1e-3: the largest parameter change). Two equilibria and two adjoints per product.
         //   --hessvec test      symmetry u.H_m w = w.H_m u on --hv-pairs (default 3) random smooth pairs, and independence of eps
         //                       (--hv-eps2, default 4e-3) on one product; writes hv_test.json
+        //   --hv-blocks 1,2     restrict test and lanczos to the blocks listed (0 = a, 1 = c, 2 = k): the other
+        //                       blocks are frozen (conditional Hessian, P H_m P); default all blocks
         //   --hessvec lanczos   Lanczos with full reorthogonalisation (--hv-iters steps, default 80);
         //                       writes lanczos_alpha.npy, lanczos_beta.npy, lanczos_V.npy (steps x n), hv_base.json
         assert!(p.law.is_empty() && !p.freeze_fields, "--hessvec: free fields only");
@@ -3053,6 +3055,25 @@ fn main() {
         p.set_level(levels.last().unwrap().0);
         let n = theta.len();
         let na = p.na;
+        let kept: Vec<usize> = match opt("--hv-blocks") {
+            Some(v) => v
+                .to_string_lossy()
+                .split(',')
+                .map(|t| t.parse().expect("--hv-blocks: indices 0,1,2"))
+                .collect(),
+            None => (0..n / na).collect(),
+        };
+        assert!(
+            kept.iter().all(|b| *b < n / na),
+            "--hv-blocks: block index out of range"
+        );
+        let masked = |v: &mut Vec<f64>| {
+            for b in 0..v.len() / na {
+                if !kept.contains(&b) {
+                    v[b * na..(b + 1) * na].iter_mut().for_each(|a| *a = 0.0);
+                }
+            }
+        };
         let (ls_b, lr_b) = {
             let xb = p.equilibrium(&theta, &x, p.relax);
             let (a, b, _) = p.loss(&xb, &theta);
@@ -3065,7 +3086,7 @@ fn main() {
         std::fs::write(
             out.join("hv_base.json"),
             format!(
-                "{{\"loss\": {ls_b:.10e}, \"reg\": {lr_b:.10e}, \"n_cortex\": {}, \"n\": {n}, \"na\": {na}, \"beta\": {}}}\n",
+                "{{\"loss\": {ls_b:.10e}, \"reg\": {lr_b:.10e}, \"n_cortex\": {}, \"n\": {n}, \"na\": {na}, \"beta\": {}, \"blocks\": {kept:?}}}\n",
                 p.cortex.len(),
                 p.beta
             ),
@@ -3104,12 +3125,13 @@ fn main() {
             let (gp, ap, cp) = grad_at(p, &tp);
             let (gm, am, cm) = grad_at(p, &tm);
             let rv = reg_hv(p, v);
-            let h: Vec<f64> = gp
+            let mut h: Vec<f64> = gp
                 .iter()
                 .zip(&gm)
                 .zip(&rv)
                 .map(|((a, b), r)| (a - b) / (2.0 * s) - r)
                 .collect();
+            masked(&mut h);
             println!(
                 "  product (eps {eps:.1e}, s {s:.2e}): |H_m v| {:.4e}, |v| {:.3e}, midplane nodes {ap} / {am}, contact pairs {cp} / {cm}, {:.0}s",
                 nrm2(&h),
@@ -3135,6 +3157,7 @@ fn main() {
                 let m = s.iter().fold(0.0f64, |m, a| m.max(a.abs()));
                 v.extend(s.iter().map(|a| a / m));
             }
+            masked(&mut v);
             v
         };
         if mode == "test" {
