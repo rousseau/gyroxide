@@ -1260,3 +1260,46 @@ réduction d'amplitude de c n'est donc pas due à β, du moins dans cet interval
 a). **Reproductibilité non mesurée** (un seul passage par réglage, pas de répétition de `syn2` ; le non-déterminisme du contact, P03, pourrait faire varier les chiffres) : l'écart de perte
 (×2) et le sens de l'écart d'amplitude vont dans le même sens que « β plus petit n'aide pas », mais les écarts de rapport (0,03 à 0,14) ne sont pas à interpréter comme un effet mesuré. **Point de
 départ retenu pour E56 (Laplace) : `syn2`** (meilleure perte, 0,23 contre 0,45).
+
+### Laplace : produits hessien-vecteur par différences de gradients adjoints, test de symétrie (E56, 18 novembre)
+
+Outil : `adjoint_week --hessvec test|blocks|within|lanczos` (gyroxide@0d012a4). H_m v = [g(θ + s v) − g(θ − s v)] / 2s − β L v, avec g le gradient adjoint (perte de données + régularisation), βL la
+hessienne exacte de la régularisation (Laplacien du graphe, par bloc), s = ε / max|v| (ε = plus grand changement d'un paramètre). Deux équilibres et deux adjoints par produit :
+**70 s** sur la PGX au repos (230 à 950 s quand trois calculs se partagent la machine). Point : `syn2` de E11 (β = 1e-4, perte 0,23 contre 0,45 pour `syn3`), champs libres (a, c, k), même
+normalisation des niveaux que l'inversion (`--level-norm`, perte de départ 6,0987e-4 et 6,3563e-4 ; sans elle, `--theta-init` renormalise au point ajusté et change la fonction). Vecteurs : bruit
+blanc lissé par S²⁰, normé à max = 1 par bloc, graine fixe.
+
+**Reproductibilité du point de base** : quatre rechargements du même θ donnent une perte de 0,2103, 0,2099, 0,2100 et 0,2222 (tolérances serrées) contre 0,2304 à la fin de `inv_free` :
+l'équilibre n'est pas reproduit à mieux que 3 à 8 % près sur la perte, d'un lancement à l'autre (|F| de 1e-5 à 3e-5).
+
+**Test de symétrie, vecteurs aléatoires pleins (critère : 5 %)** — `|wᵀHu − uᵀHw| / max` :
+
+| réglage | paire 0 | paire 1 | paire 2 |
+|---|---|---|---|
+| ε = 1e-3 (tolérances de l'inversion) | 0,23 | **1,95** (−5,05 contre +5,32) | 0,42 |
+| ε = 4e-3 | 0,27 (8,39 contre 11,51) | 0,27 (−4,11 contre −3,00) | — |
+| ε = 4e-3, CG 3000 à 1e-6, Newton 1e-7 / 1e-6 | 0,16 (9,20 contre 11,00) | — | — |
+
+**Indépendance en ε** (|H u(ε₁) − H u(ε₂)| / |H u(ε₁)| ; écart du quotient de Rayleigh uᵀHu) : 1e-3 contre 4e-3 : 0,17 (Rayleigh 4,3 %) ; 4e-3 contre 1,6e-2 : **3,9** (Rayleigh 48 %), et 2,5
+(37 %) avec les tolérances serrées. Aucun ε ne tient les deux critères : à 1e-3 les termes croisés sont du bruit (signes opposés), à 4e-3 ils ont le bon signe mais restent asymétriques de 16 à 27 %,
+à 1,6e-2 la réponse n'est plus linéaire (le tirage de contact change : 10 853 contre 10 830 paires de contact en θ ± s à ε = 4e-3, 48 nœuds de plan médian des deux côtés).
+Serrer les tolérances de l'équilibre et de l'adjoint ramène l'asymétrie de 27 à 16 %, pas à 5 %.
+
+**Où est l'asymétrie** (ε = 4e-3, tolérances de l'inversion ; vecteurs portés par un seul bloc) :
+
+| couple | uᵢᵀ H uⱼ contre uⱼᵀ H uᵢ | écart |
+|---|---|---|
+| (c, c) | −1,296 contre −1,331 | **2,6 %** |
+| (k, k) | 2,122 contre 2,188 | **3,0 %** |
+| (c, k) | −0,530 contre −0,506 | **4,6 %** |
+| (a, k) | 1,759 contre 1,734 | **1,4 %** |
+| (a, a) | 1,461 contre 1,745 | 16 % |
+| (a, c) | −0,490 contre −0,166 | **66 %** |
+
+Les blocs c et k, seuls ou couplés, tiennent la symétrie à 5 % ; **l'asymétrie vient du bloc a** (hessienne a–a à 16 %, couplage a–c à 66 %, mais a–k à 1,4 %). Les termes diagonaux valent 27 à 53
+(uᵀHu), les termes croisés 0,2 à 2 : l'asymétrie de a–c (0,3) est de l'ordre de 1 % de la diagonale. La cause n'est pas établie ; pistes : le gradient adjoint de a (`vjp_growth` à travers la croissance
+du manteau et l'épaisseur multiplicative `--thick-mult`), les changements de paires de contact entre θ + s v et θ − s v, ou le bruit de l'équilibre (3 à 8 %).
+
+Conclusion de la tâche 3 à ce stade : **le test de symétrie à 5 % n'est pas tenu** pour la hessienne complète (a, c, k) ; Lanczos n'a pas été lancé (consigne : arrêt à ce point). `tools/laplace_posterior.py`
+(écart type a posteriori par bande, formule de Woodbury avec le Laplacien β pour a priori, étalonnage du bruit sur le résidu) est écrit mais **non validé** (un essai sur des données factices n'a pas fini en 30 min : factorisation
+et résolutions creuses lentes sous charge ; non relancé).
