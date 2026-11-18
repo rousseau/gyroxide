@@ -1303,3 +1303,95 @@ du manteau et l'épaisseur multiplicative `--thick-mult`), les changements de pa
 Conclusion de la tâche 3 à ce stade : **le test de symétrie à 5 % n'est pas tenu** pour la hessienne complète (a, c, k) ; Lanczos n'a pas été lancé (consigne : arrêt à ce point). `tools/laplace_posterior.py`
 (écart type a posteriori par bande, formule de Woodbury avec le Laplacien β pour a priori, étalonnage du bruit sur le résidu) est écrit mais **non validé** (un essai sur des données factices n'a pas fini en 30 min : factorisation
 et résolutions creuses lentes sous charge ; non relancé).
+
+## Trajectoires de croissance (P07, E61, 18 novembre 2026)
+
+Proposition de conception, avant tout code (tâche 1 de P07) ; elle attend la validation de François (porte). Branche `l2-trajectoires`, créée depuis
+`l3-identifiabilite` (qui contient `l1-isbi`, V4 et les outils de P04 ; ni V4 ni `l1-isbi` ne sont dans `main`).
+
+### Ce qui existe et ce qu'on remplace
+
+Chaîne estimée (`tools/paper_chain.sh`, `out/paper_r0857/fit<SG>_lbm`) : quinze ajustements, un par semaine (SG 22 à 36), chacun à 32 492 sommets de
+a (+ 46 coefficients de loi pour c et k). Chaque semaine part de `ckpt_w<n>_from_lbm<n>` : l'état ajusté de la semaine précédente, déplacé comme la chaîne de
+croissance mesurée, avec la correction de a reportée sur les lignes suivantes de la table (`chain_week.py`). Le a du modèle est
+a_i(t) = √(aire_i(t) / aire_i(SG 21)) − 1 (table nodale de l'atlas, une ligne par semaine, t = (SG − 21)/15, moyenne 0 → 0,86). Un ajustement hebdomadaire
+est un problème **statique** : équilibre quasi statique du checkpoint sous la croissance a(t_n) tenue fixe, perte multi-échelle cumulée (lissages 10 puis 0, 30 + 30 itérations
+de L-BFGS), régularisation β sur le graphe. Rien ne relie les semaines sauf l'état de départ : aucun contrainte en temps sur a, aucune extrapolation possible,
+15 × 32 492 paramètres libres.
+
+### Paramétrage retenu
+
+Par sommet i, avec une forme normalisée f(0) = 0 :
+
+- sigmoïde : a_i(t) = A_i · [σ((t − t0_i)/r_i) − σ(−t0_i/r_i)] / N, puis Gompertz (σ remplacée par exp(−exp(−z))) ; N fixe l'échelle de A_i (A_i = valeur finale du motif) ;
+  trois paramètres par sommet : amplitude A_i, début t0_i, durée r_i (≈ 3 × 32 492 au lieu de 15 × 32 492 ; avec une vitesse maximale A_i / (4 r_i) pour les cartes).
+- **Départ** : l'ajustement par sommet de la croissance mesurée de SG 22 à 30 (le modèle part donc de la croissance de l'atlas, comme la chaîne).
+- **Étages imbriqués** (a n'est pas identifié, E11 : on n'ajoute un degré de liberté que s'il est utile) : A seul (t0 et r globaux ajustés, 32 492 + 2 paramètres) → + t0_i → + r_i.
+- **Régularisation spatiale** sur le graphe de la surface, sur les écarts au départ : (β_A/2) Σ_arêtes (δA_i − δA_j)² + (β_t/2) Σ (δt0_i − δt0_j)² + (β_r/2) Σ (δln r_i − δln r_j)², plus un rappel
+  (α/2) |δp|² vers le départ, **plus fort que celui de la chaîne** (décision de P04 : a avec une régularisation forte). Les paramètres sont adimensionnés par leur échelle typique
+  (A ≈ 0,8 ; t0 ≈ 0,5 ; r ≈ 0,2) pour que β et α aient le sens de `--beta` et `--alpha` de la chaîne (β = 1e-4 au départ).
+- **c et k** (loi à 46 coefficients) : première exécution avec les coefficients **gelés** à ceux de la chaîne de chaque semaine (`--freeze-fields`, ce qui isole l'apport de a),
+  seconde avec des coefficients affines en t partagés (2 × 46 paramètres, rappel vers la chaîne). Pas de sigmoïde sur c et k tant que la loi suffit.
+
+### Plancher de représentation (mesuré, `tools/trajectoire_plancher.py`, `out/E61/plancher.txt`)
+
+Résidu relatif ||Y − modèle||² / ||Y||² de SG 22 à 30 (9 semaines), par sommet :
+
+| série | rang 1 (A_i × courbe commune) | sigmoïde | Gompertz |
+|---|---|---|---|
+| croissance mesurée | 0,0052 | 0,0008 | 0,0006 |
+| a ajusté de la chaîne | 0,0119 | 0,0019 | 0,0019 |
+| correction chaîne − mesuré (énergie 2 860 ; rms 0,154 à SG 29) | 0,0524 | **0,0180** | 0,0184 |
+
+La sigmoïde (ou Gompertz) reproduit la croissance mesurée à 3 % d'écart rms et **98,2 %** de l'énergie de la correction que la chaîne apporte ; la correction est presque de rang 1 (95 %), c'est-à-dire
+surtout un changement d'amplitude par sommet sur une courbe commune : cela plaide pour les étages imbriqués (A d'abord). Le modèle n'est donc pas limité par la forme, mais la
+chaîne, elle, n'améliore pas beaucoup le départ (écart absolu de début → fin, SG 24 à 29 : 0,163 → 0,147, 0,260 → 0,250, 0,391 → 0,354, 0,584 → 0,512, 0,748 → 0,669, 0,915 → 0,854 mm ; SG 30 : aucun gain, l'itéré
+retenu est le départ ; SG 22–23 : 0,028 → 0,020, 0,076 → 0,063).
+
+### Coût joint et gradient (tâche 2)
+
+- Coût : L(p) = Σ_{n=22}^{30} w_n L_n(θ(t_n; p)) + R(p), L_n la perte hebdomadaire de la chaîne (multi-échelle cumulative, lissages 10 et 0, mêmes poids), **w_n = 1 / L_n(départ)** (chaque semaine pèse
+  autant ; variante à poids 1 en sensibilité : elle donne plus de poids aux semaines tardives, où la perte est la plus grande).
+- **Branche suivie** : les 9 équilibres partent des checkpoints **fixes** de la chaîne (`ckpt_w<n>_from_lbm<n>`) ; l'équilibre de la semaine n ne dépend que de θ(t_n), pas des autres semaines. La trajectoire n'est donc pas
+  intégrée de SG 21 à SG 30 ; elle contraint les semaines entre elles par la forme et par la régularisation. Limite à dire : ces checkpoints portent l'histoire de la chaîne ; une cohérence d'avance complète
+  (régénérer les checkpoints depuis la trajectoire ajustée par `gyroxide run --resume`, puis réajuster, 2 passes externes) est une suite, pas la première version.
+- Un seul `Problem` (même maillage `w21_left_610k_s` pour toutes les semaines) : par semaine, on échange l'état de départ, la cible (`prep/w<n>`), le tableau de croissance et l'équilibre chaud conservé de
+  l'itération précédente (2,8 Mo par semaine) ; pas de rechargement (27 à 33 s d'installation par semaine) à chaque itération.
+- Gradient : pour chaque semaine, l'adjoint de `adjoint_week` donne dL_n/dθ(t_n) (sommets de surface ; les nœuds intérieurs prennent la valeur de leur propriétaire) ; le gradient des paramètres est la somme, sommet par sommet,
+  de dL_n/dθ_i · ∂a_i(t_n)/∂p_i (dérivées analytiques de la sigmoïde et de Gompertz), plus celui de R. Mise en œuvre : **mode de `adjoint_week`** (`--trajectory`, le `Problem` n'étant pas une bibliothèque) plutôt qu'un
+  nouvel exemple de 3 000 lignes ; L-BFGS et recherche linéaire d'Armijo inchangés (le pas maximal porte sur les paramètres adimensionnés).
+
+### Critères chiffrés (tâche 3) — à valider
+
+1. **Gradient** : rapport différence finie centrée / adjoint de la perte jointe, dans une direction lisse aléatoire de l'espace des paramètres, à h = 0,05 et 0,25 (`CHECK_HS`, V4) : **1 ± 0,01** aux deux pas (V4 : 1,0005 à 1,005 ;
+   E11 : 1,0009 et 1,0016).
+2. **Équilibre ne dépendant que de θ(t_n)** : pour 3 semaines (SG 24, 27, 30), l'équilibre repart (a) du checkpoint, (b) de l'équilibre chaud d'une autre itération ; écart de perte < 0,2 % et écart rms des nœuds < 0,01 mm
+   (le bruit de convergence vu : 0,07 % de la perte, E46 ; 0,18 % entre exécutions, E33).
+3. **Ajustement** : écart absolu rms (cortex) de la semaine n au plus **10 % au-dessus** de la chaîne pour chaque semaine de SG 22 à 30, **et** moyenne sur ces semaines au plus 10 % au-dessus. Mise en garde chiffrée :
+   la chaîne gagne peu sur son départ (5 à 14 % de SG 23 à 29, aucun à SG 30), donc ce critère seul est tenu par la croissance mesurée à SG 29 et 30 (0,915 contre 0,854 : +7 % ; 1,140 contre 1,140) ; je propose d'ajouter
+   **la part du gain de la chaîne retrouvée ≥ 70 %** sur SG 24 à 29 : (départ − joint) / (départ − chaîne). La mesure se fait par `gyroxide eval` / `deviation_mm.json`, au même itéré sélectionné (`--select-by loss`).
+4. **Paramètres** : 3 × 32 492 (étage complet) contre 15 × 32 492 ; cartes de A, t0, vitesse maximale rapportées **à part, avec leur dispersion** (voir plus bas) ; aucun élément retourné.
+
+### Ce qu'on apprend sur a, et comment le présenter (E11, E56)
+
+La vérité synthétique de SG 29 (E11) ne retrouve pas a (corrélation < 0,1 aux grandes échelles) : a se compense avec c et k. Conséquences pour P07 : (1) les cartes de A, t0, r sont présentées comme
+**une croissance mécaniquement suffisante**, pas comme la croissance de l'atlas retrouvée ; (2) leur dispersion est mesurée, pas supposée : trois départs (croissance mesurée, chaîne, croissance mesurée perturbée par une
+carte lisse connue) donnent trois jeux de cartes ; rapport écart entre départs / variation spatiale des cartes, par bande de longueur d'onde (lobes, primaires, secondaires), comme le critère de P04 ;
+(3) un essai de récupération sur trajectoire synthétique connue (vérité de P04 étendue aux 9 semaines : seulement des équilibres directs, sans inversion préalable) dira si le paramétrage rend A, t0, r **mieux**
+identifiables que a semaine par semaine ; il est proposé en option (une étape), non requis par le critère.
+
+### Budget de calcul (PGX)
+
+- Itération jointe = 9 équilibres + 9 adjoints. La chaîne coûte 158 min pour SG 23 à 30 en 60 itérations par semaine, soit environ 2,6 min par itération jointe (machine partagée) ; avec les pas rejetés de la recherche
+  linéaire, **≈ 4 min**. Équilibre + adjoint seuls : ≈ 35 s par semaine (E56 : 70 s pour deux équilibres et deux adjoints, machine au repos).
+- Trois étages : A (60 itérations), + t0 (40), + r (40) = 140 itérations, **≈ 9 à 10 h** machine au repos, 20 à 30 h machine partagée (jusqu'à 3 × avec trois calculs concurrents). Gompertz : un second passage identique.
+- Tâche 2, contrôle du gradient : 4 équilibres + 4 adjoints par semaine → 5 min. Tâche 2, vérification de la branche : 3 semaines × 2 équilibres, 6 min.
+- Mémoire : un seul `Problem` + 9 états chauds de 2,8 Mo ; à mesurer à la première exécution (RSS).
+
+### À trancher
+
+1. Paramétrage : étages A → t0 → r, sigmoïde puis Gompertz (recommandé), ou les trois paramètres d'emblée.
+2. c et k : coefficients gelés à ceux de la chaîne pour le premier ajustement (recommandé), ou affines en t dès le départ.
+3. Critère 3 : « 10 % au-dessus de la chaîne » seul (tenu par le départ aux semaines 29 et 30), ou complété par la part du gain retrouvée ≥ 70 % (recommandé).
+4. Poids des semaines : normalisés par la perte de départ (recommandé) ou perte brute.
+5. Branche suivie à checkpoints fixes pour la première version (recommandé), avec la cohérence d'avance en suite.
