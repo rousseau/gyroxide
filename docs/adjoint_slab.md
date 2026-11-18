@@ -1099,9 +1099,59 @@ estimée à un seul pas, à refaire par rapport au seuil de gain d'E33 (RMS 0,1 
 **Question pour François** (dans le fichier de l'étape E35) : option A, B (recommandée), ou A puis B ; cœur mesuré
 (recommandé) ou neutre.
 
+#### Décision du 10 novembre et résultat du bras mesuré (E35)
+
+**Décision de François : option B** (remaillage TetGen par semaine, état exactement sans contrainte), **cœur = tenseur
+mesuré** de la semaine, μ_g/μ_w = 0,857 (`mu_white` = 1,167).
+
+**Construction** (`tools/week_reset.py`, `tools/mesh_quality.py`, `tools/reset_arm.sh`). Maillage TetGen en ligne de
+commande (`/usr/bin/tetgen`, `-pq1.5/10Y`, volume maximal 3e-6 en repère normalisé) des surfaces pial et blanche de
+l'atlas w−1 ; tables a (croissance mesurée de w−1 à w), H (épaisseur de l'atlas w) et cœur (tenseur mesuré) interpolées
+depuis les sommets de surface. Une semaine de croissance : équilibre par Newton-Krylov à pas de Levenberg-Marquardt
+(`adjoint_week --rigid --cumulative --theta0-table --relax0 0 --newton 120 --lm --newton-cg 800 --iters 0`, sans
+ajustement), puis `gyroxide eval` contre l'atlas w ; la persistance simple est évaluée dans le même repère (atlas w−1 brut
+contre atlas w brut). Semaines de départ 25, 27, 29, 32, 35 (lignes SG 26, 28, 30, 33, 36).
+
+**Maillages** : 139 620 à 271 534 nœuds (784 000 à 1 631 000 tétraèdres) ; volume minimal 5e-9 à 1,5e-8 ; aucun élément
+retourné à l'équilibre. Qualité (maillage de SG 21 par la même commande) : angle dièdre minimal sous 5° pour 0,00 % des tétraèdres (0,09 % pour le
+maillage de référence), 2,3 couches de tétraèdres dans l'épaisseur corticale (médiane, comme la référence) ; pour la
+semaine de départ 35, 0,01 % sous 5° (minimum 0,37°) ; détail par semaine dans `out/reset_r0857/w<p>/qualite.txt`.
+
+**Résultat (bras mesuré)** : écart rigide RMS aux sommets (mm) / corrélation de courbure / profondeur de sillon du
+modèle (mm), `out/reset_r0857/scorecard/{measured,persistence}_<SG>.json` ; la chaîne mesurée depuis SG 21 est celle de la
+Table 1 à 0,857 (`out/scorecard/t1_r0857/measured_<SG>.json`) :
+
+| SG | persistance (même repère) | réinitialisée, mesurée | chaîne mesurée depuis SG 21 | gain réinit. / persistance (écart rigide) |
+|---|---|---|---|---|
+| 26 | 1,02 / 0,976 / 0,68 | 0,20 / 0,984 / 0,71 | 0,51 / 0,836 / 0,64 | -80 % |
+| 28 | 0,98 / 0,962 / 0,89 | équilibre non convergé | 1,15 / 0,653 / 0,72 | — |
+| 30 | 0,99 / 0,961 / 1,20 | 0,36 / 0,973 / 1,27 | 1,80 / 0,484 / 0,78 | -64 % |
+| 33 | 0,77 / 0,964 / 1,84 | 0,32 / 0,972 / 1,89 | 2,41 / 0,354 / 0,87 | -58 % |
+| 36 | 0,39 / 0,986 / 2,25 | 0,20 / 0,989 / 2,27 | 2,66 / 0,307 / 0,92 | -48 % |
+
+La profondeur de sillon de l'atlas est de 0,76 / 1,41 / 2,00 / 2,33 mm à SG 26 / 30 / 33 / 36. Le bras réinitialisé bat la
+persistance simple à toutes les semaines mesurées, de 48 % (SG 36) à 80 % (SG 26) sur l'écart rigide, très au-delà du
+seuil de variabilité d'E33 (écart rigide 0,1 %, p95 0,5 %, corrélation 1,5 %, profondeur 1,3 %), et sa corrélation de
+courbure (0,97 à 0,99) est au niveau de celle de la persistance. Il est aussi plus près de l'atlas que la chaîne mesurée
+depuis SG 21, dont l'écart rigide grandit de 0,51 à 2,66 mm : l'erreur de la chaîne est celle de l'accumulation, non
+d'une semaine. **Réserve** : la croissance « mesurée » est ajustée sur l'atlas w lui-même (table a), ce bras
+mesure donc ce que le modèle sait faire d'une semaine de croissance parfaitement connue, pas une prédiction ; la
+comparaison à égalité d'information avec la persistance, qui ignore la croissance, est celle du bras **estimé**
+(non fait, voir plus bas). La profondeur de sillon du modèle est inférieure de 3 à 10 % à celle de l'atlas (×0,974 à ×0,900).
+
+**SG 28 (semaine de départ 27) : équilibre non convergé, pas de résultat.** Le Newton ne bouge pas :
+|F| 3,027e-2 → 3,027e-2, aucun pas de la recherche linéaire ne fait baisser |F| quel que soit l'amortissement (de 1,9e-4
+à 1,9e2, `NEWTON_DEBUG=1`, CG convergé à chaque fois), donc la mesure de la ligne « mesurée » de SG 28 serait celle de la
+persistance (écart identique au chiffre près, 0,98 mm) et n'est pas retenue. Deux relances : même maillage (même
+résultat, déterministe), maillage voisin (volume maximal 3,6e-6, 148 484 nœuds : |F| 3,115e-2 → 3,115e-2, même table a,
+intervalle [−0,166 ; 0,286]) ; le défaut vient donc de la table de croissance de la semaine 27 → 28, non du maillage. Les
+quatre autres semaines du même protocole (SG 26, 30, 33, 36) convergent à |F| ≈ 3e-5. Piste non suivie : examiner la
+table a (valeurs extrêmes, autocontacts) et les paires de contact de la semaine 28 ; ni le code ni la table n'ont été
+modifiés.
+
 ### Reste à faire pour P02
 
 - Tâche 3 (rapport μ_g/μ_w) : faite (bras mesuré à 0,5 / 0,857 / 1 ; chaîne estimée à 0,857 ; variabilité de SG 32 → 33).
   Reste la décision sur la valeur unique du rapport dans les trois bras (voir ci-dessus).
 - Tâche 4 : maillage SG 21 de l'hémisphère droit et refaire la chaîne et la Table 1.
-- Tâche 5 : bras de persistance équitable (mode de `tools/full_chain.sh`, SG 26 à 36).
+- Tâche 5 : bras de persistance équitable. Fait : bras mesuré réinitialisé, SG 26, 30, 33, 36 (SG 28 : équilibre non convergé). Reste : le bras estimé réinitialisé (un ajustement d'une semaine depuis l'atlas w−1), SG 28, les six autres semaines.
