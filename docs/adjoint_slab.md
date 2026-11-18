@@ -1368,7 +1368,7 @@ retenu est le départ ; SG 22–23 : 0,028 → 0,020, 0,076 → 0,063).
 2. **Équilibre ne dépendant que de θ(t_n)** : pour 3 semaines (SG 24, 27, 30), l'équilibre repart (a) du checkpoint, (b) de l'équilibre chaud d'une autre itération ; écart de perte < 0,2 % et écart rms des nœuds < 0,01 mm
    (le bruit de convergence vu : 0,07 % de la perte, E46 ; 0,18 % entre exécutions, E33).
 3. **Ajustement** : écart absolu rms (cortex) de la semaine n au plus **10 % au-dessus** de la chaîne pour chaque semaine de SG 22 à 30, **et** moyenne sur ces semaines au plus 10 % au-dessus. Mise en garde chiffrée :
-   la chaîne gagne peu sur son départ (5 à 14 % de SG 23 à 29, aucun à SG 30), donc ce critère seul est tenu par la croissance mesurée à SG 29 et 30 (0,915 contre 0,854 : +7 % ; 1,140 contre 1,140) ; je propose d'ajouter
+   la chaîne gagne peu sur son départ (4 à 17 % de SG 23 à 29, aucun à SG 30), donc ce critère seul est tenu par la croissance mesurée à SG 29 et 30 (0,915 contre 0,854 : +7 % ; 1,140 contre 1,140) ; je propose d'ajouter
    **la part du gain de la chaîne retrouvée ≥ 70 %** sur SG 24 à 29 : (départ − joint) / (départ − chaîne). La mesure se fait par `gyroxide eval` / `deviation_mm.json`, au même itéré sélectionné (`--select-by loss`).
 4. **Paramètres** : 3 × 32 492 (étage complet) contre 15 × 32 492 ; cartes de A, t0, vitesse maximale rapportées **à part, avec leur dispersion** (voir plus bas) ; aucun élément retourné.
 
