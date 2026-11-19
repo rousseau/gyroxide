@@ -1340,7 +1340,7 @@ Indépendance en ε (paire 0 seulement, ε = 4e-3 contre 8e-3) : écart de H u *
 eu la mesure en ε 8e-3 (le script s'arrête au premier test pour la paire 0 seulement).
 
 **Verdict : non tenu.** Seule la paire 2 passe. La paire 0 est très loin (74 %), la paire 1 à 7 %, et l'indépendance en ε à 7,6 %.
-Le pas relatif s du second produit (le pas est ε ‖u‖ / ‖w‖, d'où s petit quand ‖H u‖ est grand) est le plus petit pour la paire 0 (1,03e-3),
+Le pas relatif s du second produit (plus petit quand ‖H u‖ est grand ; règle exacte du code non relue ici) est le plus petit pour la paire 0 (1,03e-3),
 ce qui amplifie le bruit de l'équilibre (|F| ≈ 1e-5, 45 à 52 nœuds sur le plan médian, 10 800 à 10 900 paires de contact qui
 changent d'un équilibre à l'autre) ; mais les paires 1 et 2 (s de 3,5e-3 à 4,7e-3) ne se classent pas selon s (7,0 % pour s = 4,65e-3, 1,6 % pour
 s = 3,45e-3) : le seul chiffre ne permet pas de conclure à une règle sur s. Pas de Lanczos (décision de François : « s'il n'est pas tenu :
