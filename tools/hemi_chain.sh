@@ -6,7 +6,9 @@
 #   HEMI=right tools/hemi_chain.sh [étape ...]       étapes : inputs configs remodel paper eval (défaut : toutes)
 #
 #   inputs   maillage TetGen de l'atlas SG 21 (tools/atlas_to_mesh.py, même densité en mm³ que le gauche : volume
-#            maximal 0,11305 mm³ = 3,15e-6 en unités normalisées du gauche, 610 000 tétraèdres), tables nodales
+#            maximal 0,11305 mm³ = 3,15e-6 en unités normalisées du gauche, 610 000 tétraèdres ; mur médial à 11 mm du point
+#            le plus médial (8 mm pour le gauche : même part des sommets, 12,4 % contre 12,5 %) ; plan médian au point le plus
+#            médial de SG 21 à 36 : le droit de l'atlas dérive de 2,7 mm au-delà de celui de SG 21), tables nodales
 #            a et h (lissage 200), tenseurs du cœur, tétraèdres frontière scindés (tools/split_boundary_tets.py),
 #            entrées par semaine (tools/adjoint_prep.py, SG 22 à 36)
 #   configs  configurations du côté (tools/hemi_config.py : nom du maillage, plan médian, arête moyenne)
@@ -27,7 +29,7 @@ A=${OXIDE_DHCP_ATLAS:-data/atlas_dhcp}
 step_inputs() {
     [ -f $M.mesh ] || {
         python3 -I tools/atlas_to_mesh.py $A/fetal.week21.$HEMI.pial.surf.vtk $M.mesh --wm $A/fetal.week21.$HEMI.wm.surf.vtk \
-            --maxvol-mm3 0.11305303406
+            --maxvol-mm3 0.11305303406 --medial-dist 11 --medial-weeks 21 36
         mv $M.mesh.json $M.json
         mv $M.mesh.gr.txt $M.gr.txt
     }

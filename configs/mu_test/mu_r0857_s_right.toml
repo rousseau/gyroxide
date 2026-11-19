@@ -45,7 +45,7 @@ stiffness_factor = 10.0
 repulsive_skin = 0.2
 proximity_skin = 0.6
 check_every = 1
-midplane = -0.5759       # most medial atlas point
+midplane = -0.6579       # most medial atlas point
 midplane_restoring = true
 
 [growth_mask]

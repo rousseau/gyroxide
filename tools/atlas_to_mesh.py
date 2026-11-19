@@ -87,6 +87,7 @@ ap.add_argument("out")
 ap.add_argument("--wm", help="matching white surface, for the medial-wall mask (default: gr = 1)")
 ap.add_argument("--medial-thick", type=float, default=0.6, help="pial-white distance (mm) below which a medial vertex is wall")
 ap.add_argument("--medial-dist", type=float, default=8.0, help="max distance (mm) from the most medial point for wall vertices")
+ap.add_argument("--medial-weeks", type=int, nargs=2, metavar=("W0", "W1"), help="midplane = most medial atlas point over these weeks (default: the week of the pial file only). For the right hemisphere, the atlas drifts across the SG 21 extremity (E34)")
 ap.add_argument("--mask-smooth", type=int, default=10, help="smoothing iterations of the growth mask")
 ap.add_argument("--maxvol", type=float, default=0.0, help="max tet volume, normalised units (0 = graded from the surface)")
 ap.add_argument("--maxvol-mm3", type=float, default=0.0, help="max tet volume in mm^3 (converted with the normalisation scale; overrides --maxvol): same mesh density on both hemispheres whatever their size")
@@ -193,6 +194,12 @@ except ImportError:
 
 # The medial plane in the normalised frame: y' = (x - cx) / d at the most medial atlas point.
 x_med = p[:, 0].max() if side > 0 else p[:, 0].min()
+if args.medial_weeks:
+    xs = []
+    for wk in range(args.medial_weeks[0], args.medial_weeks[1] + 1):
+        pw = read_surface(re.sub(r"week\d+", f"week{wk}", args.pial))[0]
+        xs.append(pw[:, 0].max() if side > 0 else pw[:, 0].min())
+    x_med = max(xs) if side > 0 else min(xs)
 y_mid = (x_med - c[0]) / d
 print(f"medial plane y' = {y_mid:.4f}")
 

@@ -1149,9 +1149,53 @@ quatre autres semaines du même protocole (SG 26, 30, 33, 36) convergent à |F| 
 table a (valeurs extrêmes, autocontacts) et les paires de contact de la semaine 28 ; ni le code ni la table n'ont été
 modifiés.
 
+### Hémisphère droit : maillage SG 21 et entrées (E34, tâche 4, 19 novembre 2026)
+
+**Recette** : `tools/hemi_chain.sh` (`HEMI=right`), qui enchaîne les outils du gauche rendus indifférents au côté
+(`tools/hemi.py` : le côté se lit dans le nom du maillage, `w21_right_610k` ; TetGen en ligne de commande, sans pyvista
+ni le module Python `tetgen`). Pour le gauche, rien ne change : les tables nodales (lissage 200), les tenseurs du cœur
+et les entrées de SG 26 régénérés par les outils modifiés sont **identiques au bit près** à
+`data/meshes/w21_left_610k.nodal_{a,h,core}.npy` et à `data/adjoint_prep/w26` (écart maximal 0).
+
+**Maillage** (`tools/atlas_to_mesh.py`, atlas pial et blanc SG 21 de l'hémisphère droit, 32 492 sommets de surface en tête
+dans l'ordre de l'atlas, `-pq1.5/10Y`) : volume maximal de 0,11305 mm³, soit 3,15e-6 en unités normalisées du gauche
+(`--maxvol-mm3`, pour que les deux hémisphères aient la même densité en mm, malgré des échelles de normalisation
+différentes : 32,99 mm à gauche, 33,49 mm à droite). Même repère de Tallinen, centre de gravité et échelle propres au côté.
+Le maillage de référence du gauche a été fait avec le module Python de TetGen (une autre version) : avec le programme
+`tetgen` de la PGX, le gauche donne 609 800 tétraèdres (contre 609 834) à ce volume maximal, avec les mêmes sommets de
+surface, le même masque de croissance (écart maximal 0 sur les 32 492 sommets) et le même repère (`cog_mm`, `maxd_mm`).
+Qualité, côte à côte (maillages scindés `_s`, ceux de la chaîne ; `tools/mesh_quality.py`) :
+
+| | gauche `w21_left_610k_s` | droit `w21_right_610k_s` |
+|---|---|---|
+| nœuds / tétraèdres | 115 778 / 610 828 | 113 010 / 612 656 |
+| volume des tétraèdres, médiane (min) | 1,38e-6 (2,45e-9) | 1,29e-6 (4,00e-9) |
+| angle dièdre minimal ; sous 5° ; sous 10° | 1,51° ; 0,09 % ; 0,31 % | 2,61° ; 0,00 % ; 0,01 % |
+| angle dièdre maximal | 177,0° | 175,7° |
+| rapport arête max / min, médiane | 1,50 | 1,59 |
+| tétraèdres corticaux | 225 470 | 216 585 |
+| épaisseur corticale / arête équivalente : médiane (décile bas) | 2,30 (1,18) | 2,28 (1,24) |
+| tétraèdres à quatre nœuds de surface scindés (arêtes) | 307 | 189 |
+
+Le droit a autant d'éléments (+0,3 %), des angles un peu meilleurs et la même résolution dans l'épaisseur corticale
+(2,3 éléments en médiane). Le maillage du gauche n'a pas été refait : il reste celui de la référence.
+
+**Deux écarts à la recette du gauche, imposés par la géométrie de l'atlas droit** (le gauche garde ses valeurs) :
+- **Plan médian** : le gauche place le plan au point le plus médial de l'atlas, et l'atlas s'en éloigne ensuite (aucun sommet
+  de la cible au-delà du plan de SG 28 à 36). Dans le repère du droit, c'est l'inverse : l'atlas droit dérive vers la
+  ligne médiane, jusqu'à 2,7 mm au-delà du point le plus médial de SG 21 (cible de SG 28 : 121 sommets au-delà du plan
+  placé à SG 21, 162 à SG 36). Un plan à ce niveau aurait repoussé la surface en dehors de l'atlas. Le plan du droit est
+  donc au point le plus médial **de SG 21 à 36** (`--medial-weeks 21 36`, y' = −0,6579 au lieu de −0,5759) ; pour le gauche,
+  cette règle donne 0,3909 contre 0,3902 : la même, à 0,1 mm près.
+- **Mur médial** (sommets qui ne croissent pas) : le gauche le prend à moins de 8 mm du point le plus médial. À droite, la
+  face médiale n'est pas parallèle à x et cette distance en retient 2 607 sommets (8,0 %) au lieu de 4 056 (12,5 %) pour le
+  gauche, alors que le même nombre de sommets minces à normale médiale existe (5 096 à droite, 5 003 à gauche). Distance de
+  11 mm : 4 021 sommets (12,4 %), la même part que le gauche. Choix par la part, non par l'anatomie : à vérifier à l'œil
+  sur la surface (`out/E34/` ne contient pas de rendu).
+
 ### Reste à faire pour P02
 
 - Tâche 3 (rapport μ_g/μ_w) : faite (bras mesuré à 0,5 / 0,857 / 1 ; chaîne estimée à 0,857 ; variabilité de SG 32 → 33).
   Reste la décision sur la valeur unique du rapport dans les trois bras (voir ci-dessus).
-- Tâche 4 : maillage SG 21 de l'hémisphère droit et refaire la chaîne et la Table 1.
+- Tâche 4 : maillage SG 21 de l'hémisphère droit fait (voir ci-dessus) ; chaînes mesurée puis estimée (μ_g/μ_w = 0,857, sélection `loss`) lancées sur la PGX le 19 novembre (`tools/hemi_chain.sh`, environ 31 h) ; reste la Table 1 droite face à la gauche.
 - Tâche 5 : bras de persistance équitable. Fait : bras mesuré réinitialisé, SG 26, 30, 33, 36 (SG 28 : équilibre non convergé). Reste : le bras estimé réinitialisé (un ajustement d'une semaine depuis l'atlas w−1), SG 28, les six autres semaines.
