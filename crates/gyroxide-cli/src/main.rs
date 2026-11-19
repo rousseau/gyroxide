@@ -1,10 +1,12 @@
 //! `gyroxide` command-line driver.
 
+mod describe;
 mod surface;
 
 use anyhow::{bail, Context, Result};
 use burn::tensor::{Device, DeviceKind, FloatDType};
 use clap::{Parser, Subcommand, ValueEnum};
+use gyroxide_io::contrat::{self, avec_hemi};
 use gyroxide_io::{SequenceRow, SequenceWriter, State, Status};
 use gyroxide_mesh::{generate, netgen, normalize, vtk, vtu, TetMesh};
 use gyroxide_model::{GrowthMask, MeshNormalization, Params, Preset};
@@ -18,11 +20,16 @@ use surface::SurfaceOut;
 #[command(
     name = "gyroxide",
     version,
-    about = "Cortical folding by tangential growth (Tallinen et al. 2016) on Burn"
+    about = "Cortical folding by tangential growth (Tallinen et al. 2016) on Burn",
+    arg_required_else_help = true
 )]
 struct Cli {
+    /// Prints on standard output the JSON description of the commands guioxide can launch (schema
+    /// `oxide-describe/1`) and exits; reads and writes nothing else
+    #[arg(long)]
+    describe: bool,
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Copy, Clone, ValueEnum)]
@@ -252,7 +259,17 @@ struct RunArgs {
 const BIDS_SURFACE_EVERY: usize = 1000;
 
 fn main() -> Result<()> {
-    match Cli::parse().cmd {
+    let cli = Cli::parse();
+    if cli.describe {
+        println!("{}", serde_json::to_string_pretty(&describe::document())?);
+        return Ok(());
+    }
+    let Some(cmd) = cli.cmd else {
+        // `arg_required_else_help` already handles a bare call; only `--describe` alone remains, handled above.
+        <Cli as clap::CommandFactory>::command().print_help()?;
+        std::process::exit(2);
+    };
+    match cmd {
         Cmd::Run(args) => run(*args),
         Cmd::Preset { name } => {
             let p = Preset::from_key(&name).with_context(|| format!("unknown preset '{name}'"))?;
@@ -346,21 +363,24 @@ fn mesh_session(args: &MeshArgs) -> Result<()> {
     for out in [args.output_dir.as_deref(), None] {
         let d = bids::derivative_dir(&args.bids, out, bids::PIPELINE_SURFACES, &args.participant, session)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        if d.anat.join(format!("{}_hemi-{h}_pial.surf.gii", d.prefix)).is_file() {
+        if d.anat
+            .join(format!("{}{}", d.prefix, avec_hemi(contrat::ENTREE_PIALE, h)))
+            .is_file()
+        {
             src = Some(d);
             break;
         }
         src.get_or_insert(d);
     }
     let src = src.expect("at least one candidate");
-    let input = |name: &str| src.anat.join(format!("{}_hemi-{h}_{name}", src.prefix));
+    let input = |suffix: &str| src.anat.join(format!("{}{}", src.prefix, avec_hemi(suffix, h)));
     let read = |name: &str| {
         let p = input(name);
         surfoxide_io::gifti::read_surface(&p).with_context(|| format!("reading {}", p.display()))
     };
-    let (pial, _) = read("pial.surf.gii")?;
-    let (white, _) = read("white.surf.gii")?;
-    let cortex_path = input("cortex.shape.gii");
+    let (pial, _) = read(contrat::ENTREE_PIALE)?;
+    let (white, _) = read(contrat::ENTREE_BLANCHE)?;
+    let cortex_path = input(contrat::ENTREE_CORTEX);
     let cortex = surfoxide_io::gifti::read_fields(&cortex_path)
         .with_context(|| format!("reading {}", cortex_path.display()))?
         .into_iter()
@@ -390,7 +410,7 @@ fn mesh_session(args: &MeshArgs) -> Result<()> {
     std::fs::create_dir_all(&dst.anat)?;
     let out = dst
         .anat
-        .join(format!("{}_hemi-{h}_desc-{}_tet.vtu", dst.prefix, args.desc));
+        .join(format!("{}{}", dst.prefix, contrat::suffixe_maillage(h, &args.desc)));
     vtu::write(
         &out,
         &mesh,
@@ -545,10 +565,9 @@ fn run(mut args: RunArgs) -> Result<()> {
         )
         .map_err(|e| anyhow::anyhow!("{e}"))?;
         let path = d.anat.join(format!(
-            "{}_hemi-{}_desc-{}_tet.vtu",
+            "{}{}",
             d.prefix,
-            args.hemi.letter(),
-            args.mesh_desc
+            contrat::suffixe_maillage(args.hemi.letter(), &args.mesh_desc)
         ));
         if !path.is_file() {
             bail!(
@@ -654,7 +673,7 @@ impl BidsRun {
             args.session.as_deref(),
         )
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let dir = d.anat.join(format!("run-{label}"));
+        let dir = d.anat.join(format!("{}{label}", contrat::PREFIXE_DOSSIER_RUN));
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         gyroxide_io::ecrire_dataset_description(
             &d.pipeline,
@@ -674,8 +693,8 @@ impl BidsRun {
             toml_string(&initial),
             params.to_toml()?
         );
-        std::fs::write(dir.join("config.toml"), config)?;
-        let status_path = dir.join("status.json");
+        std::fs::write(dir.join(contrat::FICHIER_CONFIG), config)?;
+        let status_path = dir.join(contrat::FICHIER_STATUS);
         let status = Status {
             state: State::Running,
             step: Some(0),
@@ -685,7 +704,7 @@ impl BidsRun {
             message: None,
         };
         gyroxide_io::ecrire_status(&status_path, &status)?;
-        let sequence = SequenceWriter::create(&dir.join("sequence.tsv"))?;
+        let sequence = SequenceWriter::create(&dir.join(contrat::FICHIER_SEQUENCE))?;
         Ok(Self {
             dir,
             prefix: d.prefix,

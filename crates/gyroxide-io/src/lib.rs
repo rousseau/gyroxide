@@ -10,6 +10,8 @@
 //!   sub-X[_ses-Y]_hemi-L_desc-sim_step-0000000_pial.surf.gii …
 //! ```
 
+pub mod contrat;
+
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -288,7 +290,15 @@ pub fn lister_runs(dir: &Path) -> Vec<(String, PathBuf)> {
     let mut runs: Vec<(String, PathBuf)> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.is_dir())
-        .filter_map(|p| Some((p.file_name()?.to_str()?.strip_prefix("run-")?.to_owned(), p.clone())))
+        .filter_map(|p| {
+            Some((
+                p.file_name()?
+                    .to_str()?
+                    .strip_prefix(contrat::PREFIXE_DOSSIER_RUN)?
+                    .to_owned(),
+                p.clone(),
+            ))
+        })
         .collect();
     runs.sort();
     runs
@@ -297,7 +307,7 @@ pub fn lister_runs(dir: &Path) -> Vec<(String, PathBuf)> {
 /// Nom de la surface simulée au pas `step` : `<prefix>_hemi-<H>_desc-sim_step-<7 chiffres>_pial.surf.gii`,
 /// `prefix` étant `sub-X[_ses-Y]`.
 pub fn surface_name(prefix: &str, hemi: char, step: u64) -> String {
-    format!("{prefix}_hemi-{hemi}_desc-sim_step-{step:07}_pial.surf.gii")
+    format!("{prefix}{}", contrat::suffixe_surface_simulee(hemi, step))
 }
 
 // ------------------------------------------------------------------------------------------------
