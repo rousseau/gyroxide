@@ -8,6 +8,7 @@
 
 pub mod growth;
 pub mod presets;
+pub mod trajectory;
 
 pub use growth::{GrowthMask, NodalTable, Schedule};
 pub use presets::Preset;

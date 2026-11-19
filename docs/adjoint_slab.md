@@ -1306,7 +1306,7 @@ et résolutions creuses lentes sous charge ; non relancé).
 
 ## Trajectoires de croissance (P07, E61, 18 novembre 2026)
 
-Proposition de conception, avant tout code (tâche 1 de P07) ; elle attend la validation de François (porte). Branche `l2-trajectoires`, créée depuis
+Conception de P07 (tâche 1), validée par François le 18 novembre (décisions en fin de section). Branche `l2-trajectoires`, créée depuis
 `l3-identifiabilite` (qui contient `l1-isbi`, V4 et les outils de P04 ; ni V4 ni `l1-isbi` ne sont dans `main`).
 
 ### Ce qui existe et ce qu'on remplace
@@ -1388,10 +1388,20 @@ identifiables que a semaine par semaine ; il est proposé en option (une étape)
 - Tâche 2, contrôle du gradient : 4 équilibres + 4 adjoints par semaine → 5 min. Tâche 2, vérification de la branche : 3 semaines × 2 équilibres, 6 min.
 - Mémoire : un seul `Problem` + 9 états chauds de 2,8 Mo ; à mesurer à la première exécution (RSS).
 
-### À trancher
+### Décisions de François (18 novembre 2026, après-midi) : toutes les recommandations
 
-1. Paramétrage : étages A → t0 → r, sigmoïde puis Gompertz (recommandé), ou les trois paramètres d'emblée.
-2. c et k : coefficients gelés à ceux de la chaîne pour le premier ajustement (recommandé), ou affines en t dès le départ.
-3. Critère 3 : « 10 % au-dessus de la chaîne » seul (tenu par le départ aux semaines 29 et 30), ou complété par la part du gain retrouvée ≥ 70 % (recommandé).
-4. Poids des semaines : normalisés par la perte de départ (recommandé) ou perte brute.
-5. Branche suivie à checkpoints fixes pour la première version (recommandé), avec la cohérence d'avance en suite.
+1. **Paramétrage** : étages A → t0 → r, sigmoïde puis Gompertz.
+2. **c et k** : coefficients gelés à ceux de la chaîne pour le premier ajustement (`--freeze-fields`) ; affines en t ensuite, seulement si nécessaire.
+3. **Critère 3** : « au plus 10 % au-dessus de la chaîne » **et** part du gain de la chaîne retrouvée ≥ 70 % sur SG 24 à 29.
+4. **Poids des semaines** : normalisés par la perte de départ (w_n = 1 / L_n(départ)) ; poids 1 en sensibilité.
+5. **Branche suivie** à checkpoints fixes de la chaîne pour la première version ; la cohérence d'avance en suite.
+
+### Mise en œuvre (tâche 2)
+
+- `gyroxide-model::trajectory` (module de la bibliothèque, testé) : courbes sigmoïde et Gompertz normalisées par sommet (f(0) = 0, f(1) = A),
+  dérivées analytiques en A, t0 et r, ajustement par sommet de la croissance mesurée (amplitude seule en forme fermée ; trois paramètres par
+  Gauss-Newton amorti). Les dérivées sont contrôlées par différences finies dans les tests.
+- À faire ensuite : le mode `--trajectory` d'`adjoint_week` (échange par semaine de l'état de départ, de la cible et de la table de croissance dans un seul
+  `Problem`, coût joint, gradient assemblé par ces dérivées, régularisation spatiale), le contrôle du gradient par différences finies (critère 1) et
+  l'ajustement joint en arrière-plan.
+
