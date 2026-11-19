@@ -17,12 +17,17 @@ import argparse
 import json
 from pathlib import Path
 
+import sys
+
 import nibabel as nib
 import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spl
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from hemi import side_of  # noqa: E402
+
 ATLAS = next((p for p in [Path("/Users/rousseau/Sync-Exp/Data/template_dHCP/dhcp_fetal_brain_surface_atlas/atlas"),
               ROOT / "data/atlas_dhcp"] if p.is_dir()), None)
 ap = argparse.ArgumentParser()
@@ -31,6 +36,7 @@ ap.add_argument("--smooth", type=int, default=200)
 ap.add_argument("--out", help="output table (default <base>.nodal_core.npy)")
 args = ap.parse_args()
 
+side = side_of(args.base)
 frame = json.loads(Path(args.base + ".json").read_text())
 ns, c0, d0 = frame["n_surface"], np.array(frame["cog_mm"]), frame["maxd_mm"]
 lines = Path(args.base + ".mesh").read_text().split("\n")
@@ -41,7 +47,7 @@ T = np.loadtxt(lines[2 + n_nodes:2 + n_nodes + n_tets], dtype=np.int64)[:, 1:5] 
 
 
 def surf(w, kind):
-    g = nib.load(ATLAS / f"fetal.week{w}.left.{kind}.surf.gii")
+    g = nib.load(ATLAS / f"fetal.week{w}.{side}.{kind}.surf.gii")
     p = g.agg_data("NIFTI_INTENT_POINTSET").astype(float)
     return np.column_stack([-(p[:, 1] - c0[1]), p[:, 0] - c0[0], -(p[:, 2] - c0[2])]) / d0, g.agg_data("NIFTI_INTENT_TRIANGLE")
 

@@ -48,13 +48,14 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 from fold_standard import Surface  # noqa: E402
+from hemi import side_of  # noqa: E402
 from mota_law import Mesh, model_T, tet_volumes, vertex_areas  # noqa: E402
 from surface_metrics import Surf, deviation_levels, edges_of, folding_index, metrics, smoother  # noqa: E402
 
 SCHEMA = 1
 DEV_LEVELS = {"s200": 200, "s50": 50, "vertex": 0}
 BANDS_MM = [(1, 2), (2, 4), (4, 8), (8, 16)]
-MESH_NAMES = ("w21_left_610k_s", "w21_left_610k", "w21_left_215k")
+MESH_NAMES = ("w21_left_610k_s", "w21_left_610k", "w21_left_215k", "w21_right_610k_s", "w21_right_610k")
 WEEKS = range(21, 37)
 
 
@@ -70,8 +71,8 @@ def read_gii(path):
     return np.asarray(img.agg_data("pointset"), dtype=float), np.asarray(img.agg_data("triangle"), dtype=np.int64)
 
 
-def atlas_pial(week, adir):
-    return read_gii(Path(adir) / f"fetal.week{week}.left.pial.surf.gii")[0]
+def atlas_pial(week, adir, side="left"):
+    return read_gii(Path(adir) / f"fetal.week{week}.{side}.pial.surf.gii")[0]
 
 
 def atlas_surface(week, adir, pattern=None, ms=None, normalized=False):
@@ -82,7 +83,7 @@ def atlas_surface(week, adir, pattern=None, ms=None, normalized=False):
         if ms is None:
             sys.exit("--atlas-npy demande un maillage de l'atlas (--meshes-dir / --mesh-name)")
         return np.load(pattern.format(w=week)).astype(float)[: ms.ns] * ms.mm
-    q = atlas_pial(week, adir)
+    q = atlas_pial(week, adir, ms.side if ms is not None else "left")
     return ms.sim_mm(q) if normalized else q
 
 
@@ -91,6 +92,7 @@ class MeshSet:
 
     def __init__(self, name, meshes_dir):
         self.name, self.dir = name, Path(meshes_dir)
+        self.side = side_of(name)                      # hémisphère de l'atlas (tools/hemi.py)
         meta = json.loads((self.dir / f"{name}.json").read_text())
         self.ns, self.mm, self.n_nodes = meta["n_surface"], meta["maxd_mm"], meta["n_nodes"]
         self.cog = np.array(meta["cog_mm"])
@@ -296,7 +298,8 @@ def evaluate(args):
         if ms is None:
             sys.exit(f"{run} : aucun maillage de {args.meshes_dir} n'a {len(x)} nœuds ; voir --meshes-dir et --mesh-name")
         x_norm, x = x, x[: ms.ns] * ms.mm
-    a_faces = read_gii(adir / "fetal.week21.left.pial.surf.gii")[1]
+    side = ms.side if ms is not None else side_of(args.mesh_name)
+    a_faces = read_gii(adir / f"fetal.week21.{side}.pial.surf.gii")[1]
     a_mm = atlas_surface(week, adir, args.atlas_npy, ms, units == "normalized")
     faces = a_faces if faces is None else faces
     # masque du cortex : celui de l'atlas (growth mask du maillage) ; à défaut, tous les sommets des deux côtés
@@ -324,7 +327,7 @@ def evaluate(args):
             "inputs": {"run": str(run), "positions": pos.name if pos else None, "surface": surf.name if surf else None,
                        "units": units, "mesh": ms.name if ms else None, "mask": mask,
                        "vertex_correspondence": out["dev_rigid_mm"] is not None,
-                       "atlas": args.atlas_npy or f"dHCP fetal surface atlas, week {week}, left pial"}}
+                       "atlas": args.atlas_npy or f"dHCP fetal surface atlas, week {week}, {side} pial"}}
     dest = Path(args.out) if args.out else (d / "scorecard.json" if run.is_dir() else run.with_suffix(".scorecard.json"))
     write(dest, card)
     print(summary(card), f"→ {dest}")
@@ -337,8 +340,9 @@ def persistence(args):
     name = args.mesh_name or "w21_left_610k"
     ms = MeshSet(name, args.meshes_dir) if (Path(args.meshes_dir) / f"{name}.json").exists() else None
     w0, w1 = map(int, args.weeks.split("-"))
-    _, faces = read_gii(adir / "fetal.week21.left.pial.surf.gii")
-    n = len(atlas_pial(21, adir))
+    side = side_of(name)
+    _, faces = read_gii(adir / f"fetal.week21.{side}.pial.surf.gii")
+    n = len(atlas_pial(21, adir, side))
     cortex = ms.cortex() if ms is not None and ms.ns == n else None
     mask = "all" if cortex is None else "cortex"
     cortex = np.ones(n, bool) if cortex is None else cortex
@@ -352,7 +356,7 @@ def persistence(args):
                 "metrics": scorecard(x, y, faces, cortex, thickness=thickness),
                 "inputs": {"model": f"atlas week {w - 1}", "units": "mm", "mesh": ms.name if ms else None,
                            "mask": mask, "vertex_correspondence": True,
-                           "atlas": args.atlas_npy or f"dHCP fetal surface atlas, week {w}, left pial"}}
+                           "atlas": args.atlas_npy or f"dHCP fetal surface atlas, week {w}, {side} pial"}}
         write(Path(args.out) / f"persistence_sg{w}.json", card)
         print(summary(card))
     return 0

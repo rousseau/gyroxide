@@ -16,10 +16,14 @@ import json
 import os
 from pathlib import Path
 
+import sys
+
 import numpy as np
-import pyvista as pv
 import scipy.sparse as sp
 from scipy.spatial import cKDTree
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from hemi import atlas_surface, side_of  # noqa: E402
 
 # dHCP fetal atlas (.vtk and .gii surfaces, weeks 21-36): $OXIDE_DHCP_ATLAS, else the repository's data/atlas_dhcp.
 ATLAS = Path(os.environ.get("OXIDE_DHCP_ATLAS", Path(__file__).resolve().parent.parent / "data/atlas_dhcp"))
@@ -36,7 +40,8 @@ n_nodes = int(lines[0])
 X = np.loadtxt(Path(args.base + ".mesh").read_text().split("\n")[1:1 + n_nodes])
 nearest = cKDTree(X[:ns]).query(X[ns:])[1]
 
-tri = pv.read(ATLAS / "fetal.week21.left.pial.surf.vtk").extract_surface().faces.reshape(-1, 4)[:, 1:]
+side = side_of(args.base)
+tri = atlas_surface(21, side, "pial")[1]
 e = np.concatenate([tri[:, [0, 1]], tri[:, [1, 2]], tri[:, [2, 0]]])
 adj = sp.coo_matrix((np.ones(len(e)), (e[:, 0], e[:, 1])), shape=(ns, ns))
 adj = ((adj + adj.T) > 0).astype(float).tocsr()
@@ -63,13 +68,13 @@ def to_nodes(v):
 
 
 weeks = range(21, 37)
-pts = {w: np.asarray(pv.read(ATLAS / f"fetal.week{w}.left.pial.surf.vtk").points, float) for w in weeks}
+pts = {w: atlas_surface(w, side, "pial")[0] for w in weeks}
 area21 = smooth(vertex_area(pts[21]))
 A, H = [], []
 for w in weeks:
     ratio = smooth(vertex_area(pts[w])) / area21
     a = np.sqrt(ratio) - 1
-    white = np.asarray(pv.read(ATLAS / f"fetal.week{w}.left.wm.surf.vtk").points, float)
+    white = atlas_surface(w, side, "wm")[0]
     h = np.maximum(smooth(np.linalg.norm(pts[w] - white, axis=1)), args.h_min) / d_mm
     A.append(to_nodes(a))
     H.append(to_nodes(h))

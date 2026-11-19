@@ -13,9 +13,19 @@
 # REMODEL (chaîne de croissance mesurée, défaut out/remodel_a0), CFG_BASE (configuration de départ, défaut
 # configs/mu_test/mu2_full.toml), SELECT (rigid, loss ou last : sélection de l'itéré, défaut loss depuis la décision du
 # 9 novembre ; la Table 1 publiée est en rigid), BIN (défaut target/mu/adjoint_week_sel, qui connaît --select-by).
+# HEMI=right (E34) : hémisphère droit, avec TAG=_right_r0857 et une configuration de départ du droit (tools/hemi_config.py) ;
+# MESH, PREPS, FULL (dossier des cartes de loi : $FULL/law) valent alors les fichiers du droit (data/meshes/w21_right_610k_s.mesh,
+# data/adjoint_prep_s_right, data/full_right) ; défaut : hémisphère gauche, comme avant.
 set -e
 cd "$(dirname "$0")/.."
 BIN=${BIN:-target/mu/adjoint_week_sel}
+HEMI=${HEMI:-left}
+SUF=""
+[ "$HEMI" = left ] || SUF=_$HEMI
+MESH=${MESH:-data/meshes/w21_${HEMI}_610k_s.mesh}
+PREPS=${PREPS:-data/adjoint_prep_s$SUF}
+FULL=${FULL:-data/full$SUF}
+export MESH PREPS FULL
 TAG=${TAG:-}
 REMODEL=${REMODEL:-out/remodel_a0}
 CFG_BASE=${CFG_BASE:-configs/mu_test/mu2_full.toml}
@@ -23,21 +33,22 @@ SELECT=${SELECT:-loss}
 PAPER=out/paper$TAG
 D=data/full_paper$TAG
 CFG=configs/mu_test/mu2_full_paper$TAG.toml
-L=data/full/law
-LB=$(ls $L/lb40/basis_lb*_s100.npy | paste -sd,)
+L=$FULL/law
 SOLVER="--newton-cg 600 --force-tol 5e-5 --ls-tol 3e-3"
 S=${1:-1}
 mkdir -p $PAPER
 if [ "$S" -le 1 ]; then
-    python3 tools/make_full.py --out $D --weeks $(seq 22 36) --full "$REMODEL/w{w}/eq/x_released.npy"
-    D=$D REMODEL=$REMODEL python3 - <<'EOF'
+    python3 tools/make_full.py --out $D --weeks $(seq 22 36) --full "$REMODEL/w{w}/eq/x_released.npy" --mesh $MESH --prep $PREPS
+    D=$D L=$L REMODEL=$REMODEL python3 - <<'EOF'
 import json, os, shutil, sys
 from pathlib import Path
 import numpy as np
 sys.path.insert(0, "tools")
 from make_full import depth_bases
-D, L = Path(os.environ["D"]), Path("data/full/law")
-meta = json.loads(Path("data/meshes/w21_left_610k_s.json").read_text())
+D, L = Path(os.environ["D"]), Path(os.environ["L"])
+L.mkdir(parents=True, exist_ok=True)
+PREPS = Path(os.environ["PREPS"])
+meta = json.loads(Path(os.environ["MESH"]).with_suffix(".json").read_text())
 ns, mm = meta["n_surface"], meta["maxd_mm"]
 ck = D / "ckpt_w21"                                 # rest state (start of the measured-growth chain)
 shutil.rmtree(ck, ignore_errors=True)
@@ -45,22 +56,26 @@ shutil.copytree(D / "ckpt_w22", ck)
 x = np.load(os.environ["REMODEL"] + "/w22/eq/x_0.npy")
 np.save(ck / "x.npy", x)
 (ck / "state.json").write_text(json.dumps({"step": 0, "t": 0.0}))
-p = Path("data/adjoint_prep_s/w22")
+p = PREPS / "w22"
 faces, cortex = np.load(p / "faces.npy").astype(int), np.load(p / "cortex.npy")[:ns] > 0.5
-for w in range(21, 26):
-    y = x[:ns] if w == 21 else np.load(Path("data/adjoint_prep_s") / f"w{w}" / "target.npy")[:ns]
+for w in range(21, 36):                             # cartes de la loi de SG 21 à 35 (celles qui existent sont gardées)
+    y = x[:ns] if w == 21 else np.load(PREPS / f"w{w}" / "target.npy")[:ns]
     d30, fine = depth_bases(y, faces, cortex, mm)
     for name, v in (("d30", d30), ("d3o", fine)):
         f = L / f"basis_{name}_w{w}_s100.npy"
         if not f.exists():
             np.save(f, v / 100)
-print("SG 21 rest state and law maps of SG 21-25 written")
+if not (L / "basis_one_s100.npy").exists():
+    np.save(L / "basis_one_s100.npy", np.full(ns, 0.01))
+print("SG 21 rest state and law maps of SG 21-35 written")
 EOF
+    [ -d $L/lb40 ] || python3 tools/lobar_basis.py --n 40 --mesh $MESH --prep $PREPS/w27 --out $L
     cp $CFG_BASE $CFG
 fi
+LB=$(ls $L/lb40/basis_lb*_s100.npy | paste -sd,)
 if [ "$S" -le 2 ]; then
     # shellcheck disable=SC2086
-    $BIN $CFG data/meshes/w21_left_610k_s.mesh $D/ckpt_w22 $D/prep/w22 \
+    $BIN $CFG $MESH $D/ckpt_w22 $D/prep/w22 \
         $PAPER/fit22_lbm --absolute --multiscale 10:30,0:30 --cumulative --theta0-table --relax 300 \
         --relax0 3000 --newton 40 --min-growth 0 --max-step 0.05 --cg 600 --w-vertex 1 --w-normal 1 --w-lap 1 \
         --w-area 0.5 --growth-band 0.5 --fit-fields c,k --field-band 50 \
@@ -75,10 +90,10 @@ P=""
 [ "$W" -gt 22 ] && P=lbm$W
 if [ "$W" -lt 31 ]; then
     # shellcheck disable=SC2086
-    LAW=1 DATA=$D OUTD=$PAPER PREV0=$P BIN=$BIN tools/full_chain.sh lbm $PAPER/fit${W}_lbm $W 31 \
+    LAW=1 LAWDIR=$L MESH=$MESH DATA=$D OUTD=$PAPER PREV0=$P BIN=$BIN tools/full_chain.sh lbm $PAPER/fit${W}_lbm $W 31 \
         --field-law-k $LB --thick-mult --keep-best --select-by $SELECT
     W=31; P=lbm31
 fi
 # shellcheck disable=SC2086
-LAW=1 DATA=$D OUTD=$PAPER PREV0=$P RELAX=300 BIN=$BIN tools/full_chain.sh lbm $PAPER/fit${W}_lbm $W 36 \
+LAW=1 LAWDIR=$L MESH=$MESH DATA=$D OUTD=$PAPER PREV0=$P RELAX=300 BIN=$BIN tools/full_chain.sh lbm $PAPER/fit${W}_lbm $W 36 \
     --field-law-k $LB --thick-mult --keep-best --select-by $SELECT $SOLVER

@@ -11,6 +11,7 @@
 # only the atlas maps of the fixed week PREP (prediction horizon of a prepattern).
 # RELAX=n: damped steps before Newton at every trial equilibrium (late weeks: RELAX=300 with
 # --newton-cg 600 --force-tol 5e-5 --ls-tol 3e-3 among the extra options).
+# MESH (défaut : maillage gauche scindé) et LAWDIR (défaut data/full/law) : autre hémisphère (E34).
 # DATA=data/full_<x> (tools/make_full.py, config configs/mu_test/mu2_full_<x>.toml): other inputs, fits
 # in OUTD (default out/full); NEWTON (default 40) and RELAX0 (default 3000): Newton iterations and
 # damped steps before the start equilibrium.
@@ -20,7 +21,8 @@ set -e
 NAME=$1; RUN=$2; W0=$3; W1=$4; shift 4
 EXTRA="$*"
 BIN=${BIN:-target/mu/adjoint_week_law2}
-L=data/full/law
+L=${LAWDIR:-data/full/law}   # cartes de la loi (autre hémisphère : LAWDIR=data/full_right/law)
+MESH=${MESH:-data/meshes/w21_left_610k_s.mesh}
 D=${DATA:-data/full}
 PREV=${PREV0:-}  # PREV0: carry name of the first run when resuming a chain
 w=$W0
@@ -52,7 +54,7 @@ while [ $w -lt $W1 ]; do
         fi
     fi
     # shellcheck disable=SC2086
-    $BIN configs/mu_test/mu2_$(basename $D)_carry_${NAME}$n.toml data/meshes/w21_left_610k_s.mesh \
+    $BIN configs/mu_test/mu2_$(basename $D)_carry_${NAME}$n.toml $MESH \
         $D/ckpt_w${n}_from_${NAME}$n $D/prep/w$n $OUT \
         --absolute --multiscale 10:30,0:30 --cumulative --theta0-table --relax ${RELAX:-0} --relax0 ${RELAX0:-3000} \
         --newton ${NEWTON:-40} --min-growth 0 --max-step 0.05 --w-vertex 1 --w-normal 1 --w-lap 1 --w-area 0.5 \

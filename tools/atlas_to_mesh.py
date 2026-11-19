@@ -24,11 +24,14 @@ import argparse
 import base64
 import json
 import re
+import sys
 import zlib
 from pathlib import Path
 
 import numpy as np
-import tetgen
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from hemi import tetrahedralize  # noqa: E402
 
 
 def read_surface(path):
@@ -86,6 +89,7 @@ ap.add_argument("--medial-thick", type=float, default=0.6, help="pial-white dist
 ap.add_argument("--medial-dist", type=float, default=8.0, help="max distance (mm) from the most medial point for wall vertices")
 ap.add_argument("--mask-smooth", type=int, default=10, help="smoothing iterations of the growth mask")
 ap.add_argument("--maxvol", type=float, default=0.0, help="max tet volume, normalised units (0 = graded from the surface)")
+ap.add_argument("--maxvol-mm3", type=float, default=0.0, help="max tet volume in mm^3 (converted with the normalisation scale; overrides --maxvol): same mesh density on both hemispheres whatever their size")
 ap.add_argument("--quality", type=float, default=1.5, help="TetGen radius-edge bound")
 ap.add_argument("--cog", type=float, nargs=3, help="normalisation centre (default: mean of the surface points)")
 ap.add_argument("--maxd", type=float, help="normalisation scale (default: max |p - cog| component)")
@@ -128,11 +132,10 @@ d = args.maxd if args.maxd else np.abs(p - c).max()
 q = np.column_stack([-(p[:, 1] - c[1]), p[:, 0] - c[0], -(p[:, 2] - c[2])]) / d
 
 # TetGen switches: p = surface input, q = quality (radius-edge / min dihedral),
-# Y = keep the surface triangles, a = max volume, Q = quiet. (The keyword form of
-# pytetgen ignores maxvolume, so the switches are spelled out.)
-sw = f"pq{args.quality}/10Y" + (f"a{args.maxvol:g}" if args.maxvol > 0 else "") + "Q"
-nodes, tets = tetgen.TetGen(q, tri.astype(np.int32)).tetrahedralize(switches=sw)[:2]
-tets = np.asarray(tets, dtype=np.int64)
+# Y = keep the surface triangles, a = max volume, Q = quiet. TetGen runs as an external program (tools/hemi.py).
+maxvol = args.maxvol_mm3 / d**3 if args.maxvol_mm3 > 0 else args.maxvol
+sw = f"pq{args.quality}/10Y" + (f"a{maxvol:g}" if maxvol > 0 else "") + "Q"
+nodes, tets = tetrahedralize(q, tri, sw)
 assert np.allclose(nodes[:ns], q), "TetGen reordered the surface vertices"
 
 
