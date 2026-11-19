@@ -11,3 +11,6 @@ __pycache__/
 # Fichiers de travail privés, rangés dans le dépôt privé oxide (liens créés par setup/install.sh)
 CLAUDE.md
 docs/ROADMAP.md
+
+# Configurations générées par tools/paper_chain.sh avec un TAG (ex. _r0857, _right_r0857) : propres à un calcul
+/configs/mu_test/mu2_full_paper_r*.toml
