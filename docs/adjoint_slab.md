@@ -1321,3 +1321,34 @@ Indépendance en ε (paire 0, ε = 4e-3 contre 8e-3) : écart de H u 9,3 % (cibl
 ‖u‖ ≈ 65, mais wᵀH u est presque nul (annulations), si bien que 0,16 à 1,0 d'asymétrie absolue paraît énorme alors qu'elle vaut
 0,02 à 0,26 % de ‖w‖ ‖H u‖. Ce n'est pas démontré suffisant : l'erreur de H u elle-même (9,3 % entre deux ε) est du même ordre que
 les directions à faible valeur propre, que Lanczos et l'incertitude lisent justement. Lanczos n'a pas été lancé (consigne).
+
+#### Test de symétrie normalisé (c, k), a figé : non tenu (E56, 19 novembre)
+
+**Critère changé après coup, par décision de François (18 novembre, 23 h 01 UTC)** : la symétrie ne se juge plus sur les produits
+scalaires wᵀH u et uᵀH w de vecteurs aléatoires (mal conditionnés : presque nuls, voir l'essai précédent, 14,4 % / 63 % / 5,9 %),
+mais sur w = H u : ‖H u‖² = wᵀH u contre uᵀH(H u), à 5 %, et sur l'indépendance en ε de H u (ε = 4e-3 contre 8e-3), à 5 %.
+`adjoint_week --hessvec ntest` (gyroxide@13ea669) ; point `syn2`, blocs c et k libres, a figé, trois vecteurs aléatoires u ;
+sorties `out/E56/ck_ntest/` (`hv_ntest.json`, `hv_ntest.log`), 115 à 341 s par produit sur la machine chargée.
+
+| paire | ‖H u‖² | uᵀH(H u) | écart relatif | pas s du produit H w |
+|---|---|---|---|---|
+| 0 | 212,3 | 808,9 | **73,8 %** | 1,03e-3 |
+| 1 | 33,05 | 30,75 | **7,0 %** | 4,65e-3 |
+| 2 | 27,77 | 27,33 | 1,6 % | 3,45e-3 |
+
+Indépendance en ε (paire 0 seulement, ε = 4e-3 contre 8e-3) : écart de H u **7,6 %** (cible 5 %). Les deux autres paires n'ont pas
+eu la mesure en ε 8e-3 (le script s'arrête au premier test pour la paire 0 seulement).
+
+**Verdict : non tenu.** Seule la paire 2 passe. La paire 0 est très loin (74 %), la paire 1 à 7 %, et l'indépendance en ε à 7,6 %.
+Le pas relatif s du second produit (le pas est ε ‖u‖ / ‖w‖, d'où s petit quand ‖H u‖ est grand) est le plus petit pour la paire 0 (1,03e-3),
+ce qui amplifie le bruit de l'équilibre (|F| ≈ 1e-5, 45 à 52 nœuds sur le plan médian, 10 800 à 10 900 paires de contact qui
+changent d'un équilibre à l'autre) ; mais les paires 1 et 2 (s de 3,5e-3 à 4,7e-3) ne se classent pas selon s (7,0 % pour s = 4,65e-3, 1,6 % pour
+s = 3,45e-3) : le seul chiffre ne permet pas de conclure à une règle sur s. Pas de Lanczos (décision de François : « s'il n'est pas tenu :
+decision de nouveau, sans Lanczos »). `tools/laplace_posterior.py` reste validé seulement sur le cas connu 8 × 8 ; l'écart type par sommet, le rapport
+écart type / variation par échelle et la comparaison c contre k ne sont pas faits.
+
+**Ce que ce résultat ne dit pas** : a reste non identifié (E11) et la hessienne conditionnelle (a figé) sous-estime l'incertitude réelle
+de c et k, quelle que soit la qualité de H ; ni que Lanczos serait inutilisable (le quotient de Rayleigh uᵀH u s'est montré stable à
+1,4 % entre ε = 4e-3 et 8e-3 : les grandes valeurs propres, qui portent la mise à jour de rang faible de la formule de Woodbury, sont
+mieux connues que le bruit de H u ne le laisse craindre ; les petites, qui fixent l'incertitude des directions mal contraintes, sont celles que le
+bruit abîme).
