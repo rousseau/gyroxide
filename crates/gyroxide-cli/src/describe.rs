@@ -332,6 +332,22 @@ mod tests {
                 );
             }
         }
+        // Neither the BIDS arguments nor the free-mode paths are parameters (list written here, not the constant).
+        for id in ["mesh", "run"] {
+            for p in cmd(&d, id)["parameters"].as_array().unwrap() {
+                for absent in [
+                    "bids",
+                    "participant",
+                    "session",
+                    "output_dir",
+                    "mesh",
+                    "ref_static",
+                    "out",
+                ] {
+                    assert!(p["id"] != absent, "{id}: {absent} must not be a parameter");
+                }
+            }
+        }
         let run = cmd(&d, "run")["parameters"].as_array().unwrap();
         let par = |name: &str| run.iter().find(|p| p["id"] == name).unwrap();
         assert_eq!(par("hemi")["type"], "enum");
