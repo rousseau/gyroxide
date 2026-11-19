@@ -3043,6 +3043,9 @@ fn main() {
         // (--hv-eps, default 1e-3: the largest parameter change). Two equilibria and two adjoints per product.
         //   --hessvec test      symmetry u.H_m w = w.H_m u on --hv-pairs (default 3) random smooth pairs, and independence of eps
         //                       (--hv-eps2, default 4e-3) on one product; writes hv_test.json
+        //   --hessvec ntest     normalised symmetry test (decided by François on 18 November, after the fact): for u random
+        //                       and w = H_m u, |w.H_m u - u.H_m w| / max of the two, i.e. ||H_m u||^2 against u.H_m(H_m u),
+        //                       on --hv-pairs pairs, and independence of eps on H_m u; writes hv_ntest.json
         //   --hv-blocks 1,2     restrict test and lanczos to the blocks listed (0 = a, 1 = c, 2 = k): the other
         //                       blocks are frozen (conditional Hessian, P H_m P); default all blocks
         //   --hessvec lanczos   Lanczos with full reorthogonalisation (--hv-iters steps, default 80);
@@ -3191,6 +3194,35 @@ fn main() {
             std::fs::write(out.join("hv_test.json"), format!("[{}]\n", rows.join(",\n"))).unwrap();
             return;
         }
+        if mode == "ntest" {
+            // Same symmetry test with w = H_m u: the scalar product w.H_m u = ||H_m u||^2 is large (the random pairs of
+            // `test` give products near zero, so their relative difference is ill-conditioned). One more product per pair.
+            let mut rows = Vec::new();
+            for pair in 0..flag("--hv-pairs", 3.0) as usize {
+                let u = random_vec(&p);
+                let hu = hm(&mut p, &u, eps1);
+                let hhu = hm(&mut p, &hu, eps1);
+                let (a, b) = (dotv(&hu, &hu), dotv(&u, &hhu));
+                let sym = (a - b).abs() / a.abs().max(b.abs());
+                println!(
+                    "normalised symmetry pair {pair}: |H u|^2 {a:.6e}, u.H(H u) {b:.6e}, relative difference {sym:.3e}"
+                );
+                let mut row = format!("{{\"pair\": {pair}, \"HuHu\": {a:.8e}, \"uHHu\": {b:.8e}, \"sym\": {sym:.4e}");
+                if pair == 0 {
+                    let hu2 = hm(&mut p, &u, eps2);
+                    let d: Vec<f64> = hu.iter().zip(&hu2).map(|(a, b)| a - b).collect();
+                    let rel = nrm2(&d) / nrm2(&hu);
+                    println!("eps independence (u): |H u(eps1) - H u(eps2)| / |H u(eps1)| {rel:.3e}");
+                    row.push_str(&format!(
+                        ", \"eps1\": {eps1:e}, \"eps2\": {eps2:e}, \"eps_vec\": {rel:.4e}"
+                    ));
+                }
+                row.push('}');
+                rows.push(row);
+            }
+            std::fs::write(out.join("hv_ntest.json"), format!("[{}]\n", rows.join(",\n"))).unwrap();
+            return;
+        }
         if mode == "blocks" {
             // 3 x 3 matrix M_ij = u_i . H_m u_j of one random smooth vector per block (a, c, k), each supported on its own
             // block: M_ij against M_ji shows which block carries the asymmetry. Writes hv_blocks.json.
@@ -3252,7 +3284,7 @@ fn main() {
             std::fs::write(out.join("hv_within.json"), format!("[{}]\n", rows.join(", "))).unwrap();
             return;
         }
-        assert!(mode == "lanczos", "--hessvec test|blocks|within|lanczos");
+        assert!(mode == "lanczos", "--hessvec test|ntest|blocks|within|lanczos");
         let iters = flag("--hv-iters", 80.0) as usize;
         let mut q = random_vec(&p);
         let c0 = nrm2(&q);
