@@ -1193,9 +1193,65 @@ Le droit a autant d'éléments (+0,3 %), des angles un peu meilleurs et la même
   11 mm : 4 021 sommets (12,4 %), la même part que le gauche. Choix par la part, non par l'anatomie : à vérifier à l'œil
   sur la surface (`out/E34/` ne contient pas de rendu).
 
+### Table 1 droite face à la gauche (E34, 19 au 23 novembre 2026)
+
+**Chaînes** (`HEMI=right tools/hemi_chain.sh remodel paper eval`, PGX, 19 novembre, 10 h 43 à 22 h 35 UTC, code 0) :
+croissance mesurée de SG 22 à 36 sans arrêt (`out/remodel_right_r0857/chain.json`), estimée de SG 22 à 36
+(`out/paper_right_r0857/fit<SG>_lbm`, sélection `loss`) ; aucun NaN, **aucun élément retourné** dans les deux bras. Le
+gauche à 0,857 avait pris le même temps (environ 11 h pour l'estimée ; les 28 h annoncées supposaient une PGX chargée).
+Seule particularité : à SG 27 et 28, l'ajustement de l'estimée s'arrête à l'itération 2 (« no decrease ») et `keep-best`
+garde l'itéré 1, la loi restant presque celle de SG 26 ; le gauche fait de même à SG 30 et 31.
+
+**Protocole égal** : chaque côté est évalué sur ses propres cibles, celles de sa chaîne à 0,857
+(`data/full_paper{,_right}_r0857/prep/w{w}/target.npy`). Le tableau gauche de la section E33 ci-dessus utilisait les
+cibles de la chaîne à 2 ; réévalué sur les siennes (`out/scorecard/t1_r0857_cibles_propres`, `gyroxide eval`, mêmes
+sorties de chaîne), il ne change pas en corrélation ni en IG (écart < 1e-12), de 0,5 % au plus en profondeur et de 3,6 % au
+plus en écart rigide (S²⁰⁰). Droit : `out/scorecard/t1_right_r0857`. Sélection `loss` des deux côtés.
+
+Droit / gauche (écart relatif du droit au gauche) ; RMS : écart rigide ; profondeur et IG : rapport au même indice de
+l'atlas de la semaine :
+
+| SG | bras | RMS sommets (mm) | RMS S²⁰⁰ (mm) | corrélation | profondeur / atlas | IG / atlas |
+|---|---|---|---|---|---|---|
+| 26 | persistance | 0,99 / 1,00 (−0,8 %) | 0,93 / 0,93 (−0,3 %) | 0,975 / 0,976 (−0,1 %) | 0,901 / 0,894 (+0,8 %) | 0,991 / 0,990 (+0,1 %) |
+| 26 | estimée | 0,29 / 0,33 (−10,8 %) | 0,16 / 0,21 (−24,8 %) | 0,923 / 0,931 (−0,9 %) | 0,944 / 0,920 (+2,6 %) | 0,988 / 0,991 (−0,3 %) |
+| 26 | mesurée | 0,49 / 0,51 (−4,2 %) | 0,28 / 0,30 (−6,6 %) | 0,827 / 0,836 (−1,0 %) | 0,871 / 0,845 (+3,0 %) | 0,976 / 0,977 (−0,1 %) |
+| 28 | persistance | 1,01 / 0,99 (+1,3 %) | 0,88 / 0,88 (+0,5 %) | 0,957 / 0,962 (−0,5 %) | 0,841 / 0,861 (−2,3 %) | 0,976 / 0,978 (−0,2 %) |
+| 28 | estimée | 0,85 / 0,65 (+30,3 %) | 0,48 / 0,41 (+17,4 %) | 0,804 / 0,901 (−10,8 %) | 0,751 / 0,863 (−13,0 %) | 0,947 / 0,968 (−2,2 %) |
+| 28 | mesurée | 1,11 / 1,15 (−3,5 %) | 0,66 / 0,70 (−5,6 %) | 0,643 / 0,653 (−1,4 %) | 0,691 / 0,701 (−1,5 %) | 0,934 / 0,938 (−0,4 %) |
+| 30 | persistance | 1,05 / 1,04 (+0,4 %) | 0,91 / 0,91 (+0,3 %) | 0,951 / 0,961 (−1,1 %) | 0,830 / 0,847 (−2,0 %) | 0,965 / 0,965 (+0,1 %) |
+| 30 | estimée | 1,12 / 1,12 (−0,4 %) | 0,61 / 0,66 (−7,9 %) | 0,825 / 0,849 (−2,8 %) | 0,685 / 0,748 (−8,4 %) | 0,910 / 0,921 (−1,2 %) |
+| 30 | mesurée | 1,70 / 1,80 (−5,3 %) | 0,99 / 1,09 (−9,0 %) | 0,479 / 0,484 (−0,9 %) | 0,538 / 0,556 (−3,1 %) | 0,876 / 0,879 (−0,3 %) |
+| 33 | persistance | 0,82 / 0,81 (+1,8 %) | 0,68 / 0,68 (−0,8 %) | 0,952 / 0,964 (−1,3 %) | 0,915 / 0,916 (−0,2 %) | 0,979 / 0,975 (+0,4 %) |
+| 33 | estimée | 1,60 / 1,73 (−7,5 %) | 0,92 / 1,06 (−13,2 %) | 0,840 / 0,845 (−0,6 %) | 0,659 / 0,653 (+1,0 %) | 0,860 / 0,859 (+0,1 %) |
+| 33 | mesurée | 2,30 / 2,41 (−4,4 %) | 1,23 / 1,36 (−9,3 %) | 0,323 / 0,354 (−8,8 %) | 0,434 / 0,435 (−0,2 %) | 0,800 / 0,801 (−0,2 %) |
+| 36 | persistance | 0,45 / 0,41 (+10,6 %) | 0,36 / 0,33 (+8,7 %) | 0,982 / 0,986 (−0,4 %) | 0,964 / 0,964 (+0,1 %) | 0,988 / 0,989 (−0,1 %) |
+| 36 | estimée | 1,80 / 1,93 (−6,7 %) | 1,09 / 1,22 (−10,4 %) | 0,880 / 0,882 (−0,1 %) | 0,675 / 0,672 (+0,5 %) | 0,846 / 0,839 (+0,8 %) |
+| 36 | mesurée | 2,56 / 2,66 (−3,7 %) | 1,33 / 1,44 (−7,4 %) | 0,288 / 0,307 (−6,2 %) | 0,397 / 0,392 (+1,3 %) | 0,764 / 0,763 (+0,2 %) |
+
+Seuil de variabilité d'E33 (étendue de trois exécutions, SG 32 → 33) : écart rigide 0,07 % (RMS) et 0,5 % (p95),
+corrélation 1,5 %, profondeur 1,3 %, IG 0,5 %. Ce seuil mesure le bruit d'une exécution à l'autre, pas la différence
+anatomique entre deux hémisphères : les écarts qui le dépassent disent que les côtés diffèrent, pas lequel est « juste ».
+
+**Lecture.**
+- **Les conclusions de la Table 1 gauche valent à droite.** La croissance mesurée s'éloigne de l'atlas et perd ses plis
+  (corrélation 0,29 à SG 36, profondeur à 40 % de l'atlas). L'estimée garde une corrélation de 0,80 à 0,92. La
+  persistance gagne en corrélation à toutes les semaines, et en écart rigide à SG 33 et 36 (0,82 et 0,45 mm contre
+  1,60 et 1,80) ; l'estimée gagne à SG 26 et 28 ; SG 30 est à égalité (1,12 contre 1,05). C'est le même classement
+  qu'à gauche, semaine par semaine.
+- **SG 33 et 36 : les deux côtés concordent** en corrélation, profondeur et IG (écarts de 0,1 à 1,3 %, sous le seuil ou
+  à sa limite pour l'IG). Le droit est plus près de l'atlas en écart rigide (−7 à −13 %), au-delà du seuil, sans que le
+  classement change.
+- **SG 28 : le droit estimé est nettement moins bon** (corrélation −10,8 %, profondeur −13 %, écart rigide +30 %). C'est
+  la semaine qui suit les deux ajustements arrêtés à l'itération 1 (SG 27 et 28) ; l'écart se résorbe dès SG 30 en écart
+  rigide et à SG 33 en corrélation. Le gauche a le même arrêt à SG 30 et 31 sans écart comparable : l'arrêt précoce
+  n'explique pas tout, à regarder avec l'équilibre de SG 27 → 28 qui ne converge pas (E69).
+- La persistance diffère de 0 à 2,3 % entre côtés de SG 26 à 33, et de 10 % en écart rigide à SG 36 (0,45 contre 0,41 mm) :
+  l'atlas droit varie un peu plus de SG 35 à 36.
+
 ### Reste à faire pour P02
 
 - Tâche 3 (rapport μ_g/μ_w) : faite (bras mesuré à 0,5 / 0,857 / 1 ; chaîne estimée à 0,857 ; variabilité de SG 32 → 33).
   Reste la décision sur la valeur unique du rapport dans les trois bras (voir ci-dessus).
-- Tâche 4 : maillage SG 21 de l'hémisphère droit fait (voir ci-dessus) ; chaînes mesurée puis estimée (μ_g/μ_w = 0,857, sélection `loss`) lancées sur la PGX le 19 novembre (`tools/hemi_chain.sh`, environ 31 h) ; reste la Table 1 droite face à la gauche.
+- Tâche 4 : faite (E34). Maillage SG 21 droit, chaînes mesurée et estimée à 0,857 (sélection `loss`) et Table 1 droite face à la gauche, chaque côté sur ses propres cibles (voir ci-dessus) : même classement des trois bras qu'à gauche ; SG 28 estimé moins bon à droite. Non fait : le contrôle à l'œil du mur médial droit.
 - Tâche 5 : bras de persistance équitable. Fait : bras mesuré réinitialisé, SG 26, 30, 33, 36 (SG 28 : équilibre non convergé). Reste : le bras estimé réinitialisé (un ajustement d'une semaine depuis l'atlas w−1), SG 28, les six autres semaines.
